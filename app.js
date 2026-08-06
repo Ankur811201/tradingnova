@@ -100,6 +100,7 @@ function createApp() {
   app.use('/api/settings', settingsRoutes);
   app.use('/api/safety', safetyRoutes);
   app.use('/api/health', healthRoutes);
+  app.use("/", require("./routes/githubWebhook"));
 
   // --- Frontend page routes (Part 2) ---
   
