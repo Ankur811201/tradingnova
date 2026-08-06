@@ -71,7 +71,50 @@ function createApp() {
   app.set('view engine', 'ejs');
   app.set('views', path.join(__dirname, 'views'));
   app.set('trust proxy', 1);
- app.use("/", require("./routes/githubWebhook"));
+  const crypto = require("node:crypto");
+const { exec } = require("child_process");
+
+app.post("/api/github-webhook", express.raw({ type: "*/*" }), (req, res) => {
+  const signature = req.headers["x-hub-signature-256"];
+
+  const expected =
+    "sha256=" +
+    crypto
+      .createHmac("sha256", process.env.GITHUB_WEBHOOK_SECRET)
+      .update(req.body)
+      .digest("hex");
+
+  console.log("=================================");
+console.log("Signature Header:", signature);
+console.log("Expected:", expected);
+console.log("Match:", signature === expected);
+console.log("Body Length:", req.body.length);
+console.log("Content-Type:", req.headers["content-type"]);
+console.log("First 100 bytes:", req.body.toString("utf8").slice(0, 100));
+console.log("=================================");
+
+  if (
+    !signature ||
+    !crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(expected)
+    )
+  ) {
+    return res.status(401).send("Invalid signature");
+  }
+
+  res.status(200).send("Deploy started");
+
+  exec(
+    "cd /home/tradingn/tradingapp/nove-trade && git pull origin main && touch tmp/restart.txt",
+    (err, stdout, stderr) => {
+      if (err) console.error(err);
+      if (stdout) console.log(stdout);
+      if (stderr) console.error(stderr);
+    }
+  );
+});
+ 
   app.use(helmet({
     contentSecurityPolicy: false, // Part 2 (frontend) will configure CSP appropriately
   }));
