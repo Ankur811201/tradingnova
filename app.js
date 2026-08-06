@@ -71,7 +71,7 @@ function createApp() {
   app.set('view engine', 'ejs');
   app.set('views', path.join(__dirname, 'views'));
   app.set('trust proxy', 1);
-
+ app.use("/", require("./routes/githubWebhook"));
   app.use(helmet({
     contentSecurityPolicy: false, // Part 2 (frontend) will configure CSP appropriately
   }));
@@ -100,7 +100,7 @@ function createApp() {
   app.use('/api/settings', settingsRoutes);
   app.use('/api/safety', safetyRoutes);
   app.use('/api/health', healthRoutes);
-  app.use("/", require("./routes/githubWebhook"));
+ 
 
   // --- Frontend page routes (Part 2) ---
   
