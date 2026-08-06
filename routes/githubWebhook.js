@@ -1,8 +1,10 @@
 const express = require("express");
 const crypto = require("crypto");
 const { exec } = require("child_process");
+require("dotenv").config();
 
 const router = express.Router();
+
 
 router.post("/api/github-webhook", express.raw({ type: "*/*" }), (req, res) => {
     const secret = process.env.GITHUB_WEBHOOK_SECRET;
