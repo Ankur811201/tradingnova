@@ -1,0 +1,27 @@
+<%- include('partials/head', { title: title }) %>
+<body>
+  <div class="app-shell">
+    <%- include('partials/sidebar', { activeNav: activeNav }) %>
+    <div class="main">
+      <%- include('partials/topbar', { title: title }) %>
+      <div class="content">
+
+        <div class="status-list mb-16" id="statusList">
+          <div class="status-row"><div class="label">Loading system status…</div></div>
+        </div>
+
+        <div class="section-title"><h2>Recent System Logs</h2></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Level</th><th>Category</th><th>Message</th><th>Time</th></tr></thead>
+            <tbody id="logsBody"><tr><td colspan="4"><div class="empty-state">Loading…</div></td></tr></tbody>
+          </table>
+        </div>
+
+      </div>
+    </div>
+  </div>
+  <%- include('partials/scripts') %>
+  <script src="/js/systemStatus.js"></script>
+</body>
+</html>

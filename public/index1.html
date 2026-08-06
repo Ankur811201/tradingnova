@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nova Trade Bot - Developer Workstation</title>
+  <link rel="stylesheet" href="/css/terminal.css">
+  <!-- Lightweight Charts Library -->
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+
+<div class="terminal-layout">
+  <!-- HEADER -->
+  <header class="terminal-header">
+    <div class="brand-section">
+      <span class="bot-title">NOVA BOT ENGINE</span>
+      <span class="badge badge-version">v2.4.1</span>
+      <span class="badge badge-status active" id="bot-status-badge">RUNNING</span>
+    </div>
+
+    <div class="meta-group">
+      <div class="meta-item"><span class="meta-label">Exchange</span><span class="meta-val" id="meta-exchange">BINANCE</span></div>
+      <div class="meta-item"><span class="meta-label">Symbol</span><span class="meta-val" id="meta-symbol">BTCUSDT</span></div>
+      <div class="meta-item"><span class="meta-label">Timeframe</span><span class="meta-val" id="meta-tf">1m</span></div>
+    </div>
+
+    <div class="header-actions">
+      <button class="btn btn-green" id="btn-start">Start</button>
+      <button class="btn btn-yellow" id="btn-pause">Pause</button>
+      <button class="btn btn-red" id="btn-stop">Stop</button>
+      <button class="btn" id="btn-restart">Restart</button>
+    </div>
+  </header>
+
+  <!-- MAIN WORKSPACE -->
+  <div class="terminal-workspace">
+    <!-- PRIMARY STAGE (70%) -->
+    <div class="primary-stage">
+      <!-- CHART VIEWPORT -->
+      <div class="chart-viewport-container">
+        <div class="chart-legend">
+          <span>EMA 20: <strong style="color:#2962ff" id="legend-ema20">--</strong></span>
+          <span>EMA 50: <strong style="color:#ff9800" id="legend-ema50">--</strong></span>
+        </div>
+        <div id="chart-element"></div>
+      </div>
+
+      <!-- DEV PANELS GRID -->
+      <div class="panel-grid">
+        <!-- BOT DECISION PANEL -->
+        <div class="panel-card">
+          <div class="panel-title">Bot Decision Engine Matrix</div>
+          <div id="decision-matrix">
+            <div style="color:var(--text-muted)">Waiting for candle evaluation...</div>
+          </div>
+        </div>
+
+        <!-- CONTROL CENTER -->
+        <div class="panel-card">
+          <div class="panel-title">Configuration</div>
+          <form id="config-form" style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+            <div>
+              <label class="meta-label">Capital</label>
+              <input type="number" name="capital" value="10000" style="width:100%; background:var(--bg-main); border:1px solid var(--border); color:#fff; padding:4px;">
+            </div>
+            <div>
+              <label class="meta-label">Risk %</label>
+              <input type="number" name="risk" value="1" style="width:100%; background:var(--bg-main); border:1px solid var(--border); color:#fff; padding:4px;">
+            </div>
+            <div>
+              <label class="meta-label">Leverage</label>
+              <input type="number" name="leverage" value="10" style="width:100%; background:var(--bg-main); border:1px solid var(--border); color:#fff; padding:4px;">
+            </div>
+            <div>
+              <label class="meta-label">Stop Loss %</label>
+              <input type="number" name="stopLoss" value="1.5" style="width:100%; background:var(--bg-main); border:1px solid var(--border); color:#fff; padding:4px;">
+            </div>
+            <div style="grid-column: span 2;">
+              <button type="submit" class="btn" style="width:100%; justify-content:center; margin-top:4px;">Save Configuration</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- ACTIVE TRADE -->
+        <div class="panel-card">
+          <div class="panel-title">Active Position Monitor</div>
+          <div id="active-position-panel">
+            <div style="color:var(--text-muted); text-align:center; padding:10px;">NO ACTIVE POSITION</div>
+          </div>
+        </div>
+
+        <!-- PERFORMANCE -->
+        <div class="panel-card">
+          <div class="panel-title">Performance Overview</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-family:var(--font-mono)">
+            <div>Today PnL: <span id="perf-today-pnl" style="color:var(--green)">+$0.00</span></div>
+            <div>Total PnL: <span id="perf-total-pnl" style="color:var(--green)">+$0.00</span></div>
+            <div>Win Rate: <span id="perf-win-rate">0%</span></div>
+            <div>Profit Factor: <span id="perf-profit-factor">0.00</span></div>
+            <div>Max Drawdown: <span id="perf-max-drawdown" style="color:var(--red)">0%</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TRADE HISTORY TABLE -->
+      <div class="panel-card" style="margin: 0 12px 12px 12px;">
+        <div class="panel-title">Trade Execution History</div>
+        <div class="data-table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>TIME</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>PNL</th><th>REASON</th>
+              </tr>
+            </thead>
+            <tbody id="trade-history-rows">
+              <tr><td colspan="6" style="text-align:center; color:var(--text-muted);">No executed trades</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- TIMELINE & LOGS -->
+      <div class="panel-grid" style="padding-top:0;">
+        <div class="panel-card">
+          <div class="panel-title">Execution Timeline</div>
+          <div class="timeline-list" id="timeline-list">
+            <div class="timeline-item">
+              <span class="timeline-time">00:00</span>
+              <span class="timeline-msg">System initialized</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-card">
+          <div class="panel-title">Live Engine Console</div>
+          <div class="console-wrapper">
+            <div class="console-logs" id="console-logs"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECONDARY STAGE / SIDEBAR (30%) -->
+    <aside class="sidebar-stage">
+      <div class="panel-card">
+        <div class="panel-title">Engine Health Status</div>
+        <div style="display:flex; flex-direction:column; gap:8px; font-family:var(--font-mono)">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Exchange Connected</span>
+            <span class="dot dot-green" id="health-exchange"></span>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Market Feed</span>
+            <span class="dot dot-green" id="health-market"></span>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Strategy Loop</span>
+            <span class="dot dot-green" id="health-strategy"></span>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Database Pipeline</span>
+            <span class="dot dot-green" id="health-db"></span>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span>WebSocket Gateway</span>
+            <span class="dot dot-red" id="health-wsConnected"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel-card">
+        <div class="panel-title">Live Diagnostics</div>
+        <div style="font-family:var(--font-mono); display:flex; flex-direction:column; gap:6px;">
+          <div>Candle Close In: <strong id="diag-candle-close">--s</strong></div>
+          <div>Next Evaluation: <strong id="diag-next-check">--s</strong></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<!-- Load Application Script -->
+<script src="/js/candle-series.js"></script>
+<script src="/js/marker-manager.js"></script>
+<script src="/js/overlay-manager.js"></script>
+<script src="/js/chart-manager.js"></script>
+<script src="/js/chart-sync.js"></script>
+<script src="/js/terminal-app.js"></script>
+</body>
+</html>

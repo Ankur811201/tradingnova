@@ -1,0 +1,90 @@
+<%- include('partials/head', { title: title }) %>
+<body>
+  <div class="app-shell">
+    <%- include('partials/sidebar', { activeNav: activeNav }) %>
+    <div class="main">
+      <%- include('partials/topbar', { title: title }) %>
+      <div class="content">
+
+        <div class="mode-banner live">LIVE MODE — real-money execution via Delta Exchange</div>
+
+        <div id="liveUnavailable" class="alert alert-warning hidden"></div>
+
+        <div class="grid grid-3 mb-16">
+          <div class="card"><div class="stat-label">Delta Configured</div><div class="stat-value text-sm" id="lDeltaConfigured">—</div></div>
+          <div class="card"><div class="stat-label">Delta Connection</div><div class="stat-value text-sm" id="lDeltaConnected">—</div></div>
+          <div class="card"><div class="stat-label">Live Trading</div><div class="stat-value text-sm" id="lLiveEnabled">—</div></div>
+        </div>
+
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-header"><h2>Account Balance</h2></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Asset</th><th>Balance</th><th>Available</th></tr></thead>
+                <tbody id="balanceBody"><tr><td colspan="3"><div class="empty-state">Live Trading Unavailable — Delta Exchange is not connected.</div></td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><h2>Live Order</h2></div>
+            <div id="tradeAlert" class="alert alert-danger hidden"></div>
+            <form id="tradeForm">
+              <div class="field">
+                <label for="tradeSymbol">Symbol</label>
+                <select id="tradeSymbol" required></select>
+              </div>
+              <div class="side-toggle">
+                <button type="button" class="long selected" data-side="LONG" id="sideLongBtn">LONG</button>
+                <button type="button" class="short" data-side="SHORT" id="sideShortBtn">SHORT</button>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="tradeQty">Quantity</label>
+                  <input type="number" id="tradeQty" min="0" step="any" required />
+                </div>
+                <div class="field">
+                  <label for="tradeLeverage">Leverage</label>
+                  <input type="number" id="tradeLeverage" min="1" step="1" value="1" />
+                </div>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="tradeSL">Stop Loss (optional)</label>
+                  <input type="number" id="tradeSL" min="0" step="any" />
+                </div>
+                <div class="field">
+                  <label for="tradeTP">Take Profit (optional)</label>
+                  <input type="number" id="tradeTP" min="0" step="any" />
+                </div>
+              </div>
+              <button type="submit" class="btn btn-danger btn-block" id="tradeBtn" disabled>Place Live Order</button>
+              <div class="field-hint" id="tradeHint">Checking Delta availability…</div>
+            </form>
+          </div>
+        </div>
+
+        <div class="section-title"><h2>Live Positions</h2></div>
+        <div class="table-wrap mb-16">
+          <table>
+            <thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Current</th><th>Qty</th><th>Leverage</th><th>Realized P&amp;L</th><th></th></tr></thead>
+            <tbody id="positionsBody"><tr><td colspan="8"><div class="empty-state">Live Trading Unavailable — Delta Exchange is not connected.</div></td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="section-title"><h2>Open Orders (Delta)</h2></div>
+        <div class="table-wrap mb-16">
+          <table>
+            <thead><tr><th>Order ID</th><th>Symbol</th><th>Side</th><th>Size</th><th>State</th></tr></thead>
+            <tbody id="openOrdersBody"><tr><td colspan="5"><div class="empty-state">Live Trading Unavailable — Delta Exchange is not connected.</div></td></tr></tbody>
+          </table>
+        </div>
+
+      </div>
+    </div>
+  </div>
+  <%- include('partials/scripts') %>
+  <script src="/js/live.js"></script>
+</body>
+</html>

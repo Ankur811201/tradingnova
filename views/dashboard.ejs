@@ -1,0 +1,73 @@
+<%- include('partials/head', { title: title }) %>
+<body>
+  <div class="app-shell">
+    <%- include('partials/sidebar', { activeNav: activeNav }) %>
+    <div class="main">
+      <%- include('partials/topbar', { title: title }) %>
+      <div class="content">
+
+        <div class="section-title"><h2>Market Chart</h2></div>
+        <div class="card mb-16">
+          <p class="text-sm muted mb-16">
+            Read-only chart for visualization via TradingView's official embedded widget.
+            This is display-only — Bot Models, the Risk Engine, and order execution continue
+            to use the backend MarketDataProvider exclusively, never this chart.
+          </p>
+          <div class="chart-container" id="chartContainer">
+            <div class="chart-empty">Chart unavailable</div>
+          </div>
+        </div>
+
+        <div class="section-title"><h2>Paper Portfolio</h2></div>
+        <div class="grid grid-4" id="paperStats">
+          <div class="card"><div class="stat-label">Available Balance</div><div class="stat-value" id="stAvailable">—</div></div>
+          <div class="card"><div class="stat-label">Equity</div><div class="stat-value" id="stEquity">—</div></div>
+          <div class="card"><div class="stat-label">Realized P&amp;L</div><div class="stat-value" id="stRealized">—</div></div>
+          <div class="card"><div class="stat-label">Unrealized P&amp;L</div><div class="stat-value" id="stUnrealized">—</div></div>
+        </div>
+
+        <div class="section-title"><h2>System</h2></div>
+        <div class="grid grid-4" id="systemStats">
+          <div class="card"><div class="stat-label">Market Data</div><div class="stat-value text-sm" id="stMarketData">—</div></div>
+          <div class="card"><div class="stat-label">Delta Exchange</div><div class="stat-value text-sm" id="stDelta">—</div></div>
+          <div class="card"><div class="stat-label">Live Trading</div><div class="stat-value text-sm" id="stLiveTrading">—</div></div>
+          <div class="card"><div class="stat-label">Running Bots</div><div class="stat-value" id="stRunningBots">—</div></div>
+        </div>
+
+        <div class="section-title"><h2>Open Paper Positions</h2></div>
+        <div class="table-wrap mb-16">
+          <table>
+            <thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Current</th><th>Qty</th><th>Leverage</th><th>Unrealized P&amp;L</th></tr></thead>
+            <tbody id="positionsBody"><tr><td colspan="7"><div class="empty-state">Loading…</div></td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="grid grid-2">
+          <div>
+            <div class="section-title"><h2>Recent Orders</h2></div>
+            <div class="table-wrap mb-16">
+              <table>
+                <thead><tr><th>Symbol</th><th>Env</th><th>Side</th><th>Status</th><th>Time</th></tr></thead>
+                <tbody id="ordersBody"><tr><td colspan="5"><div class="empty-state">Loading…</div></td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <div class="section-title"><h2>Recent Bot Events</h2></div>
+            <div class="table-wrap mb-16">
+              <table>
+                <thead><tr><th>Instance</th><th>Event</th><th>Time</th></tr></thead>
+                <tbody id="eventsBody"><tr><td colspan="3"><div class="empty-state">Loading…</div></td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+  <%- include('partials/scripts') %>
+  <script src="/js/chart.js"></script>
+  <script src="/js/dashboard.js"></script>
+</body>
+</html>

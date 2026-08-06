@@ -1,0 +1,46 @@
+<%- include('partials/head', { title: title }) %>
+<body>
+  <div class="app-shell">
+    <%- include('partials/sidebar', { activeNav: activeNav }) %>
+    <div class="main">
+      <%- include('partials/topbar', { title: title }) %>
+      <div class="content">
+
+        <div class="card mb-16">
+          <div class="field-row" style="grid-template-columns: repeat(4, 1fr);">
+            <div class="field">
+              <label for="fEnv">Environment</label>
+              <select id="fEnv"><option value="">All</option><option value="PAPER">PAPER</option><option value="LIVE">LIVE</option></select>
+            </div>
+            <div class="field">
+              <label for="fStatus">Status</label>
+              <select id="fStatus"><option value="">All</option><option value="OPEN">OPEN</option><option value="CLOSED">CLOSED</option><option value="LIQUIDATED">LIQUIDATED</option></select>
+            </div>
+            <div class="field">
+              <label for="fSymbol">Symbol</label>
+              <input type="text" id="fSymbol" placeholder="e.g. BTCUSD" />
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <button class="btn btn-secondary btn-block" id="applyFilters">Apply Filters</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Env</th><th>Source</th><th>Model/Bot</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Current</th>
+              <th>Qty</th><th>Leverage</th><th>SL</th><th>TP</th><th>Unrealized</th><th>Realized</th><th>Status</th><th></th>
+            </tr></thead>
+            <tbody id="positionsBody"><tr><td colspan="15"><div class="empty-state">Loading…</div></td></tr></tbody>
+          </table>
+        </div>
+
+      </div>
+    </div>
+  </div>
+  <%- include('partials/scripts') %>
+  <script src="/js/positions.js"></script>
+</body>
+</html>

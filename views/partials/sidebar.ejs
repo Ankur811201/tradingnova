@@ -1,0 +1,62 @@
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <div class="mark">NT</div>
+    <div>
+      <div class="name">Nova Trade</div>
+      <div class="sub">Trading Platform</div>
+    </div>
+  </div>
+
+  <nav class="sidebar-nav">
+    <ul>
+      <li><a class="nav-item <%= activeNav === 'dashboard' ? 'active' : '' %>" href="/dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        Dashboard
+      </a></li>
+      <li><a class="nav-item <%= activeNav === 'paper' ? 'active' : '' %>" href="/paper">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V5a1 1 0 0 1 1-1h11l4 4v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1Z"/><path d="M9 15l2-2 2 2 3-4"/></svg>
+        Paper Trading
+      </a></li>
+      <li><a class="nav-item <%= activeNav === 'live' ? 'active' : '' %>" href="/live">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17l5-5 4 4 8-9"/><path d="M14 7h6v6"/></svg>
+        Live Trading
+      </a></li>
+      <li><a class="nav-item <%= activeNav === 'bots' ? 'active' : '' %>" href="/bots">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M9 4h6"/><circle cx="9" cy="14" r="1"/><circle cx="15" cy="14" r="1"/></svg>
+        Bots
+      </a></li>
+      <li><a class="nav-item <%= activeNav === 'orders' ? 'active' : '' %>" href="/orders">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 4h14v16l-3-2-2 2-2-2-2 2-2-2-3 2Z"/><path d="M8 9h8M8 13h8"/></svg>
+        Orders
+      </a></li>
+      <li><a class="nav-item <%= activeNav === 'positions' ? 'active' : '' %>" href="/positions">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>
+        Positions
+      </a></li>
+      <li><a class="nav-item <%= activeNav === 'trades' ? 'active' : '' %>" href="/trades">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h12"/></svg>
+        Trade History
+      </a></li>
+      <li><a class="nav-item <%= activeNav === 'system-status' ? 'active' : '' %>" href="/system-status">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+        System Status
+      </a></li>
+      <li><a class="nav-item <%= activeNav === 'safety' ? 'active' : '' %>" href="/safety">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v6c0 4.5-3 8-7 9-4-1-7-4.5-7-9V6Z"/></svg>
+        Safety &amp; Settings
+      </a></li>
+    </ul>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="sidebar-user">
+      <div class="avatar"><%= currentUser && currentUser.username ? currentUser.username.charAt(0).toUpperCase() : '?' %></div>
+      <div class="who">
+        <div class="name"><%= currentUser ? currentUser.username : 'Unknown' %></div>
+        <div class="role"><%= currentUser ? currentUser.role : '' %></div>
+      </div>
+    </div>
+    <button class="btn-logout" id="logoutBtn" type="button">Log out</button>
+  </div>
+</aside>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>

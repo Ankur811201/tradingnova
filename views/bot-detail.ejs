@@ -1,0 +1,1122 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= title %></title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="/css/styles.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui'],
+            display: ['"Space Grotesk"', 'ui-sans-serif', 'system-ui'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+          },
+        }
+      }
+    }
+  </script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+
+  <style>
+    body { background-color: #05060a; }
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(1200px 600px at 85% -10%, rgba(59,130,246,0.10), transparent 60%),
+        radial-gradient(900px 500px at 5% 10%, rgba(16,185,129,0.06), transparent 60%);
+      z-index: 0;
+    }
+    .glass {
+      background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.012));
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      border: 1px solid rgba(255,255,255,0.07);
+    }
+    .glass-tight {
+      background: rgba(255,255,255,0.025);
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .glow-emerald { box-shadow: 0 0 0 1px rgba(16,185,129,0.25), 0 0 24px -6px rgba(16,185,129,0.35); }
+    .glow-rose { box-shadow: 0 0 0 1px rgba(244,63,94,0.25), 0 0 24px -6px rgba(244,63,94,0.35); }
+    .glow-amber { box-shadow: 0 0 0 1px rgba(245,158,11,0.25), 0 0 24px -6px rgba(245,158,11,0.35); }
+    .glow-blue { box-shadow: 0 0 0 1px rgba(59,130,246,0.25), 0 0 24px -6px rgba(59,130,246,0.35); }
+
+    .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 999px; }
+    .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+
+    .tab-btn { position: relative; }
+    .tab-btn[data-active="true"] { color: #fff; }
+    .tab-btn[data-active="true"]::after {
+      content: '';
+      position: absolute;
+      left: 0; right: 0; bottom: -1px;
+      height: 2px;
+      background: linear-gradient(90deg, #3b82f6, #10b981);
+      border-radius: 2px;
+    }
+    .tab-panel { display: none; }
+    .tab-panel[data-active="true"] { display: block; animation: fadein .18s ease; }
+    @keyframes fadein { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
+
+    .timeline-track { position: relative; }
+    .timeline-track::before {
+      content: '';
+      position: absolute;
+      left: 9px; top: 4px; bottom: 4px;
+      width: 1px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.14), rgba(255,255,255,0.02));
+    }
+    @media (min-width: 640px) {
+      .timeline-track-h::before { display:none; }
+    }
+
+    #adv-settings { max-height: 0; overflow: hidden; transition: max-height .28s ease; }
+    #adv-settings[data-open="true"] { max-height: 480px; }
+
+    #ctl-toast {
+      transition: opacity .25s ease, transform .25s ease;
+    }
+  </style>
+</head>
+<body class="bg-transparent text-gray-100 font-sans antialiased flex flex-col min-h-screen relative">
+
+  <!-- HEADER -->
+  <header class="sticky top-0 z-40 glass border-b border-white/5 px-4 sm:px-6 py-3 flex items-center justify-between backdrop-blur-xl">
+    <div class="flex items-center gap-4 min-w-0">
+      <a href="/dashboard" class="text-gray-400 hover:text-white transition flex items-center gap-1 text-sm shrink-0">
+        <i data-lucide="chevron-left" class="w-4 h-4"></i><span class="hidden sm:inline">Dashboard</span>
+      </a>
+      <div class="w-px h-6 bg-white/10 hidden sm:block"></div>
+      <h1 class="text-lg sm:text-xl font-display font-semibold tracking-tight text-white flex items-center gap-2 min-w-0">
+        <span class="truncate"><%= bot.name %></span>
+        <span class="text-[11px] shrink-0 bg-blue-500/10 text-blue-400 border border-blue-500/25 px-2 py-0.5 rounded-md font-mono"><%= bot.modelId %></span>
+      </h1>
+    </div>
+    <div class="flex items-center gap-3 sm:gap-6 text-sm">
+      <div class="hidden md:flex items-center gap-6">
+        <div>
+          <span class="text-gray-500 text-xs">Pair</span>
+          <div class="font-semibold text-gray-200 font-mono"><%= bot.symbol || bot.tradingPair || 'N/A' %></div>
+        </div>
+        <div>
+          <span class="text-gray-500 text-xs">Mode</span>
+          <div class="font-semibold text-gray-200 uppercase"><%= bot.environment || bot.tradingMode || 'N/A' %></div>
+        </div>
+        <div>
+          <span class="text-gray-500 text-xs">Capital</span>
+          <div class="font-semibold font-mono text-emerald-400">$<%= Number(bot.capitalAllocation || bot.capital || 0).toLocaleString() %></div>
+        </div>
+      </div>
+      <span id="bot-status-badge" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold <%= bot.status === 'RUNNING' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-amber-950 text-amber-400 border border-amber-800' %>">
+        <span class="w-1.5 h-1.5 rounded-full <%= bot.status === 'RUNNING' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400' %>"></span>
+        <%= bot.status %>
+      </span>
+    </div>
+  </header>
+
+  <!-- MAIN -->
+  <main class="relative z-10 flex-1 p-3 sm:p-4 max-w-[1920px] mx-auto w-full space-y-4">
+
+    <!-- ================= SECTION 1: HERO ================= -->
+    <div class="grid grid-cols-12 gap-4">
+
+      <!-- LEFT 70%: CHART + TIMELINE -->
+      <section class="col-span-12 lg:col-span-8 xl:col-span-9 flex flex-col gap-4">
+        <div class="glass rounded-2xl flex flex-col min-h-[520px] overflow-hidden">
+          <div class="px-4 py-3 border-b border-white/5 flex justify-between items-center bg-black/10 text-xs">
+            <span class="font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+              <i data-lucide="candlestick-chart" class="w-3.5 h-3.5 text-blue-400"></i> Live Chart &amp; Active Overlays
+            </span>
+            <div class="flex items-center gap-4">
+              <div class="hidden sm:flex items-center gap-3 font-mono text-[11px] text-gray-400">
+                <span>24h <span id="market-change">--</span></span>
+                <span class="w-px h-3 bg-white/10"></span>
+                <span>Spread <span id="market-spread">--</span></span>
+              </div>
+              <div id="chart-connection-status" class="flex items-center gap-1.5 text-emerald-400">
+                <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Dynamic Stream Active
+              </div>
+            </div>
+          </div>
+          <div class="w-full flex-1 min-h-[460px] relative">
+            <div id="bot-chart-container" class="w-full h-full"></div>
+            <div id="bot-chart-state" class="absolute inset-0 flex items-center justify-center text-xs text-gray-500 font-mono pointer-events-none">
+              Loading market candles...
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Trade Timeline -->
+        <div class="glass rounded-2xl p-4">
+          <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+            <i data-lucide="git-commit-horizontal" class="w-3.5 h-3.5"></i> Live Trade Story
+          </h2>
+          <!-- NOVA TRADE -- PART 15 PHASE B/STEP 5: sourced from real
+               StrategyEvent (DECISION) + Trade + Position data (see
+               utils/tradeStory.js), instead of the legacy Signal
+               collection, which has had zero writers since Part 7. New
+               steps are also prepended live from position:opened,
+               position:closed, trade:created, risk:rejected, and
+               trade:rejected -- see public/js/bot-detail-ws.js. -->
+          <div id="trade-timeline" class="timeline-track sm:timeline-track-h flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-0 pl-6 sm:pl-0 text-xs font-mono">
+            <%
+              var toneClass = {
+                buy: 'bg-emerald-400', sell: 'bg-rose-400',
+                profit: 'bg-emerald-400', loss: 'bg-rose-400',
+                reject: 'bg-amber-400',
+              };
+              var storySteps = (typeof initialTradeStory !== 'undefined' && initialTradeStory) ? initialTradeStory : [];
+            %>
+            <% if (storySteps.length) { %>
+              <% storySteps.forEach(function(step, i) { %>
+                <div class="relative flex items-center gap-2 sm:flex-1">
+                  <span class="w-2.5 h-2.5 rounded-full shrink-0 -ml-6 sm:ml-0 <%= toneClass[step.tone] || 'bg-amber-400' %>"></span>
+                  <div class="glass-tight rounded-lg px-3 py-2 flex-1">
+                    <div class="text-gray-200 font-semibold"><%= step.label %></div>
+                    <div class="text-gray-500 text-[10px] truncate max-w-[160px]"><%= step.detail %></div>
+                  </div>
+                  <% if (i < storySteps.length - 1) { %>
+                    <i data-lucide="chevron-right" class="hidden sm:block w-4 h-4 text-gray-600 shrink-0"></i>
+                  <% } %>
+                </div>
+              <% }) %>
+            <% } else { %>
+              <div class="text-gray-500 italic py-2">No executed trades yet.</div>
+            <% } %>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT 30%: STATUS CARDS -->
+      <section class="col-span-12 lg:col-span-4 xl:col-span-3 flex flex-col gap-4">
+
+        <!-- Decision Engine (Status + Current Decision + Why) -->
+        <div class="glass rounded-2xl p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-2">
+              <i data-lucide="brain-circuit" class="w-3.5 h-3.5"></i> Bot Decision Engine
+            </h2>
+            <div class="flex items-center gap-3">
+
+  <span id="decision-last-update"
+        class="text-[10px] text-gray-500 font-mono">
+    Waiting for engine...
+  </span>
+
+  <span id="stat-bot-health"
+        class="inline-flex items-center gap-1 text-[10px] <%
+          var srClass = 'text-emerald-400';
+          var srLabel = 'Monitoring';
+          if (typeof strategyReadiness !== 'undefined' && strategyReadiness) {
+            if (strategyReadiness.state === 'HYDRATING') { srClass = 'text-blue-400'; srLabel = 'Hydrating history'; }
+            else if (strategyReadiness.state === 'BACKFILLING') { srClass = 'text-blue-400'; srLabel = 'Loading market history...'; }
+            else if (strategyReadiness.state === 'INSUFFICIENT_HISTORY') { srClass = 'text-amber-400'; srLabel = (strategyReadiness.have || 0) + ' / ' + (strategyReadiness.required || 0) + ' candles'; }
+            else if (strategyReadiness.state === 'ERROR') { srClass = 'text-rose-400'; srLabel = 'Strategy error'; }
+            else if (strategyReadiness.state === 'NOT_RUNNING') { srClass = 'text-gray-400'; srLabel = 'Not running'; }
+          }
+        %><%= srClass %>">
+    <i data-lucide="heart-pulse" class="w-3 h-3"></i>
+    <%= srLabel %>
+  </span>
+
+</div>
+          </div>
+          <div id="thinking-container" class="flex flex-col gap-3">
+            <div id="thinking-checks" class="space-y-2 text-xs">
+              <div class="text-gray-500 italic">Awaiting decision frame...</div>
+            </div>
+            <div class="glow-blue p-3 bg-black/30 border border-white/5 rounded-xl">
+              <div class="text-[10px] text-gray-400 font-semibold mb-1 uppercase tracking-wide">Final Decision</div>
+              <div id="thinking-decision" class="text-2xl font-display font-bold text-blue-400 uppercase leading-none mb-2">--</div>
+              <p id="thinking-reason" class="text-xs text-gray-300 leading-relaxed font-mono">Initializing execution context...</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Stat Grid -->
+        <div class="grid grid-cols-2 gap-3">
+          <div class="glass-tight rounded-xl p-3">
+            <div class="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Current PnL</div>
+            <div id="pos-pnl-mirror" class="text-sm font-bold font-mono text-gray-200">
+              <% if (typeof currentPosition !== 'undefined' && currentPosition) { %>
+                <span class="<%= currentPosition.unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400' %>">$<%= currentPosition.unrealizedPnl.toFixed(2) %></span>
+              <% } else { %>--<% } %>
+            </div>
+          </div>
+          <div class="glass-tight rounded-xl p-3">
+            <div class="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Today's Profit</div>
+            <!-- NOVA TRADE -- PART 9: real realized PnL for trades closed
+                 today (server-local day boundary), computed in
+                 controllers/botController.js via utils/performance.js.
+                 Deliberately NOT the same value as the Performance tab's
+                 all-time "Total Profit" -- the two used to be conflated via
+                 a DOM mirror; that mirror has been removed. -->
+            <div id="stat-today-profit" class="text-sm font-bold font-mono <%= (typeof performanceData !== 'undefined' && performanceData && performanceData.todayProfit >= 0) ? 'text-emerald-400' : 'text-rose-400' %>">
+              $<%= typeof performanceData !== 'undefined' && performanceData ? performanceData.todayProfit.toFixed(2) : '0.00' %>
+            </div>
+          </div>
+          <div class="glass-tight rounded-xl p-3">
+            <div class="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Win Rate</div>
+            <div class="text-sm font-bold font-mono text-emerald-400"><span id="perf-winrate-mirror"><%= (typeof performanceData !== 'undefined' && performanceData && performanceData.winRate != null) ? performanceData.winRate.toFixed(1) + '%' : '--' %></span></div>
+          </div>
+          <div class="glass-tight rounded-xl p-3">
+            <div class="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Current Price</div>
+            <div class="text-sm font-bold font-mono text-white" id="market-price">--</div>
+          </div>
+          <div class="glass-tight rounded-xl p-3">
+            <div class="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Next Candle</div>
+            <div class="text-sm font-bold font-mono text-gray-200" id="stat-next-candle">--</div>
+          </div>
+          <div class="glass-tight rounded-xl p-3">
+            <div class="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Market</div>
+            <div class="text-sm font-bold text-gray-200" id="stat-market-condition">--</div>
+          </div>
+        </div>
+
+        <!-- Current Position Card -->
+        <div class="glass rounded-2xl p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-2">
+              <i data-lucide="layers" class="w-3.5 h-3.5"></i> Current Position
+            </h2>
+            <span id="stat-last-signal" class="text-[10px] text-gray-500 font-mono truncate max-w-[110px]">
+              <% if (typeof initialSignals !== 'undefined' && initialSignals && initialSignals.length) { %>
+                <%= initialSignals[0].type %> (<%= initialSignals[0].decision %>)
+              <% } else { %>--<% } %>
+            </span>
+          </div>
+          <!-- NOVA TRADE -- PART 9: sourced exclusively from an
+               authoritative, OPEN Position document for this instance
+               (controllers/botController.js), never from the legacy
+               BotEngineManager runtime. Only fields that actually exist on
+               the Position schema are rendered; there is no invented
+               fallback. -->
+          <div id="position-card-content" class="space-y-3 text-sm">
+            <% if (typeof currentPosition !== 'undefined' && currentPosition) { %>
+              <div class="flex justify-between items-center">
+                <span class="text-gray-400">Side</span>
+                <span class="font-bold <%= currentPosition.side === 'LONG' ? 'text-emerald-400' : 'text-rose-400' %>"><%= currentPosition.side %> <%= currentPosition.leverage %>x</span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-gray-400">Symbol</span>
+                <span class="font-mono"><%= currentPosition.symbol %></span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-gray-400">Quantity</span>
+                <span class="font-mono"><%= currentPosition.quantity %></span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-gray-400">Entry Price</span>
+                <span class="font-mono">$<%= currentPosition.entryPrice %></span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-gray-400">Current Price</span>
+                <span id="pos-current-price" class="font-mono">$<%= currentPosition.currentPrice %></span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-gray-400">Unrealized PnL</span>
+                <span id="pos-pnl" class="font-mono font-bold <%= currentPosition.unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400' %>">
+                  $<%= currentPosition.unrealizedPnl.toFixed(2) %><%= currentPosition.pnlPct != null ? ` (${currentPosition.pnlPct.toFixed(2)}%)` : '' %>
+                </span>
+              </div>
+              <div class="grid grid-cols-2 gap-2 text-xs pt-2 border-t border-white/5">
+                <div><span class="text-gray-500">TP:</span> <span class="font-mono text-emerald-400"><%= currentPosition.takeProfit != null ? `$${currentPosition.takeProfit}` : 'N/A' %></span></div>
+                <div><span class="text-gray-500">SL:</span> <span class="font-mono text-rose-400"><%= currentPosition.stopLoss != null ? `$${currentPosition.stopLoss}` : 'N/A' %></span></div>
+              </div>
+              <div class="text-[10px] text-gray-500 pt-1">Opened <%= currentPosition.openedAt ? new Date(currentPosition.openedAt).toLocaleString() : 'N/A' %></div>
+            <% } else { %>
+              <div id="position-card-empty" class="text-center py-6 text-gray-500 italic flex flex-col items-center gap-2">
+                <i data-lucide="circle-slash" class="w-5 h-5"></i>
+                No Active Open Position
+              </div>
+            <% } %>
+          </div>
+        </div>
+
+      </section>
+    </div>
+
+    <!-- ================= SECTION 2: CONTROL CENTER ================= -->
+    <section id="control-center" class="glass rounded-2xl p-4">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-2">
+          <i data-lucide="sliders-horizontal" class="w-3.5 h-3.5"></i> Control Center
+        </h2>
+        <span id="ctl-toast" class="text-[11px] text-gray-500 opacity-0"></span>
+      </div>
+
+      <div class="flex flex-col xl:flex-row gap-4">
+        <!-- Run controls -->
+        <div class="flex flex-wrap items-center gap-2">
+          <button id="ctl-start-btn" data-action="start" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20 transition disabled:opacity-50 disabled:pointer-events-none">
+            <i data-lucide="play" class="w-3.5 h-3.5"></i> Start
+          </button>
+          <button id="ctl-pause-btn" data-action="pause" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/25 hover:bg-amber-500/20 transition disabled:opacity-50 disabled:pointer-events-none">
+            <i data-lucide="pause" class="w-3.5 h-3.5"></i> Pause
+          </button>
+          <button id="ctl-stop-btn" data-action="stop" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/25 hover:bg-rose-500/20 transition disabled:opacity-50 disabled:pointer-events-none">
+            <i data-lucide="square" class="w-3.5 h-3.5"></i> Stop
+          </button>
+          <div class="w-px h-8 bg-white/10 mx-1 hidden sm:block"></div>
+          <span class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-white/5 border border-white/10 text-gray-300 uppercase">
+            <i data-lucide="shield" class="w-3.5 h-3.5"></i> <%= bot.environment || bot.tradingMode || 'PAPER' %>
+          </span>
+        </div>
+
+        <div class="w-px bg-white/10 hidden xl:block"></div>
+
+        <!-- Editable parameters -->
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 flex-1">
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Capital</label>
+            <input id="ctl-capital" type="text" value="<%= Number(bot.capitalAllocation || bot.capital || 0).toLocaleString() %>" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50">
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Risk %</label>
+            <input id="ctl-risk" type="text" value="<%= (bot.parameters && bot.parameters.riskPct != null) ? bot.parameters.riskPct : '' %>" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50">
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Leverage</label>
+            <input id="ctl-leverage" type="text" value="<%= (typeof currentPosition !== 'undefined' && currentPosition) ? currentPosition.leverage : (bot.leverage || '') %>" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50">
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Strategy</label>
+            <input id="ctl-strategy" type="text" value="<%= bot.modelId || '' %>" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50" readonly>
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Symbol</label>
+            <input id="ctl-symbol" type="text" value="<%= bot.symbol || bot.tradingPair || '' %>" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50" readonly>
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Timeframe</label>
+            <input id="ctl-timeframe" type="text" placeholder="--" value="<%= (bot.parameters && bot.parameters.timeframe) || '' %>" <%= bot.status === 'RUNNING' ? 'readonly title="Pause or stop the bot to change timeframe"' : '' %> class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50 <%= bot.status === 'RUNNING' ? 'opacity-60 cursor-not-allowed' : '' %>">
+          </div>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-2 mt-4 pt-4 border-t border-white/5">
+        <button onclick="toggleAdvancedSettings()" class="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition">
+          <i data-lucide="chevron-down" id="adv-chevron" class="w-3.5 h-3.5 transition-transform"></i> Advanced Settings
+        </button>
+        <div class="flex items-center gap-2">
+          <button id="ctl-restart-btn" data-action="restart" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 transition disabled:opacity-50 disabled:pointer-events-none">
+            <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i> Restart Bot
+          </button>
+          <button id="ctl-save-btn" data-action="save" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-500/10 border border-blue-500/25 text-blue-400 hover:bg-blue-500/20 transition disabled:opacity-50 disabled:pointer-events-none">
+            <i data-lucide="save" class="w-3.5 h-3.5"></i> Save Configuration
+          </button>
+        </div>
+      </div>
+
+      <div id="adv-settings" data-open="false">
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4">
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">EMA Length</label>
+            <input id="ctl-ema-length" type="text" value="<%= (bot.parameters && bot.parameters.emaLength != null) ? bot.parameters.emaLength : '' %>" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50">
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Breakout Lookback</label>
+            <input id="ctl-breakout-lookback" type="text" value="<%= (bot.parameters && bot.parameters.breakoutLookback != null) ? bot.parameters.breakoutLookback : '' %>" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50">
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Body Ratio</label>
+            <input id="ctl-body-ratio" type="text" value="<%= (bot.parameters && bot.parameters.minBodyRatio != null) ? bot.parameters.minBodyRatio : '' %>" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50">
+          </div>
+        </div>
+
+        <!-- PART 13 -- PHASE D/P/Q: canonical Top/Bottom Level, Target
+             Levels, and Sizing Mode. Strategy-sensitive, so locked to
+             read-only while the bot is RUNNING (matches Timeframe above) —
+             pause or stop to edit, matching BotManager.updateConfiguration. -->
+        <% var ctlRunningLocked = bot.status === 'RUNNING'; %>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3">
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Top Level</label>
+            <input id="ctl-top-level" type="text" value="<%= (bot.levels && bot.levels.top != null) ? bot.levels.top : ((bot.parameters && bot.parameters.topLevel != null) ? bot.parameters.topLevel : '') %>" <%= ctlRunningLocked ? 'readonly title="Pause or stop the bot to change levels"' : '' %> class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50 <%= ctlRunningLocked ? 'opacity-60 cursor-not-allowed' : '' %>">
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Bottom Level</label>
+            <input id="ctl-bottom-level" type="text" value="<%= (bot.levels && bot.levels.bottom != null) ? bot.levels.bottom : ((bot.parameters && bot.parameters.bottomLevel != null) ? bot.parameters.bottomLevel : '') %>" <%= ctlRunningLocked ? 'readonly title="Pause or stop the bot to change levels"' : '' %> class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50 <%= ctlRunningLocked ? 'opacity-60 cursor-not-allowed' : '' %>">
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Target Levels</label>
+            <input id="ctl-targets" type="text" placeholder="e.g. 65000, 66000" value="<%= (bot.targets || []).map(function(t){ return t.price; }).join(', ') %>" <%= ctlRunningLocked ? 'readonly title="Pause or stop the bot to change targets"' : '' %> class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50 <%= ctlRunningLocked ? 'opacity-60 cursor-not-allowed' : '' %>">
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Sizing Mode</label>
+            <select id="ctl-sizing-mode" <%= ctlRunningLocked ? 'disabled title="Pause or stop the bot to change sizing mode"' : '' %> class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50 <%= ctlRunningLocked ? 'opacity-60 cursor-not-allowed' : '' %>">
+              <option value="CAPITAL" <%= (!bot.sizing || bot.sizing.mode === 'CAPITAL') ? 'selected' : '' %>>Capital-based</option>
+              <option value="LOT" <%= (bot.sizing && bot.sizing.mode === 'LOT') ? 'selected' : '' %>>Lot / Contract</option>
+            </select>
+          </div>
+          <div id="ctl-lot-value-field" style="<%= (bot.sizing && bot.sizing.mode === 'LOT') ? '' : 'display:none;' %>">
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Lot / Contract Quantity</label>
+            <input id="ctl-lot-value" type="text" value="<%= (bot.sizing && bot.sizing.value != null) ? bot.sizing.value : '' %>" <%= ctlRunningLocked ? 'readonly' : '' %> class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50 <%= ctlRunningLocked ? 'opacity-60 cursor-not-allowed' : '' %>">
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= SECTION 3: DETAILED TABS ================= -->
+    <section class="glass rounded-2xl overflow-hidden">
+      <div class="flex items-center gap-1 px-2 sm:px-4 border-b border-white/5 overflow-x-auto scrollbar-thin">
+        <button class="tab-btn" data-tab="performance" data-active="true" onclick="switchTab('performance')">
+          <span class="flex items-center gap-1.5 px-3 sm:px-4 py-3 text-xs font-semibold text-gray-400 whitespace-nowrap"><i data-lucide="trending-up" class="w-3.5 h-3.5"></i> Performance</span>
+        </button>
+        <button class="tab-btn" data-tab="trades" data-active="false" onclick="switchTab('trades')">
+          <span class="flex items-center gap-1.5 px-3 sm:px-4 py-3 text-xs font-semibold text-gray-400 whitespace-nowrap"><i data-lucide="list-ordered" class="w-3.5 h-3.5"></i> Trade History</span>
+        </button>
+        <button class="tab-btn" data-tab="decisions" data-active="false" onclick="switchTab('decisions')">
+          <span class="flex items-center gap-1.5 px-3 sm:px-4 py-3 text-xs font-semibold text-gray-400 whitespace-nowrap"><i data-lucide="git-branch" class="w-3.5 h-3.5"></i> Decision History</span>
+        </button>
+        <button class="tab-btn" data-tab="indicators" data-active="false" onclick="switchTab('indicators')">
+          <span class="flex items-center gap-1.5 px-3 sm:px-4 py-3 text-xs font-semibold text-gray-400 whitespace-nowrap"><i data-lucide="activity" class="w-3.5 h-3.5"></i> Indicators</span>
+        </button>
+        <button class="tab-btn" data-tab="logs" data-active="false" onclick="switchTab('logs')">
+          <span class="flex items-center gap-1.5 px-3 sm:px-4 py-3 text-xs font-semibold text-gray-400 whitespace-nowrap"><i data-lucide="terminal" class="w-3.5 h-3.5"></i> Logs</span>
+        </button>
+        <button class="tab-btn" data-tab="system" data-active="false" onclick="switchTab('system')">
+          <span class="flex items-center gap-1.5 px-3 sm:px-4 py-3 text-xs font-semibold text-gray-400 whitespace-nowrap"><i data-lucide="cpu" class="w-3.5 h-3.5"></i> System</span>
+        </button>
+      </div>
+
+      <div class="p-4">
+
+        <!-- PERFORMANCE TAB -->
+        <!-- NOVA TRADE -- PART 9: every metric below is computed server-side
+             in controllers/botController.js from real, closed Trade
+             documents (utils/performance.js) -- never from initialTrades'
+             length/filter (which was both wrong, using a non-existent
+             `pnl` field, and incomplete, since initialTrades is capped at
+             50 for the Trade History tab). Zero-trade states render "--",
+             never an invalid numeric string.
+             PART 14 -- PHASE H: Max Drawdown is now computed from the same
+             real closed-Trade history (utils/performance.js,
+             computeMaxDrawdown) -- no longer a hardcoded "N/A". Equity
+             Curve stays unimplemented (no persisted equity-curve series
+             yet, and rendering one is a chart-visualization feature, not a
+             computable stat -- out of scope for this part). -->
+        <div class="tab-panel" data-tab="performance" data-active="true">
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Total Profit</div>
+              <div id="perf-total-pnl" class="text-lg font-bold font-mono <%= (typeof performanceData !== 'undefined' && performanceData && performanceData.totalProfit >= 0) ? 'text-emerald-400' : 'text-rose-400' %> mt-1">$<%= typeof performanceData !== 'undefined' && performanceData ? performanceData.totalProfit.toFixed(2) : '0.00' %></div>
+            </div>
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Win Rate</div>
+              <div id="perf-winrate" class="text-lg font-bold font-mono text-emerald-400 mt-1"><%= (typeof performanceData !== 'undefined' && performanceData && performanceData.winRate != null) ? performanceData.winRate.toFixed(1) + '%' : '--' %></div>
+            </div>
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Profit Factor</div>
+              <div id="perf-profit-factor" class="text-lg font-bold font-mono text-gray-200 mt-1"><%
+                var pf = typeof performanceData !== 'undefined' && performanceData ? performanceData.profitFactor : null;
+                if (pf == null) { %>--<% } else if (pf === Infinity) { %>&#8734;<% } else { %><%= pf.toFixed(2) %><% } %></div>
+            </div>
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Max Drawdown</div>
+              <div id="perf-drawdown" class="text-lg font-bold font-mono text-rose-400 mt-1">$<%= (typeof performanceData !== 'undefined' && performanceData && Number.isFinite(performanceData.maxDrawdown)) ? performanceData.maxDrawdown.toFixed(2) : '0.00' %></div>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-3 mb-4">
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Total Trades</div>
+              <div id="perf-total-trades" class="text-sm font-bold font-mono text-gray-200 mt-1"><%= typeof performanceData !== 'undefined' && performanceData ? performanceData.totalTrades : '--' %></div>
+            </div>
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Winning Trades</div>
+              <div id="perf-winning-trades" class="text-sm font-bold font-mono text-emerald-400 mt-1"><%= typeof performanceData !== 'undefined' && performanceData ? performanceData.winningTrades : '--' %></div>
+            </div>
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Losing Trades</div>
+              <div id="perf-losing-trades" class="text-sm font-bold font-mono text-rose-400 mt-1"><%= typeof performanceData !== 'undefined' && performanceData ? performanceData.losingTrades : '--' %></div>
+            </div>
+          </div>
+          <div class="glass-tight rounded-xl p-4">
+            <div class="text-[10px] text-gray-500 uppercase mb-2">Equity Curve</div>
+            <div id="equity-curve-container" class="h-32 flex items-center justify-center text-gray-600 text-xs italic border border-dashed border-white/10 rounded-lg">
+              Equity curve renders once historical balance data is wired in
+            </div>
+          </div>
+        </div>
+
+        <!-- TRADE HISTORY TAB -->
+        <div class="tab-panel" data-tab="trades" data-active="false">
+          <div class="overflow-x-auto scrollbar-thin">
+            <table class="w-full text-left text-xs">
+              <thead class="text-gray-500 border-b border-white/5 uppercase font-mono">
+                <tr>
+                  <th class="pb-2 pr-3">Side</th>
+                  <th class="pb-2 pr-3">Entry</th>
+                  <th class="pb-2 pr-3">Exit</th>
+                  <th class="pb-2 pr-3">PnL</th>
+                  <th class="pb-2">Reason</th>
+                </tr>
+              </thead>
+              <!-- NOVA TRADE -- PART 9: rows are real Trade documents
+                   (models/Trade.js: side is LONG/SHORT, realizedPnl/reason
+                   are the actual field names -- there is no `pnl` or
+                   `closeReason` field on Trade, those belong to Position).
+                   A Trade only exists once a position has fully closed, so
+                   there is no "OPEN" fallback state here anymore. -->
+              <tbody id="trade-history-body" class="divide-y divide-white/5 font-mono">
+                <% if (initialTrades.length) { %>
+                  <% initialTrades.forEach(trade => { %>
+                    <tr class="hover:bg-white/[0.03] transition">
+                      <td class="py-2.5 pr-3 font-bold <%= trade.side === 'LONG' ? 'text-emerald-400' : 'text-rose-400' %>"><%= trade.side %></td>
+                      <td class="py-2.5 pr-3">$<%= trade.entryPrice %></td>
+                      <td class="py-2.5 pr-3">$<%= trade.exitPrice %></td>
+                      <td class="py-2.5 pr-3 font-bold <%= trade.realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400' %>">$<%= trade.realizedPnl.toFixed(2) %></td>
+                      <td class="py-2.5 text-gray-400 text-[10px]"><%= trade.reason || 'N/A' %></td>
+                    </tr>
+                  <% }) %>
+                <% } else { %>
+                  <tr><td colspan="5" class="py-6 text-center text-gray-500 italic">No trades yet</td></tr>
+                <% } %>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- DECISION HISTORY TAB -->
+        <!-- NOVA TRADE -- PART 8: sourced from real StrategyEvent DECISION
+             records (MODEL_001 via BotManager) instead of the legacy Signal
+             collection, which has had zero writers since Part 7. New rows
+             are also prepended live from bot:decision — see
+             public/js/bot-detail-ws.js. -->
+        <div class="tab-panel" data-tab="decisions" data-active="false">
+          <div class="max-h-[420px] overflow-y-auto scrollbar-thin space-y-1 font-mono text-[11px]" id="signal-history-container">
+            <% if (typeof initialDecisions !== 'undefined' && initialDecisions && initialDecisions.length) { %>
+              <% initialDecisions.forEach(function(ev) { var d = ev.payload || {}; %>
+                <div class="flex justify-between items-center py-2 px-2 rounded-lg hover:bg-white/[0.03] border-b border-white/5">
+                  <span class="text-gray-500 shrink-0"><%= new Date(ev.at).toLocaleTimeString() %></span>
+                  <span class="font-bold <%= d.decision === 'BUY' ? 'text-emerald-400' : d.decision === 'SELL' ? 'text-rose-400' : 'text-amber-400' %> shrink-0"><%= d.decision || '--' %></span>
+                  <span class="text-gray-400 truncate max-w-[280px] text-right"><%= d.reason || '' %></span>
+                </div>
+              <% }) %>
+            <% } else { %>
+              <div class="text-gray-500 italic py-2">No decisions recorded yet — this bot hasn't evaluated a closed candle.</div>
+            <% } %>
+          </div>
+        </div>
+
+        <!-- INDICATORS TAB -->
+        <div class="tab-panel" data-tab="indicators" data-active="false">
+          <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">EMA Length</div>
+              <div class="text-sm font-bold font-mono text-gray-200 mt-1"><%= bot.config ? bot.config.emaLength : '--' %></div>
+            </div>
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Breakout Lookback</div>
+              <div class="text-sm font-bold font-mono text-gray-200 mt-1"><%= bot.config ? bot.config.breakoutLookback : '--' %></div>
+            </div>
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Body Ratio</div>
+              <div class="text-sm font-bold font-mono text-gray-200 mt-1"><%= bot.config ? bot.config.minBodyRatio : '--' %></div>
+            </div>
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">ATR</div>
+              <div id="market-atr" class="text-sm font-bold font-mono text-gray-200 mt-1">--</div>
+            </div>
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Layers Auto</div>
+              <div class="text-sm font-bold font-mono mt-1 <%= bot.config && bot.config.autoLayers ? 'text-emerald-400' : 'text-gray-400' %>"><%= bot.config && bot.config.autoLayers ? 'ON' : 'OFF' %></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- LOGS TAB -->
+        <div class="tab-panel" data-tab="logs" data-active="false">
+          <div class="flex items-center gap-2 mb-3 text-[10px] font-mono">
+            <span class="text-gray-500 uppercase mr-1">Filter:</span>
+            <button class="log-filter-btn px-2 py-1 rounded bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10" data-filter="ALL">ALL</button>
+            <button class="log-filter-btn px-2 py-1 rounded bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10" data-filter="SYSTEM">SYSTEM</button>
+            <button class="log-filter-btn px-2 py-1 rounded bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10" data-filter="ORDER">ORDER</button>
+            <button class="log-filter-btn px-2 py-1 rounded bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10" data-filter="BOT">BOT</button>
+            <button class="log-filter-btn px-2 py-1 rounded bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10" data-filter="ERROR">ERROR</button>
+            <button class="log-filter-btn px-2 py-1 rounded bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10" data-filter="MARKET">MARKET</button>
+          </div>
+          <div id="log-terminal" class="bg-black/30 border border-white/10 rounded-xl p-3 font-mono text-[11px] text-gray-300 overflow-y-auto max-h-[320px] space-y-1 scrollbar-thin">
+            <div class="text-gray-600">[SYSTEM] Terminal initialized. Subscribed to instance logs...</div>
+          </div>
+        </div>
+
+        <!-- SYSTEM TAB -->
+        <div class="tab-panel" data-tab="system" data-active="false">
+          <div id="health-grid" class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-3 text-center text-xs">
+            <!-- Subsystem indicators dynamically hydrated -->
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <!-- POPUP MODAL FOR CLICKABLE OVERLAYS -->
+  <div id="overlay-modal" class="fixed inset-0 bg-black/75 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
+    <div class="glass rounded-2xl max-w-md w-full p-6 space-y-4">
+      <div class="flex justify-between items-center border-b border-white/10 pb-3">
+        <h3 id="modal-title" class="text-sm font-bold text-white uppercase tracking-wider">Overlay Context</h3>
+        <button onclick="closeOverlayModal()" class="text-gray-500 hover:text-white">✕</button>
+      </div>
+      <div id="modal-body" class="space-y-2 text-xs font-mono"></div>
+      <div class="pt-3 border-t border-white/10 flex justify-end">
+        <button onclick="closeOverlayModal()" class="px-4 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs rounded-lg transition">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- INLINE DATA BOOTSTRAP -->
+ <!-- Place this script in views/bot-detail.ejs BEFORE loading bot-detail-ws.js -->
+<script>
+  window.BOT_CONFIG = {
+  instanceId: "<%= bot.instanceId || bot._id %>",
+  modelId: "<%= bot.modelId || 'MODEL_001' %>",
+  pair: "<%= bot.symbol || bot.tradingPair || 'BTCUSD' %>",
+  // PART 11 — PHASE N/X: the backend-authoritative lifecycle status at
+  // page-load time, used to drive the Control Center button state machine
+  // (see applyButtonStateForStatus below) so Start/Pause/Stop/Restart never
+  // start out in a state that contradicts what the backend actually thinks
+  // is happening (e.g. Start enabled while already RUNNING).
+  status: "<%= bot.status || 'STOPPED' %>",
+  // NOVA TRADE -- PART 10: the bot's own candle timeframe, reused (not
+  // re-derived) so execution markers anchor to the same candles the chart
+  // already loaded from /api/bot-instances/:instanceId/candles.
+  // PART 13.1 -- PHASE D: the Part 12.2 "'5m' matches real runtime state"
+  // justification that used to live here is no longer true and has been
+  // removed. BotManager.createInstance now writes an explicit timeframe
+  // into `parameters` for every NEW bot (a deliberate creation-time
+  // default, chosen once), and Model001.onStart / validateAndMergeParameters
+  // now THROW rather than default when an existing instance's timeframe is
+  // missing -- so a bot that reaches this page with no persisted
+  // parameters.timeframe genuinely has no working timeframe, and cannot
+  // actually be running on 5m candles. Emitting '' here (rendered as "--"
+  // by the client, see bot-detail-ws.js/bot-detail-chart.js) is the honest
+  // value; a stored-but-invalid timeframe still fails loudly elsewhere.
+  timeframe: "<%= (bot.parameters && bot.parameters.timeframe) || '' %>",
+  // PART 13 -- PHASE T: canonical configured levels/targets, for the chart
+  // overlay sync below. These are CONFIGURATION overlays (horizontal
+  // reference lines), never confused with BUY/SELL/EXIT execution markers.
+  levels: {
+    top: <%- (bot.levels && bot.levels.top != null) ? bot.levels.top : ((bot.parameters && bot.parameters.topLevel != null) ? bot.parameters.topLevel : 'null') %>,
+    bottom: <%- (bot.levels && bot.levels.bottom != null) ? bot.levels.bottom : ((bot.parameters && bot.parameters.bottomLevel != null) ? bot.parameters.bottomLevel : 'null') %>
+  },
+  targets: <%- JSON.stringify((bot.targets || []).map(function(t){ return t.price; })) %>
+};
+  // NOVA TRADE -- PART 8: the real MODEL_001 decision (StrategyEvent,
+  // eventType 'DECISION') loaded server-side in controllers/botController.js.
+  // bot-detail-ws.js renders this immediately on page load so the Decision
+  // Engine panel shows the bot's last real decision without waiting for the
+  // next closed candle. Null when the bot has never produced a decision yet.
+  window.BOT_INITIAL_DECISION = <%- JSON.stringify(typeof initialDecision !== 'undefined' && initialDecision ? initialDecision.payload : null) %>;
+
+  // NOVA TRADE -- PART 9: authoritative execution-state bootstrap.
+  // BOT_INITIAL_POSITION is a real Position document (or null); BOT_PERFORMANCE
+  // is the server-computed performance summary (utils/performance.js). Both
+  // are consumed by bot-detail-ws.js to keep the live bot:execution handler's
+  // incremental updates consistent with what a page refresh would show.
+  window.BOT_INITIAL_POSITION = <%- JSON.stringify(typeof currentPosition !== 'undefined' ? currentPosition : null) %>;
+  window.BOT_PERFORMANCE = <%- JSON.stringify(typeof performanceData !== 'undefined' ? performanceData : null) %>;
+
+  // NOVA TRADE -- PART 10: closed Trade documents, reused as-is from the
+  // same authoritative, instanceId+environment-scoped query already run
+  // for the Trade History tab (controllers/botController.js `initialTrades`)
+  // -- no separate markers endpoint. Consumed by bot-detail-chart.js to
+  // reconstruct real historical BUY/SELL/EXIT markers on page load.
+  window.BOT_INITIAL_TRADES = <%- JSON.stringify(typeof initialTrades !== 'undefined' ? initialTrades : []) %>;
+</script>
+
+<!-- New UI wiring: tabs, control center, mirrors, icons. Does not touch bot-detail-ws.js logic. -->
+<script>
+  function switchTab(name) {
+    document.querySelectorAll('.tab-btn').forEach(function(btn) {
+      btn.setAttribute('data-active', btn.getAttribute('data-tab') === name ? 'true' : 'false');
+    });
+    document.querySelectorAll('.tab-panel').forEach(function(panel) {
+      panel.setAttribute('data-active', panel.getAttribute('data-tab') === name ? 'true' : 'false');
+    });
+  }
+
+  function toggleAdvancedSettings() {
+    var el = document.getElementById('adv-settings');
+    var chevron = document.getElementById('adv-chevron');
+    var open = el.getAttribute('data-open') === 'true';
+    el.setAttribute('data-open', open ? 'false' : 'true');
+    if (chevron) chevron.style.transform = open ? 'rotate(0deg)' : 'rotate(180deg)';
+  }
+
+  // Control Center actions — wired to the real API, same pattern as the
+  // dashboard's bot-card buttons (NovaApi.post to /api/bots/:id/<action>).
+  function showCtlToast(msg, isError) {
+    var toast = document.getElementById('ctl-toast');
+    if (!toast) return;
+    toast.textContent = msg;
+    toast.className = 'text-[11px] transition-opacity ' + (isError ? 'text-rose-400' : 'text-gray-400');
+    toast.style.opacity = '1';
+    clearTimeout(window.__ctlToastTimer);
+    window.__ctlToastTimer = setTimeout(function() { toast.style.opacity = '0'; }, 3200);
+  }
+
+  function collectConfigPayload() {
+    var val = function(id) {
+      var el = document.getElementById(id);
+      return el ? el.value : null;
+    };
+    // PART 13 -- PHASE P/Q: only include levels/targets/sizing in the
+    // payload when the user actually touched them (both level fields
+    // filled, or the targets field non-empty) — an intentionally blank
+    // field must not overwrite an existing saved value with null. These
+    // fields are also disabled/readonly client-side while RUNNING (see the
+    // ctlRunningLocked EJS block above), matching the backend's own guard.
+    var payload = {
+      capital: val('ctl-capital'),
+      riskPct: val('ctl-risk'),
+      leverage: val('ctl-leverage'),
+      timeframe: val('ctl-timeframe'),
+      emaLength: val('ctl-ema-length'),
+      breakoutLookback: val('ctl-breakout-lookback'),
+      minBodyRatio: val('ctl-body-ratio')
+    };
+
+    var topLevel = val('ctl-top-level');
+    var bottomLevel = val('ctl-bottom-level');
+    if (topLevel !== null && topLevel !== '' && bottomLevel !== null && bottomLevel !== '') {
+      payload.levels = { top: Number(topLevel), bottom: Number(bottomLevel) };
+    }
+
+    var targetsRaw = val('ctl-targets');
+    if (targetsRaw !== null && targetsRaw.trim() !== '') {
+      payload.targets = targetsRaw.split(',').map(function(s) { return s.trim(); }).filter(Boolean).map(function(s) { return { price: Number(s) }; });
+    }
+
+    var sizingModeEl = document.getElementById('ctl-sizing-mode');
+    if (sizingModeEl) {
+      var lotValue = val('ctl-lot-value');
+      payload.sizing = sizingModeEl.value === 'LOT'
+        ? { mode: 'LOT', value: Number(lotValue) }
+        : { mode: 'CAPITAL' };
+    }
+
+    return payload;
+  }
+
+  // Falls back to a plain fetch (same endpoint shape) if NovaApi isn't loaded
+  // on this page yet, so the buttons work either way.
+  async function apiPost(url, body) {
+    if (typeof NovaApi !== 'undefined' && NovaApi.post) {
+      return NovaApi.post(url, body);
+    }
+    var res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: body ? JSON.stringify(body) : undefined
+    });
+    var text = await res.text();
+    var parsed;
+    try { parsed = JSON.parse(text); } catch (e) { parsed = text; }
+    if (!res.ok) {
+      var msg = (parsed && (parsed.message || parsed.error)) || ('Request failed: ' + res.status);
+      throw new Error(msg);
+    }
+    return parsed;
+  }
+
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn || !btn.closest('#control-center')) return;
+
+    const action = btn.dataset.action;
+    const instanceId = window.BOT_CONFIG && window.BOT_CONFIG.instanceId;
+    if (!instanceId) {
+      showCtlToast('Missing instance id — cannot reach the API.', true);
+      return;
+    }
+
+    btn.disabled = true;
+    try {
+      switch (action) {
+        case 'start':
+          setPendingStatus('STARTING');
+          await apiPost(`/api/bot-instances/${instanceId}/start`);
+          break;
+        case 'pause':
+          setPendingStatus('PAUSING');
+          await apiPost(`/api/bot-instances/${instanceId}/pause`);
+          break;
+        case 'stop':
+          setPendingStatus('STOPPING');
+          await apiPost(`/api/bot-instances/${instanceId}/stop`);
+          break;
+        case 'restart':
+          setPendingStatus('RESTARTING');
+          await apiPost(`/api/bot-instances/${instanceId}/restart`);
+          break;
+        case 'save':
+          await apiPost(`/api/bot-instances/${instanceId}/config`, collectConfigPayload());
+          break;
+        default:
+          btn.disabled = false;
+          return;
+      }
+      showCtlToast(action.charAt(0).toUpperCase() + action.slice(1) + ' request sent.');
+      setTimeout(() => {
+  window.location.reload();
+}, 800);
+    } catch (err) {
+      console.error(err);
+      // PART 11 — PHASE V: an API failure must not leave the UI implying
+      // the action succeeded (e.g. showing RUNNING after Start actually
+      // failed) — revert the button state machine to what the backend
+      // told us at page load, since we never actually transitioned.
+      applyButtonStateForStatus(window.BOT_CONFIG.status);
+      showCtlToast((err && err.message) || 'Request failed — check console.', true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // =========================================================
+  // PART 11 — PHASE N/X: CONTROL CENTER BUTTON STATE MACHINE
+  // =========================================================
+  //
+  // Buttons must reflect the backend-authoritative BotInstance.status, not
+  // just "was I just clicked". This runs once at page load (from the
+  // server-rendered bot.status) and again on every `bot:status` socket
+  // event for this instance, so a status change from another tab/device
+  // (or from the backend rejecting a request) is reflected without
+  // requiring a manual refresh.
+  function applyButtonStateForStatus(status) {
+    const startBtn = document.getElementById('ctl-start-btn');
+    const pauseBtn = document.getElementById('ctl-pause-btn');
+    const stopBtn = document.getElementById('ctl-stop-btn');
+    const restartBtn = document.getElementById('ctl-restart-btn');
+    const timeframeInput = document.getElementById('ctl-timeframe');
+
+    const map = {
+      RUNNING:   { start: true,  pause: false, stop: false, restart: false },
+      PAUSED:    { start: false, pause: true,  stop: false, restart: false },
+      STOPPED:   { start: false, pause: true,  stop: true,  restart: false },
+      ERROR:     { start: false, pause: true,  stop: false, restart: false },
+      // Transient client-side states while an API call is in flight —
+      // disable everything so a second click can't race the first.
+      STARTING:   { start: true, pause: true, stop: true, restart: true },
+      PAUSING:    { start: true, pause: true, stop: true, restart: true },
+      STOPPING:   { start: true, pause: true, stop: true, restart: true },
+      RESTARTING: { start: true, pause: true, stop: true, restart: true },
+    };
+    const s = map[status] || map.STOPPED;
+
+    if (startBtn) startBtn.disabled = s.start;
+    if (pauseBtn) pauseBtn.disabled = s.pause;
+    if (stopBtn) stopBtn.disabled = s.stop;
+    if (restartBtn) restartBtn.disabled = s.restart;
+
+    // Timeframe can only be changed while the bot is not RUNNING (see
+    // BotManager.updateConfiguration — the backend rejects it otherwise).
+    if (timeframeInput) {
+      const locked = status === 'RUNNING';
+      timeframeInput.readOnly = locked;
+      timeframeInput.classList.toggle('opacity-60', locked);
+      timeframeInput.classList.toggle('cursor-not-allowed', locked);
+      timeframeInput.title = locked ? 'Pause or stop the bot to change timeframe' : '';
+    }
+  }
+
+  function setPendingStatus(status) {
+    window.BOT_CONFIG.status = status;
+    applyButtonStateForStatus(status);
+  }
+
+  // =========================================================
+  // PART 11 — PHASE H: NEXT CANDLE COUNTDOWN
+  // =========================================================
+  //
+  // Derived purely from the canonical timeframe (window.BOT_CONFIG.timeframe,
+  // the same value CandlePersistenceService/MODEL_001 use — see the
+  // TIMEFRAMES_MS docstring above) and wall-clock time, so it needs no
+  // separate server round-trip and self-corrects across reconnect/tab
+  // backgrounding (it always recomputes from Date.now(), never drifts from
+  // an accumulating client-side timer).
+  const NEXT_CANDLE_TIMEFRAMES_MS = {
+    '1m': 60 * 1000, '3m': 3 * 60 * 1000, '5m': 5 * 60 * 1000,
+    '15m': 15 * 60 * 1000, '30m': 30 * 60 * 1000, '1h': 60 * 60 * 1000,
+  };
+
+  function renderNextCandleCountdown() {
+    const el = document.getElementById('stat-next-candle');
+    if (!el) return;
+    const tfMs = NEXT_CANDLE_TIMEFRAMES_MS[window.BOT_CONFIG && window.BOT_CONFIG.timeframe];
+    if (!tfMs) { el.textContent = '--'; return; }
+
+    const now = Date.now();
+    const bucketStart = Math.floor(now / tfMs) * tfMs;
+    const msRemaining = (bucketStart + tfMs) - now;
+    const totalSeconds = Math.max(0, Math.floor(msRemaining / 1000));
+    const mm = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+    const ss = String(totalSeconds % 60).padStart(2, '0');
+    el.textContent = `${mm}:${ss}`;
+  }
+
+  setInterval(renderNextCandleCountdown, 1000);
+  renderNextCandleCountdown();
+
+  // =========================================================
+  // PART 11 — PHASE F: STRATEGY READINESS DISPLAY
+  // =========================================================
+  //
+  // Renders BotManager's real, in-memory readiness state (HYDRATING /
+  // READY / INSUFFICIENT_HISTORY / ERROR) so "RUNNING" never has to imply
+  // "actively producing real decisions" on its own — see the `bot:readiness`
+  // socket event emitted by BotManager._setReadiness.
+  function renderStrategyReadiness(r) {
+    const el = document.getElementById('stat-bot-health');
+    if (!el || !r) return;
+    let label = 'Monitoring';
+    let cls = 'text-emerald-400';
+    if (r.state === 'HYDRATING') { label = 'Hydrating history'; cls = 'text-blue-400'; }
+    else if (r.state === 'BACKFILLING') { label = 'Loading market history...'; cls = 'text-blue-400'; }
+    else if (r.state === 'INSUFFICIENT_HISTORY') { label = `${r.have || 0} / ${r.required || 0} candles`; cls = 'text-amber-400'; }
+    else if (r.state === 'ERROR') { label = 'Strategy error'; cls = 'text-rose-400'; }
+    else if (r.state === 'READY') { label = 'Monitoring'; cls = 'text-emerald-400'; }
+    el.className = 'inline-flex items-center gap-1 text-[10px] ' + cls;
+    el.innerHTML = '<i data-lucide="heart-pulse" class="w-3 h-3"></i> ' + label;
+    if (window.lucide) lucide.createIcons();
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    applyButtonStateForStatus(window.BOT_CONFIG.status);
+
+    if (window.NovaBotSocket) {
+      // PART 11 — PHASE P: reuse the shared socket connection (never open a
+      // second io()); scope every handler to this instanceId only, same
+      // pattern as every other bot:* listener in bot-detail-ws.js.
+      window.NovaBotSocket.on('bot:status', function(data) {
+        if (!data || data.instanceId !== window.BOT_CONFIG.instanceId) return;
+        window.BOT_CONFIG.status = data.status;
+        applyButtonStateForStatus(data.status);
+        const badge = document.getElementById('bot-status-badge');
+        if (badge) {
+          badge.textContent = data.status;
+          badge.className = 'inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ' +
+            (data.status === 'RUNNING' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-amber-950 text-amber-400 border border-amber-800');
+        }
+      });
+
+      window.NovaBotSocket.on('bot:readiness', function(data) {
+        if (!data || data.instanceId !== window.BOT_CONFIG.instanceId) return;
+        renderStrategyReadiness(data);
+      });
+
+      // PART 11 — PHASE P: one lightweight state refresh after reconnect —
+      // re-pull authoritative status/readiness instead of trusting
+      // whatever the UI last rendered before the drop.
+      window.NovaBotSocket.on('connect', function() {
+        fetch(`/api/bot-instances/${window.BOT_CONFIG.instanceId}`, { credentials: 'include' })
+          .then((r) => r.json())
+          .then((body) => {
+            const data = body && body.data;
+            if (!data) return;
+            window.BOT_CONFIG.status = data.status;
+            applyButtonStateForStatus(data.status);
+            if (data.strategyReadiness) renderStrategyReadiness(data.strategyReadiness);
+          })
+          .catch(() => {});
+      });
+    }
+  });
+
+
+
+  // PART 13 -- PHASE P: show the Lot/Contract Quantity field only when
+  // Sizing Mode is LOT, matching the Create Bot form's same behavior.
+  document.addEventListener('DOMContentLoaded', function() {
+    var sizingModeEl = document.getElementById('ctl-sizing-mode');
+    var lotValueFieldEl = document.getElementById('ctl-lot-value-field');
+    if (sizingModeEl && lotValueFieldEl) {
+      sizingModeEl.addEventListener('change', function() {
+        lotValueFieldEl.style.display = sizingModeEl.value === 'LOT' ? '' : 'none';
+      });
+    }
+  });
+
+  // Log filter (client-side, non-destructive; works on whatever bot-detail-ws.js renders
+  // into #log-terminal as long as entries carry their level as visible text, e.g. "[ORDER]").
+  document.addEventListener('DOMContentLoaded', function() {
+    var buttons = document.querySelectorAll('.log-filter-btn');
+    buttons.forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        buttons.forEach(function(b) { b.classList.remove('bg-blue-500/20', 'text-blue-400', 'border-blue-500/30'); });
+        btn.classList.add('bg-blue-500/20', 'text-blue-400', 'border-blue-500/30');
+        var filter = btn.getAttribute('data-filter');
+        var terminal = document.getElementById('log-terminal');
+        if (!terminal) return;
+        Array.prototype.forEach.call(terminal.children, function(line) {
+          if (filter === 'ALL' || line.textContent.indexOf('[' + filter + ']') !== -1) {
+            line.style.display = '';
+          } else {
+            line.style.display = 'none';
+          }
+        });
+      });
+    });
+
+    if (window.lucide) lucide.createIcons();
+  });
+
+  // Keep the compact hero Win Rate mirror in sync with the canonical
+  // Performance-tab element, without changing how that element itself is
+  // updated by bot-detail-ws.js.
+  //
+  // NOVA TRADE -- PART 9: the old "Today's Profit" mirror (perf-total-pnl
+  // -> perf-total-pnl-mirror) has been removed. It was silently displaying
+  // all-time Total Profit under a "Today's Profit" label; Today's Profit
+  // now has its own server-computed value (#stat-today-profit, see
+  // controllers/botController.js) and must never be re-mirrored from
+  // Total Profit.
+  (function observeMirrors() {
+    var pairs = [
+      ['perf-winrate', 'perf-winrate-mirror', 'text']
+    ];
+    var MutationObs = window.MutationObserver;
+    if (!MutationObs) return;
+    pairs.forEach(function(pair) {
+      var source = document.getElementById(pair[0]);
+      var mirror = document.getElementById(pair[1]);
+      if (!source || !mirror) return;
+      var sync = function() { mirror.textContent = source.textContent.replace('$', ''); };
+      sync();
+      new MutationObs(sync).observe(source, { childList: true, characterData: true, subtree: true });
+    });
+  })();
+</script>
+
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="/js/chart-manager.js"></script>
+<script src="/js/candle-series.js"></script>
+<script src="/js/overlay-manager.js"></script>
+<script src="/js/marker-manager.js"></script>
+<script src="/js/execution-markers.js"></script>
+<script src="/js/bot-socket.js"></script>
+<script src="/js/bot-detail-chart.js"></script>
+<script src="/js/renderers/model-thinking-registry.js"></script>
+<script src="/js/bot-detail-ws.js"></script>
+</body>
+</html>

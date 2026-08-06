@@ -1,0 +1,287 @@
+<%- include('partials/head', { title: title }) %>
+<body>
+  <div class="app-shell">
+    <%- include('partials/sidebar', { activeNav: activeNav }) %>
+    <div class="main">
+      <%- include('partials/topbar', { title: title }) %>
+      <div class="content">
+
+        <!-- ============================================================
+             SECTION 1 — Page header
+             Redesigned: title/subtitle on the left, primary "+ Create New
+             Bot" action on the right. The button opens the SAME create
+             form/flow that already existed on this page — it now lives in
+             a modal instead of being always visible, but every field id,
+             the form's submit handler, and the underlying POST
+             /api/bot-instances call are unchanged (see bots.js).
+        ============================================================= -->
+        <div class="bots-page-header">
+          <div>
+            <h2 class="bots-page-title">Bots</h2>
+            <p class="bots-page-subtitle">Manage your automated trading bots.</p>
+          </div>
+          <button type="button" class="btn btn-primary btn-lg" id="openCreateModalBtn">+ Create New Bot</button>
+        </div>
+
+        <!-- ============================================================
+             CREATE BOT MODAL (existing functionality, improved UI only)
+             Same fields / ids as the original inline form:
+             instModel, instSymbol, instEnv, instLeverage, instCapital,
+             modelParamsSection, modelParamsContainer, createForm, createBtn,
+             createAlert. No new backend calls are introduced.
+        ============================================================= -->
+       <div class="modal-overlay hidden" id="createBotModal">
+  <div class="modal modal-lg">
+
+    <div class="modal-header">
+      <h3>Create New Bot</h3>
+      <button type="button" class="modal-close" id="closeCreateModalBtn">&times;</button>
+    </div>
+
+    <div id="createAlert" class="alert alert-danger hidden"></div>
+
+    <form id="createForm">
+
+      <!-- ===================== -->
+      <!-- BASIC INFORMATION -->
+      <!-- ===================== -->
+
+      <div class="field">
+        <label for="instName">Bot Name</label>
+        <input
+          id="instName"
+          type="text"
+          placeholder="My BTC Scalper"
+          required>
+      </div>
+
+      <div class="field-row">
+
+        <div class="field">
+          <label for="instModel">Bot Model</label>
+          <select id="instModel" required></select>
+        </div>
+
+        <div class="field">
+          <label for="instSymbol">Trading Pair</label>
+          <select id="instSymbol" required></select>
+        </div>
+
+      </div>
+
+      <div class="field-row">
+
+        <div class="field">
+          <label for="instEnv">Trading Mode</label>
+
+          <select id="instEnv">
+
+            <option value="PAPER">
+              📝 Paper Trading
+            </option>
+
+            <option value="LIVE">
+              💰 Live Trading
+            </option>
+
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="instLeverage">Leverage</label>
+
+          <select id="instLeverage">
+
+            <option>1</option>
+            <option>2</option>
+            <option>3</option>
+            <option>5</option>
+            <option>10</option>
+            <option>20</option>
+
+          </select>
+
+        </div>
+
+      </div>
+
+      <div class="field">
+
+        <label for="instCapital">
+
+          Maximum Capital (USD)
+
+        </label>
+
+        <input
+          id="instCapital"
+          type="number"
+          min="1"
+          step="0.01"
+          placeholder="100">
+
+        <small>
+          Maximum amount this bot can use.
+        </small>
+
+      </div>
+
+      <!-- ===================== -->
+      <!-- LEVELS (PART 13 — replaces the old non-functional "Layer" -->
+      <!-- selects above with the real prices patternEngine reads)  -->
+      <!-- ===================== -->
+
+      <div class="field-row">
+
+        <div class="field">
+          <label for="instTopLevel">Top Level (Optional)</label>
+          <input id="instTopLevel" type="number" min="0" step="any" placeholder="e.g. 64280">
+          <small>Resistance / upper boundary price.</small>
+        </div>
+
+        <div class="field">
+          <label for="instBottomLevel">Bottom Level (Optional)</label>
+          <input id="instBottomLevel" type="number" min="0" step="any" placeholder="e.g. 64024">
+          <small>Support / lower boundary price.</small>
+        </div>
+
+      </div>
+
+      <div class="field">
+        <label for="instTargets">Target Levels (Optional)</label>
+        <input id="instTargets" type="text" placeholder="e.g. 65000, 66000">
+        <small>Comma-separated take-profit prices. The nearest one on the correct side of entry is used.</small>
+      </div>
+
+      <!-- ===================== -->
+      <!-- SIZING MODE (PART 13) -->
+      <!-- ===================== -->
+
+      <div class="field-row">
+
+        <div class="field">
+          <label for="instSizingMode">Sizing Mode</label>
+          <select id="instSizingMode">
+            <option value="CAPITAL" selected>Capital-based (default)</option>
+            <option value="LOT">Lot / Contract quantity</option>
+          </select>
+        </div>
+
+        <div class="field" id="instLotValueField" style="display:none;">
+          <label for="instLotValue">Lot / Contract Quantity</label>
+          <input id="instLotValue" type="number" min="0" step="any" placeholder="e.g. 4">
+        </div>
+
+      </div>
+
+      <!-- ===================== -->
+      <!-- AUTO CONFIG -->
+      <!-- ===================== -->
+
+      <div class="card mt-16">
+
+        <div class="card-header">
+
+          <h4>Bot Configuration</h4>
+
+        </div>
+
+        <div class="card-body">
+
+          <div class="config-row">
+
+            <span>Timeframe</span>
+
+            <strong id="autoTimeframe">
+
+              Auto (5 Minutes)
+
+            </strong>
+
+          </div>
+
+          <div class="config-row">
+
+            <span>Strategy</span>
+
+            <strong id="autoStrategy">
+
+              Auto
+
+            </strong>
+
+          </div>
+
+          <div class="config-row">
+
+            <span>Indicators</span>
+
+            <strong>
+
+              Auto
+
+            </strong>
+
+          </div>
+
+        </div>
+
+      </div>
+
+      <!-- ===================== -->
+      <!-- ADVANCED -->
+      <!-- ===================== -->
+
+      <details class="mt-16">
+
+        <summary>
+
+          Advanced Strategy Settings
+
+        </summary>
+
+        <div id="modelParamsSection" class="mt-16">
+
+          <div
+            id="modelParamsContainer"
+            class="field-row"
+            style="grid-template-columns:repeat(2,1fr);">
+
+          </div>
+
+        </div>
+
+      </details>
+
+      <button
+        type="submit"
+        class="btn btn-primary btn-block mt-24"
+        id="createBtn">
+
+        🚀 Create Bot
+
+      </button>
+
+    </form>
+
+  </div>
+</div>
+
+        <!-- ============================================================
+             SECTION 2 — Active Bots
+             Each running/paused/stopped instance now renders as one large
+             premium card (bots.js#renderInstances) instead of a small
+             info row. Everything inside a card is rendered from data
+             already returned by /api/bot-instances, /api/positions and
+             /api/logs/strategy-events — no new endpoints.
+        ============================================================= -->
+        <div class="section-title"><h2>Active Bots</h2></div>
+        <div id="instancesList" class="bot-cards"><div class="empty-state">Loading…</div></div>
+
+      </div>
+    </div>
+  </div>
+  <%- include('partials/scripts') %>
+  <script src="/js/bots.js"></script>
+</body>
+</html>

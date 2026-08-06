@@ -1,0 +1,95 @@
+<%- include('partials/head', { title: title }) %>
+<body>
+  <div class="app-shell">
+    <%- include('partials/sidebar', { activeNav: activeNav }) %>
+    <div class="main">
+      <%- include('partials/topbar', { title: title }) %>
+      <div class="content">
+
+        <div class="mode-banner paper">PAPER MODE — simulated trading, no real funds at risk</div>
+
+        <div class="grid grid-4 mb-16">
+          <div class="card"><div class="stat-label">Available Balance</div><div class="stat-value" id="pAvailable">—</div></div>
+          <div class="card"><div class="stat-label">Equity</div><div class="stat-value" id="pEquity">—</div></div>
+          <div class="card"><div class="stat-label">Realized P&amp;L</div><div class="stat-value" id="pRealized">—</div></div>
+          <div class="card"><div class="stat-label">Unrealized P&amp;L</div><div class="stat-value" id="pUnrealized">—</div></div>
+        </div>
+
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-header"><h2>Add Virtual Funds</h2></div>
+            <div id="fundsAlert" class="alert alert-danger hidden"></div>
+            <form id="fundsForm">
+              <div class="field">
+                <label for="fundsAmount">Amount (USD)</label>
+                <input type="number" id="fundsAmount" min="1" step="0.01" required />
+              </div>
+              <div class="field">
+                <label for="fundsReason">Reason (optional)</label>
+                <input type="text" id="fundsReason" placeholder="e.g. top-up for testing" />
+              </div>
+              <button type="submit" class="btn btn-secondary btn-block" id="fundsBtn">Add Funds</button>
+            </form>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><h2>Manual Paper Trade</h2></div>
+            <div id="tradeAlert" class="alert alert-danger hidden"></div>
+            <form id="tradeForm">
+              <div class="field">
+                <label for="tradeSymbol">Symbol</label>
+                <select id="tradeSymbol" required></select>
+              </div>
+              <div class="side-toggle">
+                <button type="button" class="long selected" data-side="LONG" id="sideLongBtn">LONG</button>
+                <button type="button" class="short" data-side="SHORT" id="sideShortBtn">SHORT</button>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="tradeQty">Quantity</label>
+                  <input type="number" id="tradeQty" min="0" step="any" required />
+                </div>
+                <div class="field">
+                  <label for="tradeLeverage">Leverage</label>
+                  <input type="number" id="tradeLeverage" min="1" step="1" value="1" />
+                </div>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="tradeSL">Stop Loss (optional)</label>
+                  <input type="number" id="tradeSL" min="0" step="any" />
+                </div>
+                <div class="field">
+                  <label for="tradeTP">Take Profit (optional)</label>
+                  <input type="number" id="tradeTP" min="0" step="any" />
+                </div>
+              </div>
+              <button type="submit" class="btn btn-primary btn-block" id="tradeBtn">Place Paper Order</button>
+              <div class="field-hint">Executes via the Paper Trading Engine using the current market price. Rejected if market data is unavailable or stale.</div>
+            </form>
+          </div>
+        </div>
+
+        <div class="section-title"><h2>Open Positions</h2></div>
+        <div class="table-wrap mb-16">
+          <table>
+            <thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Current</th><th>Qty</th><th>Leverage</th><th>SL</th><th>TP</th><th>Unrealized P&amp;L</th><th></th></tr></thead>
+            <tbody id="positionsBody"><tr><td colspan="10"><div class="empty-state">Loading…</div></td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="section-title"><h2>Recent Orders</h2></div>
+        <div class="table-wrap mb-16">
+          <table>
+            <thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Executed Price</th><th>Fees</th><th>Status</th><th>Time</th></tr></thead>
+            <tbody id="ordersBody"><tr><td colspan="8"><div class="empty-state">Loading…</div></td></tr></tbody>
+          </table>
+        </div>
+
+      </div>
+    </div>
+  </div>
+  <%- include('partials/scripts') %>
+  <script src="/js/paper.js"></script>
+</body>
+</html>

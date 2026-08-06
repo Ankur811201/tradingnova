@@ -1,0 +1,52 @@
+<%- include('partials/head', { title: title }) %>
+<body>
+  <div class="app-shell">
+    <%- include('partials/sidebar', { activeNav: activeNav }) %>
+    <div class="main">
+      <%- include('partials/topbar', { title: title }) %>
+      <div class="content">
+
+        <div class="grid grid-3 mb-16">
+          <div class="card"><div class="stat-label">Live Trading</div><div class="stat-value text-sm" id="sLiveTrading">—</div></div>
+          <div class="card"><div class="stat-label">Live Trading Enabled At</div><div class="stat-value text-sm" id="sEnabledAt">—</div></div>
+          <div class="card"><div class="stat-label">All Bots Last Stopped</div><div class="stat-value text-sm" id="sStoppedAt">—</div></div>
+        </div>
+
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-header"><h2>Bot Controls</h2></div>
+            <p class="text-sm muted mb-16">Stopping bots does <b>not</b> close any open positions.</p>
+            <div class="field">
+              <label for="stopInstanceId">Bot Instance ID</label>
+              <input type="text" id="stopInstanceId" placeholder="inst_..." />
+            </div>
+            <button class="btn btn-secondary btn-block mb-16" id="stopOneBtn">Stop One Bot</button>
+            <button class="btn btn-danger btn-block" id="stopAllBtn">Stop All Bots</button>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><h2>Live Trading Switch</h2></div>
+            <p class="text-sm muted mb-16">Disabling/enabling live trading does <b>not</b> close any open positions.</p>
+            <button class="btn btn-secondary btn-block mb-16" id="disableLiveBtn">Disable New Live Trades</button>
+            <button class="btn btn-danger btn-block" id="enableLiveBtn">Enable Live Trades</button>
+          </div>
+        </div>
+
+        <div class="card mt-16">
+          <div class="card-header"><h2>Position Controls</h2></div>
+          <div class="alert alert-danger mb-16">Closing positions is irreversible. LIVE closes place real orders on Delta Exchange via LiveTradingEngine → DeltaAdapter — MongoDB is never updated directly.</div>
+          <div class="field">
+            <label for="closeOnePositionId">Position ID</label>
+            <input type="text" id="closeOnePositionId" placeholder="Mongo _id of the position" />
+          </div>
+          <button class="btn btn-danger btn-block mb-16" id="closeOneBtn">Close One Position</button>
+          <button class="btn btn-danger btn-block" id="closeAllBtn">Close All Positions (Paper + Live)</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+  <%- include('partials/scripts') %>
+  <script src="/js/safety.js"></script>
+</body>
+</html>

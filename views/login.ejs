@@ -1,0 +1,32 @@
+<%- include('partials/head', { title: 'Login' }) %>
+<body class="auth-page">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <div class="mark">NT</div>
+      <div class="name">Nova Trade</div>
+    </div>
+    <div class="auth-title">
+      <h1>Sign in</h1>
+      <p>Private trading platform — authorized access only.</p>
+    </div>
+
+    <div id="loginAlert" class="alert alert-danger hidden"></div>
+
+    <form id="loginForm" autocomplete="on">
+      <div class="field">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" autocomplete="username" required />
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" required />
+      </div>
+      <button type="submit" class="btn btn-primary btn-block" id="loginBtn">Log In</button>
+    </form>
+  </div>
+
+  <script src="/js/format.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/login.js"></script>
+</body>
+</html>
