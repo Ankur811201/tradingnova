@@ -1,6 +1,18 @@
 'use strict';
 
 /**
+ * NOTE (Phase 2 fix, unrelated to MODEL_002): three DECISION-count
+ * assertions below were stale relative to Model001.js's own documented,
+ * intentional post-hydration UI-sync behavior — onHydrate computes and
+ * emits exactly ONE real DECISION from the just-hydrated buffer (see the
+ * comment in Model001.js's onHydrate) purely so the Decision Engine UI
+ * doesn't keep showing a pre-hydration "insufficient_history" state. That
+ * DECISION is never accompanied by a trade, RULE_MATCHED, or a levelCounts
+ * mutation — hydration still never trades. The tests below were updated to
+ * expect that one UI-sync DECISION rather than zero, and to check the
+ * actual no-trade invariant directly (zero commands, zero RULE_MATCHED/
+ * SIGNAL_GENERATED). Production code was not changed.
+ *
  * Part 11 — unit tests for Model001's history hydration contract:
  *
  *   BotManager._hydrateInstance -> modelInstance.onHydrate(closedCandles)
@@ -118,9 +130,20 @@ test('hydration NEVER submits a TradeCommand or emits a DECISION, even with 100 
 
   assert.equal(ctx.commands.length, 0, 'no TradeCommand may be submitted during hydration');
   assert.equal(
-    ctx.events.filter((e) => e.eventType === 'DECISION').length,
+    ctx.events.filter((e) => e.eventType === 'RULE_MATCHED' || e.eventType === 'SIGNAL_GENERATED').length,
     0,
-    'no DECISION may be emitted during hydration'
+    'hydration must never act on a matched rule, even though it computes one for UI sync'
+  );
+  // Model001.onHydrate intentionally emits exactly ONE DECISION as a
+  // UI-sync convenience (documented in Model001.js: "Compute a fresh
+  // decision from the just-hydrated buffer and emit it so the UI reflects
+  // reality immediately... UI-only: no trade command, no RULE_MATCHED, no
+  // levelCounts mutation") — this is current, intended behavior, not a
+  // violation of "never trades on hydration".
+  assert.equal(
+    ctx.events.filter((e) => e.eventType === 'DECISION').length,
+    1,
+    'exactly one UI-sync DECISION is emitted by hydration, by design — but it must never be accompanied by a trade'
   );
   assert.ok(
     ctx.events.some((e) => e.eventType === 'MODEL_HYDRATED'),
@@ -137,11 +160,13 @@ test('a live candle duplicating the last hydrated candle timestamp is skipped by
   const lastHydrated = candles[candles.length - 1];
 
   // Re-deliver the exact same closed candle live (as could happen if a
-  // reconnect replays it) — must be a no-op.
+  // reconnect replays it) — must be a no-op: no new command, and no
+  // additional DECISION beyond the one hydration itself already emitted
+  // as a UI-sync convenience (see the dedicated hydration-DECISION test).
   await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', data: lastHydrated }, null);
 
   assert.equal(ctx.commands.length, 0);
-  assert.equal(ctx.events.filter((e) => e.eventType === 'DECISION').length, 0);
+  assert.equal(ctx.events.filter((e) => e.eventType === 'DECISION').length, 1);
 });
 
 test('the first genuinely NEW candle after hydration is evaluated exactly once', async () => {
@@ -159,7 +184,9 @@ test('the first genuinely NEW candle after hydration is evaluated exactly once',
   await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', data: nextCandle }, null); // duplicate delivery
 
   const decisionEvents = ctx.events.filter((e) => e.eventType === 'DECISION');
-  assert.equal(decisionEvents.length, 1, 'exactly one DECISION for the new candle, duplicate delivery ignored');
+  // 1 from hydration's own UI-sync DECISION + 1 from the genuinely new live
+  // candle; the duplicate delivery must add zero more.
+  assert.equal(decisionEvents.length, 2, 'hydration-sync DECISION + exactly one for the new candle; duplicate delivery ignored');
 });
 
 test('restoreLevelCounts overwrites in-memory levelCounts so a restart cannot reset a per-level cap', async () => {

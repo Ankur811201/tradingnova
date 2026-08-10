@@ -105,7 +105,7 @@
       <div class="w-px h-6 bg-white/10 hidden sm:block"></div>
       <h1 class="text-lg sm:text-xl font-display font-semibold tracking-tight text-white flex items-center gap-2 min-w-0">
         <span class="truncate"><%= bot.name %></span>
-        <span class="text-[11px] shrink-0 bg-blue-500/10 text-blue-400 border border-blue-500/25 px-2 py-0.5 rounded-md font-mono"><%= bot.modelId %></span>
+        <span class="text-[11px] shrink-0 bg-blue-500/10 text-blue-400 border border-blue-500/25 px-2 py-0.5 rounded-md font-mono"><%= bot.modelId === 'MODEL_002' ? 'MODEL_002 — Custom Pattern' : (bot.modelId || 'MODEL UNKNOWN') %></span>
       </h1>
     </div>
     <div class="flex items-center gap-3 sm:gap-6 text-sm">
@@ -397,7 +397,7 @@
           </div>
           <div>
             <label class="text-[10px] text-gray-500 uppercase tracking-wide">Strategy</label>
-            <input id="ctl-strategy" type="text" value="<%= bot.modelId || '' %>" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50" readonly>
+            <input id="ctl-strategy" type="text" value="<%= bot.modelId === 'MODEL_002' ? 'MODEL_002 — Custom Pattern' : (bot.modelId || '') %>" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50" readonly>
           </div>
           <div>
             <label class="text-[10px] text-gray-500 uppercase tracking-wide">Symbol</label>
@@ -409,6 +409,33 @@
           </div>
         </div>
       </div>
+
+      <% if (bot.modelId === 'MODEL_002') { %>
+      <!-- MODEL_002 SAFETY — real consecutive-loss state, sourced from the
+           same DECISION payload already loaded server-side as
+           initialDecision (see window.BOT_INITIAL_DECISION below) and kept
+           live via the existing bot:decision socket handler in
+           bot-detail-ws.js. Before any decision has ever been produced,
+           0/3 NORMAL is the real, honest starting state — not fabricated. -->
+      <% var safetyPayload = (typeof initialDecision !== 'undefined' && initialDecision) ? initialDecision.payload : {}; %>
+      <% var safetyLosses = (safetyPayload && safetyPayload.consecutiveLosses != null) ? safetyPayload.consecutiveLosses : 0; %>
+      <% var safetyLimit = (safetyPayload && safetyPayload.safetyLimit != null) ? safetyPayload.safetyLimit : 3; %>
+      <% var safetyStatus = (safetyPayload && safetyPayload.safetyStatus) ? safetyPayload.safetyStatus : 'NORMAL'; %>
+      <div class="mt-4 pt-4 border-t border-white/5 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] text-gray-500 uppercase tracking-wide">Safety</span>
+          <span id="safety-status-badge" class="text-[11px] font-semibold px-2 py-0.5 rounded-full <%= safetyStatus === 'PAUSED' ? 'bg-rose-950 text-rose-400 border border-rose-800' : safetyStatus === 'WARNING' ? 'bg-amber-950 text-amber-400 border border-amber-800' : 'bg-emerald-950 text-emerald-400 border border-emerald-800' %>">
+            <%= safetyStatus === 'PAUSED' ? 'PAUSED' : 'ACTIVE' %>
+          </span>
+        </div>
+        <div class="text-xs font-mono text-gray-300">
+          Consecutive Losses <span id="safety-losses-value" class="font-bold"><%= safetyLosses %></span>/<span id="safety-limit-value"><%= safetyLimit %></span>
+        </div>
+      </div>
+      <% if (safetyStatus === 'PAUSED') { %>
+      <div class="mt-2 text-[11px] text-rose-400">SAFETY PAUSED — Reason: 3 consecutive losses. New trades are blocked until an operator resumes the bot.</div>
+      <% } %>
+      <% } %>
 
       <div class="flex flex-wrap items-center justify-between gap-2 mt-4 pt-4 border-t border-white/5">
         <button onclick="toggleAdvancedSettings()" class="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition">
@@ -425,6 +452,7 @@
       </div>
 
       <div id="adv-settings" data-open="false">
+        <% if (bot.modelId !== 'MODEL_002') { %>
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4">
           <div>
             <label class="text-[10px] text-gray-500 uppercase tracking-wide">EMA Length</label>
@@ -443,7 +471,9 @@
         <!-- PART 13 -- PHASE D/P/Q: canonical Top/Bottom Level, Target
              Levels, and Sizing Mode. Strategy-sensitive, so locked to
              read-only while the bot is RUNNING (matches Timeframe above) —
-             pause or stop to edit, matching BotManager.updateConfiguration. -->
+             pause or stop to edit, matching BotManager.updateConfiguration.
+             MODEL_001 only — MODEL_002 uses user-supplied trend/support/
+             resistance instead (see the MODEL_002 block below). -->
         <% var ctlRunningLocked = bot.status === 'RUNNING'; %>
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3">
           <div>
@@ -470,6 +500,39 @@
             <input id="ctl-lot-value" type="text" value="<%= (bot.sizing && bot.sizing.value != null) ? bot.sizing.value : '' %>" <%= ctlRunningLocked ? 'readonly' : '' %> class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50 <%= ctlRunningLocked ? 'opacity-60 cursor-not-allowed' : '' %>">
           </div>
         </div>
+        <% } else { %>
+        <!-- MODEL_002 — Custom Pattern: trend/support/resistance are
+             user-supplied at bot creation (never auto-detected — no Daily
+             BOS, no 1H confirmation, no EMA). Shown read-only here; this
+             page does not offer inline editing of the strategy configuration
+             for MODEL_002 — the same values shown at Create Bot time. -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4">
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Trend</label>
+            <div id="ctl-m002-trend" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono <%= (bot.parameters && bot.parameters.trend === 'BULLISH') ? 'text-emerald-400' : (bot.parameters && bot.parameters.trend === 'BEARISH') ? 'text-rose-400' : 'text-gray-200' %>">
+              <%= (bot.parameters && bot.parameters.trend) || '—' %>
+            </div>
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Maximum Capital</label>
+            <div class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200">
+              $<%= (bot.capitalAllocation != null) ? bot.capitalAllocation : '—' %>
+            </div>
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Support Levels (S1 / S2 / S3)</label>
+            <div id="ctl-m002-support" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200">
+              <%= (bot.parameters && Array.isArray(bot.parameters.support) && bot.parameters.support.length) ? bot.parameters.support.join(' / ') : '—' %>
+            </div>
+          </div>
+          <div>
+            <label class="text-[10px] text-gray-500 uppercase tracking-wide">Resistance Levels (R1 / R2 / R3)</label>
+            <div id="ctl-m002-resistance" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200">
+              <%= (bot.parameters && Array.isArray(bot.parameters.resistance) && bot.parameters.resistance.length) ? bot.parameters.resistance.join(' / ') : '—' %>
+            </div>
+          </div>
+        </div>
+        <% } %>
       </div>
     </section>
 
@@ -530,7 +593,7 @@
             </div>
             <div class="glass-tight rounded-xl p-3 text-center">
               <div class="text-[10px] text-gray-500 uppercase">Max Drawdown</div>
-              <div id="perf-drawdown" class="text-lg font-bold font-mono text-rose-400 mt-1">$<%= (typeof performanceData !== 'undefined' && performanceData && Number.isFinite(performanceData.maxDrawdown)) ? performanceData.maxDrawdown.toFixed(2) : '0.00' %></div>
+              <div id="perf-drawdown" class="text-lg font-bold font-mono text-rose-400 mt-1"><%= (typeof performanceData !== 'undefined' && performanceData && Number.isFinite(performanceData.maxDrawdown)) ? ('$' + performanceData.maxDrawdown.toFixed(2)) : 'N/A' %></div>
             </div>
           </div>
           <div class="grid grid-cols-3 gap-3 mb-4">
@@ -617,6 +680,30 @@
 
         <!-- INDICATORS TAB -->
         <div class="tab-panel" data-tab="indicators" data-active="false">
+          <% if (bot.modelId === 'MODEL_002') { %>
+          <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Trend</div>
+              <div class="text-sm font-bold font-mono mt-1 <%= (bot.parameters && bot.parameters.trend === 'BULLISH') ? 'text-emerald-400' : (bot.parameters && bot.parameters.trend === 'BEARISH') ? 'text-rose-400' : 'text-gray-200' %>"><%= (bot.parameters && bot.parameters.trend) || '--' %></div>
+            </div>
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Timeframe</div>
+              <div class="text-sm font-bold font-mono text-gray-200 mt-1"><%= (bot.parameters && bot.parameters.timeframe) || '--' %></div>
+            </div>
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Support (S1/S2/S3)</div>
+              <div class="text-sm font-bold font-mono text-gray-200 mt-1"><%= (bot.parameters && Array.isArray(bot.parameters.support) && bot.parameters.support.length) ? bot.parameters.support.join(' / ') : '--' %></div>
+            </div>
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Resistance (R1/R2/R3)</div>
+              <div class="text-sm font-bold font-mono text-gray-200 mt-1"><%= (bot.parameters && Array.isArray(bot.parameters.resistance) && bot.parameters.resistance.length) ? bot.parameters.resistance.join(' / ') : '--' %></div>
+            </div>
+            <div class="glass-tight rounded-xl p-3 text-center">
+              <div class="text-[10px] text-gray-500 uppercase">Max Allowed Notional</div>
+              <div class="text-sm font-bold font-mono text-gray-200 mt-1">$<%= (bot.capitalAllocation != null && bot.leverage != null) ? (bot.capitalAllocation * bot.leverage) : '--' %></div>
+            </div>
+          </div>
+          <% } else { %>
           <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             <div class="glass-tight rounded-xl p-3 text-center">
               <div class="text-[10px] text-gray-500 uppercase">EMA Length</div>
@@ -639,6 +726,7 @@
               <div class="text-sm font-bold font-mono mt-1 <%= bot.config && bot.config.autoLayers ? 'text-emerald-400' : 'text-gray-400' %>"><%= bot.config && bot.config.autoLayers ? 'ON' : 'OFF' %></div>
             </div>
           </div>
+          <% } %>
         </div>
 
         <!-- LOGS TAB -->
@@ -688,7 +776,7 @@
 <script>
   window.BOT_CONFIG = {
   instanceId: "<%= bot.instanceId || bot._id %>",
-  modelId: "<%= bot.modelId || 'MODEL_001' %>",
+  modelId: "<%= bot.modelId || 'MODEL_UNKNOWN' %>",
   pair: "<%= bot.symbol || bot.tradingPair || 'BTCUSD' %>",
   // PART 11 — PHASE N/X: the backend-authoritative lifecycle status at
   // page-load time, used to drive the Control Center button state machine
@@ -711,14 +799,24 @@
   // by the client, see bot-detail-ws.js/bot-detail-chart.js) is the honest
   // value; a stored-but-invalid timeframe still fails loudly elsewhere.
   timeframe: "<%= (bot.parameters && bot.parameters.timeframe) || '' %>",
-  // PART 13 -- PHASE T: canonical configured levels/targets, for the chart
-  // overlay sync below. These are CONFIGURATION overlays (horizontal
-  // reference lines), never confused with BUY/SELL/EXIT execution markers.
-  levels: {
-    top: <%- (bot.levels && bot.levels.top != null) ? bot.levels.top : ((bot.parameters && bot.parameters.topLevel != null) ? bot.parameters.topLevel : 'null') %>,
-    bottom: <%- (bot.levels && bot.levels.bottom != null) ? bot.levels.bottom : ((bot.parameters && bot.parameters.bottomLevel != null) ? bot.parameters.bottomLevel : 'null') %>
-  },
-  targets: <%- JSON.stringify((bot.targets || []).map(function(t){ return t.price; })) %>
+  // Legacy level/target configuration is exposed only to legacy models.
+  // MODEL_002 has no Top/Bottom/Target overlay data in its chart config;
+  // its chart source is exclusively the user-configured Support/Resistance
+  // below. Keeping the legacy keys empty for MODEL_002 prevents accidental
+  // consumption by future chart code while preserving compatibility for
+  // legacy models/tests that still use those configuration overlays.
+  levels: <%- bot.modelId === 'MODEL_002' ? 'null' : JSON.stringify({
+    top: (bot.levels && bot.levels.top != null) ? bot.levels.top : ((bot.parameters && bot.parameters.topLevel != null) ? bot.parameters.topLevel : null),
+    bottom: (bot.levels && bot.levels.bottom != null) ? bot.levels.bottom : ((bot.parameters && bot.parameters.bottomLevel != null) ? bot.parameters.bottomLevel : null)
+  }) %>,
+  targets: <%- bot.modelId === 'MODEL_002' ? '[]' : JSON.stringify((bot.targets || []).map(function(t){ return t.price; })) %>,
+  // MODEL_002 — user-configured Support/Resistance (exactly 3 each, never
+  // auto-detected). Empty arrays for any other model. Consumed by
+  // syncConfiguredLevelOverlays() in bot-detail-chart.js to draw S1-S3/
+  // R1-R3 reference lines using the SAME values shown in Bot Configuration
+  // above — no separate/derived source.
+  support: <%- JSON.stringify((bot.parameters && Array.isArray(bot.parameters.support)) ? bot.parameters.support : []) %>,
+  resistance: <%- JSON.stringify((bot.parameters && Array.isArray(bot.parameters.resistance)) ? bot.parameters.resistance : []) %>
 };
   // NOVA TRADE -- PART 8: the real MODEL_001 decision (StrategyEvent,
   // eventType 'DECISION') loaded server-side in controllers/botController.js.
@@ -785,33 +883,47 @@
     // field must not overwrite an existing saved value with null. These
     // fields are also disabled/readonly client-side while RUNNING (see the
     // ctlRunningLocked EJS block above), matching the backend's own guard.
+    //
+    // NOVA TRADE -- BOT DETAIL CLEANUP: emaLength/breakoutLookback/
+    // minBodyRatio/levels/targets/sizing are MODEL_001-only configuration.
+    // MODEL_002 trend/support/resistance are read-only on this page (no
+    // backend endpoint accepts them here — see Bot Configuration above),
+    // so a MODEL_002 Save only ever touches capital/riskPct/leverage/
+    // timeframe. The ctl-ema-length/ctl-top-level/etc inputs don't even
+    // exist in the DOM for a MODEL_002 bot (see the modelId-gated Advanced
+    // Settings block above), but we also gate here explicitly so a
+    // MODEL_002 payload never carries these keys at all — not even as null.
     var payload = {
       capital: val('ctl-capital'),
       riskPct: val('ctl-risk'),
       leverage: val('ctl-leverage'),
-      timeframe: val('ctl-timeframe'),
-      emaLength: val('ctl-ema-length'),
-      breakoutLookback: val('ctl-breakout-lookback'),
-      minBodyRatio: val('ctl-body-ratio')
+      timeframe: val('ctl-timeframe')
     };
 
-    var topLevel = val('ctl-top-level');
-    var bottomLevel = val('ctl-bottom-level');
-    if (topLevel !== null && topLevel !== '' && bottomLevel !== null && bottomLevel !== '') {
-      payload.levels = { top: Number(topLevel), bottom: Number(bottomLevel) };
-    }
+    var isModel002 = window.BOT_CONFIG && window.BOT_CONFIG.modelId === 'MODEL_002';
+    if (!isModel002) {
+      payload.emaLength = val('ctl-ema-length');
+      payload.breakoutLookback = val('ctl-breakout-lookback');
+      payload.minBodyRatio = val('ctl-body-ratio');
 
-    var targetsRaw = val('ctl-targets');
-    if (targetsRaw !== null && targetsRaw.trim() !== '') {
-      payload.targets = targetsRaw.split(',').map(function(s) { return s.trim(); }).filter(Boolean).map(function(s) { return { price: Number(s) }; });
-    }
+      var topLevel = val('ctl-top-level');
+      var bottomLevel = val('ctl-bottom-level');
+      if (topLevel !== null && topLevel !== '' && bottomLevel !== null && bottomLevel !== '') {
+        payload.levels = { top: Number(topLevel), bottom: Number(bottomLevel) };
+      }
 
-    var sizingModeEl = document.getElementById('ctl-sizing-mode');
-    if (sizingModeEl) {
-      var lotValue = val('ctl-lot-value');
-      payload.sizing = sizingModeEl.value === 'LOT'
-        ? { mode: 'LOT', value: Number(lotValue) }
-        : { mode: 'CAPITAL' };
+      var targetsRaw = val('ctl-targets');
+      if (targetsRaw !== null && targetsRaw.trim() !== '') {
+        payload.targets = targetsRaw.split(',').map(function(s) { return s.trim(); }).filter(Boolean).map(function(s) { return { price: Number(s) }; });
+      }
+
+      var sizingModeEl = document.getElementById('ctl-sizing-mode');
+      if (sizingModeEl) {
+        var lotValue = val('ctl-lot-value');
+        payload.sizing = sizingModeEl.value === 'LOT'
+          ? { mode: 'LOT', value: Number(lotValue) }
+          : { mode: 'CAPITAL' };
+      }
     }
 
     return payload;

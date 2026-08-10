@@ -1,6 +1,13 @@
 'use strict';
 
-const VALID_ACTIONS = ['LONG', 'SHORT', 'CLOSE', 'NO_ACTION'];
+// MODIFY_STOP added additively (never removes/renames an existing action)
+// to support trailing stops — a bot model that wants to ratchet an open
+// position's stop-loss toward the market without closing/reopening it
+// submits a MODIFY_STOP command carrying the new stopLoss value. See
+// RiskEngine (ownership + open-position checks) and ExecutionRouter
+// (routes to PaperEngine.updateStopLoss / LiveEngine — LIVE intentionally
+// not yet implemented, see LiveEngine.js).
+const VALID_ACTIONS = ['LONG', 'SHORT', 'CLOSE', 'NO_ACTION', 'MODIFY_STOP'];
 
 /**
  * Validates a raw TradeCommand emitted by a Bot Model before it is allowed
@@ -22,6 +29,12 @@ function validateTradeCommand(cmd) {
   if (cmd.action === 'LONG' || cmd.action === 'SHORT') {
     if (cmd.quantity === undefined || cmd.quantity === null || Number.isNaN(Number(cmd.quantity)) || Number(cmd.quantity) <= 0) {
       errors.push('quantity must be a positive number for LONG/SHORT actions');
+    }
+  }
+
+  if (cmd.action === 'MODIFY_STOP') {
+    if (cmd.stopLoss === undefined || cmd.stopLoss === null || Number.isNaN(Number(cmd.stopLoss)) || Number(cmd.stopLoss) <= 0) {
+      errors.push('stopLoss must be a positive number for MODIFY_STOP actions');
     }
   }
 

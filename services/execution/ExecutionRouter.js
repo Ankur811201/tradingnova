@@ -59,6 +59,13 @@ class ExecutionRouter {
       if (!position) throw new AppError('No open paper position to close', 404);
       return paperEngine.closePosition({ positionId: position._id, reason: 'BOT_SIGNAL' });
     }
+    if (command.action === 'MODIFY_STOP') {
+      const position = await Position.findOne({
+        instanceId: command.instanceId, symbol: command.symbol, environment: 'PAPER', status: 'OPEN',
+      });
+      if (!position) throw new AppError('No open paper position to modify', 404);
+      return paperEngine.updateStopLoss({ positionId: position._id, stopLoss: command.stopLoss });
+    }
     throw new AppError(`Unsupported action for PAPER routing: ${command.action}`, 400);
   }
 
@@ -90,6 +97,22 @@ class ExecutionRouter {
       });
       if (!position) throw new AppError('No open live position to close', 404);
       return liveEngine.closePosition({ positionId: position._id, productId: product.id, reason: 'BOT_SIGNAL' });
+    }
+    if (command.action === 'MODIFY_STOP') {
+      // Deliberately NOT implemented: LIVE stop-loss is placed as an
+      // exchange-side conditional order at entry (see LiveEngine.openPosition
+      // -> DeltaAdapter.placeOrder's stopLossOrder). Trailing it live means
+      // calling a real Delta order-amend/replace endpoint, which has not
+      // been verified against official Delta documentation in this build
+      // (same "never invent external message formats" rule the Part 4
+      // Delta WebSocket integration already follows — see README). Failing
+      // loudly here is intentional: silently no-op'ing would leave a bot
+      // believing its live stop trailed when it did not.
+      throw new AppError(
+        'MODIFY_STOP is not yet implemented for LIVE trading: no verified Delta order-amend endpoint exists in DeltaAdapter. '
+        + 'Trailing stops are currently PAPER-only.',
+        501
+      );
     }
     throw new AppError(`Unsupported action for LIVE routing: ${command.action}`, 400);
   }

@@ -22,6 +22,10 @@ const NOVA_TO_DELTA_RESOLUTION = {
   '15m': '15m',
   '30m': '30m',
   '1h': '1h',
+  // PART A (multi-timeframe infra): Delta natively supports '1d' (see the
+  // module comment above) — mapped now that a higher-timeframe model
+  // (MODEL_002) needs real Daily candles for backfill/hydration.
+  '1d': '1d',
 };
 
 class UnsupportedTimeframeError extends Error {

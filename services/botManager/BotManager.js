@@ -52,6 +52,12 @@ const BOT_MODELS_DIR = path.join(__dirname, '..', '..', 'bot-models');
  *   forward to RiskEngine -> forward approved commands to ExecutionRouter.
  */
 class BotManager {
+  // Bounds for the deferred closed-position -> Trade-record lookup (see
+  // dispatchMarketData) — how long/how many attempts before a genuinely
+  // missing Trade record is logged as a miss rather than retried forever.
+  static CLOSED_TRADE_LOOKUP_MAX_ATTEMPTS = 10;
+  static CLOSED_TRADE_LOOKUP_MAX_WAIT_MS = 60000;
+
   constructor() {
     this.registeredModels = new Map(); // modelId -> { modelId, modelVersion, create }
     this.liveInstances = new Map(); // instanceId -> { modelInstance, dbInstanceId, unsubscribers: [] }
@@ -130,6 +136,10 @@ class BotManager {
             author: mod.author || '',
             supportedSymbols: mod.supportedSymbols || [],
             defaultParameters: mod.defaultParameters || {},
+            // PART A (multi-timeframe infra): optional, additive. A model
+            // that doesn't export this (e.g. MODEL_001) registers with [],
+            // identical to pre-Part-A behavior.
+            requiredTimeframes: mod.requiredTimeframes || [],
             isEnabled: true,
           },
           { upsert: true, new: true }
@@ -312,13 +322,14 @@ class BotManager {
     try {
       await this._hydrateInstance(dbInstance, modelInstance);
       await this._recoverLevelCounts(dbInstance, modelInstance);
+      await this._recoverSafetyState(dbInstance, modelInstance);
     } catch (err) {
       await logger.error('BOT', `History hydration failed for ${instanceId}: ${err.message}`);
       this._setReadiness(instanceId, 'ERROR', { have: 0, required: 0, error: err.message });
       throw new AppError(`Failed to hydrate bot instance history: ${err.message}`, 500);
     }
 
-    this.liveInstances.set(instanceId, { modelInstance, unsubscribers: [] });
+    this.liveInstances.set(instanceId, { modelInstance, unsubscribers: [], wasPositionOpen: false, lastOpenPositionId: null, pendingClosedTradeLookup: null });
 
     dbInstance.status = 'RUNNING';
     dbInstance.startedAt = new Date();
@@ -343,8 +354,6 @@ class BotManager {
    * model simply starts with an empty buffer, same as before Part 11.
    */
   async _hydrateInstance(dbInstance, modelInstance) {
-    if (typeof modelInstance.onHydrate !== 'function') return;
-
     // PART 13.1 -- PHASE D: no `|| DEFAULT_PARAMETERS.timeframe` fallback
     // here. _hydrateInstance only ever runs after modelInstance.onStart
     // (see startInstance above) has already succeeded, and onStart now
@@ -352,12 +361,43 @@ class BotManager {
     // reached -- so dbInstance.parameters.timeframe is guaranteed to be a
     // real, explicit value by this point. A fallback here would just hide
     // that guarantee ever broke.
-    const timeframe = dbInstance.parameters.timeframe;
+    if (typeof modelInstance.onHydrate === 'function') {
+      const timeframe = dbInstance.parameters.timeframe;
+      const wantCount = Math.max(
+        HYDRATION_MIN_CANDLES,
+        Math.min((dbInstance.parameters && dbInstance.parameters.historySize) || 0, 200)
+      );
+      const candles = await this._hydrateOneTimeframe(dbInstance, timeframe, wantCount);
+      await modelInstance.onHydrate(candles);
+    }
+
+    // PART A (multi-timeframe infra): additionally hydrate every timeframe
+    // the model declared via BotModelMetadata.requiredTimeframes, each to
+    // its own requested history depth, and hand each off to the optional
+    // onHydrateTimeframe hook. A model that declares none (e.g. MODEL_001)
+    // or doesn't implement the hook makes this a no-op — identical to
+    // pre-Part-A behavior.
+    if (typeof modelInstance.onHydrateTimeframe === 'function') {
+      const modelDef = this.registeredModels.get(dbInstance.modelId);
+      const required = (modelDef && modelDef.requiredTimeframes) || [];
+      for (const entry of required) {
+        const candles = await this._hydrateOneTimeframe(dbInstance, entry.timeframe, entry.history);
+        await modelInstance.onHydrateTimeframe(entry.timeframe, candles);
+      }
+    }
+  }
+
+  /**
+   * PART A (multi-timeframe infra): shared "give me `wantCount` real usable
+   * recent closed candles for (symbol, timeframe), backfilling from the
+   * market data provider if Mongo doesn't already have enough" logic,
+   * extracted so both the model's own entry timeframe and any number of
+   * declared requiredTimeframes hydrate through the exact same real-data
+   * path (PART 12.1 usable-history semantics, PART 12 backfill semantics —
+   * unchanged, just no longer hardcoded to a single timeframe).
+   */
+  async _hydrateOneTimeframe(dbInstance, timeframe, wantCount) {
     const tfMs = TIMEFRAMES_MS[timeframe];
-    const wantCount = Math.max(
-      HYDRATION_MIN_CANDLES,
-      Math.min((dbInstance.parameters && dbInstance.parameters.historySize) || 0, 200)
-    );
 
     // PART 12.1 — PHASE 2/4/17: "enough history" means enough USABLE
     // RECENT CONTIGUOUS closed candles, not just `wantCount` documents
@@ -390,11 +430,9 @@ class BotManager {
     // PART 12.1 — PHASE 7: hydrate from the coherent contiguous recent
     // window only — never old candles + gap + recent candles merely to
     // reach wantCount.
-    const candles = usable.usableCandles.map((c) => ({
+    return usable.usableCandles.map((c) => ({
       timestamp: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
     }));
-
-    await modelInstance.onHydrate(candles);
   }
 
   /**
@@ -423,6 +461,80 @@ class BotManager {
     }
 
     modelInstance.restoreLevelCounts(counts);
+  }
+
+  /**
+   * Generic (model-agnostic) restart-recovery for a consecutive-loss safety
+   * counter: reconstructs the current consecutive-loss streak from this
+   * instance's own authoritative, already-persisted `Trade` history (the
+   * single source of truth PaperEngine/LiveEngine both write to on every
+   * position close — see Trade.js) rather than trusting any in-memory
+   * value, so a restart can never silently forget that a bot was already
+   * safety-paused or reset an in-progress loss streak to zero.
+   *
+   * Scoped by BOTH instanceId and environment: a Trade's `instanceId`
+   * alone is not a sufficient key — if an instanceId were ever reused or
+   * queried without the environment filter, a PAPER trade history could
+   * bleed into a LIVE bot's safety reconstruction (or vice versa). Every
+   * Trade already carries its own `environment` field (see Trade.js), so
+   * this costs nothing to add and removes the ambiguity entirely.
+   *
+   * Model-agnostic by the same convention as _recoverLevelCounts: only
+   * runs if the model instance defines `restoreSafetyState(state)` — a
+   * no-op for any model (e.g. MODEL_001) that doesn't. Walks the most
+   * recent closed trades newest-first and counts consecutive losses
+   * (realizedPnl < 0) until the first non-loss (WIN realizedPnl > 0, or
+   * BREAK_EVEN realizedPnl === 0 — both break the streak), then reports
+   * `paused` as true if that count already reached the model's own
+   * configured limit. The model is the sole authority on what its limit
+   * is and on what "paused" then means for it; this method only supplies
+   * the historical fact of how many consecutive losses precede right now.
+   *
+   * Restart-safe dedup: ALL of the recent Trade `_id`s loaded above for
+   * this instanceId+environment — not only the ones that happened to fall
+   * within the current consecutive-loss streak — are passed alongside the
+   * reconstructed count/paused state so the model's dedup set can be
+   * seeded with them (see ConsecutiveLossSafety.restoreState). Seeding
+   * only the streak's own trades would leave every OTHER recently-loaded
+   * trade (e.g. one behind an older WIN, still well within the lookback
+   * window) unprotected against a redelivered/replayed close event for
+   * it specifically. Seeding the full loaded set closes that gap
+   * entirely: none of the recent, already-known trades can ever be
+   * double-counted, restart or not. The consecutive-loss CALCULATION
+   * itself is unchanged — it still only walks/counts the leading loss
+   * streak, exactly as before; only which trade ids get seeded into the
+   * dedup set has changed.
+   */
+  async _recoverSafetyState(dbInstance, modelInstance) {
+    if (typeof modelInstance.restoreSafetyState !== 'function') return;
+
+    const Trade = require('../../models/Trade');
+    const recentTrades = await Trade.find({ instanceId: dbInstance.instanceId, environment: dbInstance.environment })
+      .sort({ closedAt: -1 })
+      .limit(50)
+      .select('realizedPnl closedAt')
+      .lean();
+
+    // Seed dedup with EVERY trade loaded in this lookback window, regardless
+    // of whether it fell inside the current loss streak.
+    const processedTradeIds = recentTrades.map((trade) => String(trade._id));
+
+    // Consecutive-loss calculation itself — unchanged from before.
+    let consecutiveLosses = 0;
+    for (const trade of recentTrades) {
+      if (trade.realizedPnl < 0) {
+        consecutiveLosses += 1;
+      } else {
+        // First WIN or BREAK_EVEN encountered walking backward from the
+        // most recent trade breaks the streak — stop counting.
+        break;
+      }
+    }
+
+    const limit = typeof modelInstance.getSafetyLossLimit === 'function' ? modelInstance.getSafetyLossLimit() : null;
+    const paused = limit !== null ? consecutiveLosses >= limit : false;
+
+    modelInstance.restoreSafetyState({ consecutiveLosses, paused, processedTradeIds });
   }
 
   _setReadiness(instanceId, state, extra = {}) {
@@ -668,6 +780,23 @@ class BotManager {
    *    for that exact timeframe — never every instance on the symbol. This
    *    applies to any bot model, not just MODEL_001.
    */
+  /**
+   * PART A (multi-timeframe infra): true if `timeframe` is either this
+   * instance's own entry/dispatch timeframe (dbInstance.parameters.timeframe,
+   * unchanged, always present) or one of its model's declared
+   * requiredTimeframes (read from the in-memory registeredModels entry —
+   * the exact same object discoverModels() already validated and cached at
+   * startup, so no extra DB round trip on the hot dispatch path). A model
+   * that never sets requiredTimeframes (e.g. MODEL_001) yields exactly the
+   * single-timeframe set that existed before Part A.
+   */
+  _instanceAcceptsTimeframe(dbInstance, timeframe) {
+    if (dbInstance.parameters.timeframe === timeframe) return true;
+    const modelDef = this.registeredModels.get(dbInstance.modelId);
+    const required = (modelDef && modelDef.requiredTimeframes) || [];
+    return required.some((entry) => entry.timeframe === timeframe);
+  }
+
   async dispatchMarketData(marketUpdate) {
     for (const [instanceId, live] of this.liveInstances.entries()) {
       const dbInstance = await BotInstance.findOne({ instanceId });
@@ -677,14 +806,105 @@ class BotManager {
         // PART 13.1 -- PHASE D: dbInstance.status === 'RUNNING' here is only
         // reachable after onStart succeeded, which now requires an
         // explicit, valid timeframe (validators.js). No silent default.
-        const instanceTimeframe = dbInstance.parameters.timeframe;
-        if (instanceTimeframe !== marketUpdate.timeframe) continue;
+        //
+        // PART A (multi-timeframe infra): a candle now reaches this instance
+        // if it matches EITHER the instance's own entry/dispatch timeframe
+        // OR one of its model's declared requiredTimeframes (see
+        // BotModelMetadata.requiredTimeframes / discoverModels above). For
+        // any model that declares no requiredTimeframes (e.g. MODEL_001)
+        // this set has exactly one member — byte-identical to the old
+        // exact-match check.
+        if (!this._instanceAcceptsTimeframe(dbInstance, marketUpdate.timeframe)) continue;
       }
 
       const Position = require('../../models/Position');
       const positionContext = await Position.findOne({
         instanceId, symbol: dbInstance.symbol, status: 'OPEN',
       }).lean();
+
+      // Real WIN/LOSS detection (additive, generic): if this instance had
+      // an open position last tick and now has none, the position just
+      // closed. Look up its authoritative Trade record (realizedPnl,
+      // closeReason — the exact same record PaperEngine/LiveEngine already
+      // create on every close, see Trade.js) and hand it to the model via
+      // an optional hook, exactly once per closed position. A model that
+      // doesn't define onPositionClosed is entirely unaffected (MODEL_001).
+      //
+      // Position-close vs Trade-create race: PaperEngine.closePosition
+      // writes Position + Trade inside one Mongo transaction, but
+      // LiveEngine.closePosition does NOT — it saves the Position (making
+      // it externally invisible as OPEN) BEFORE creating the Trade record.
+      // A single immediate Trade.findOne() right after detecting the
+      // Position's disappearance can therefore race a real, in-flight
+      // Trade write and find nothing. Instead of trusting that one query,
+      // an unresolved lookup is deferred onto `live.pendingClosedTradeLookup`
+      // and retried on every subsequent tick for this instance (bounded by
+      // both an attempt count and a wall-clock timeout) until the Trade
+      // record is found — or, if it genuinely never appears, the miss is
+      // logged loudly rather than silently dropped.
+      if (typeof live.modelInstance.onPositionClosed === 'function') {
+        if (live.wasPositionOpen && !positionContext && !live.pendingClosedTradeLookup) {
+          // live.lastOpenPositionId is the _id of the exact Position document
+          // that was OPEN on the previous tick (captured below, every tick,
+          // before it can disappear). This is the strongest existing
+          // correlation to the Trade that will be created for this close —
+          // Trade.position is a direct ObjectId ref to that same Position
+          // (see models/Trade.js) — so the lookup below can identify the
+          // exact Trade instead of guessing via symbol + newest closedAt.
+          live.pendingClosedTradeLookup = {
+            positionId: live.lastOpenPositionId,
+            symbol: dbInstance.symbol,
+            attempts: 0,
+            sinceTs: Date.now(),
+          };
+        }
+
+        if (live.pendingClosedTradeLookup) {
+          const pending = live.pendingClosedTradeLookup;
+          pending.attempts += 1;
+
+          const Trade = require('../../models/Trade');
+          // Exact correlation: the Trade belonging to THIS closed position,
+          // not merely "the newest Trade for this instance/symbol" (which
+          // could still be an older, already-processed Trade if this one
+          // hasn't been written yet — the exact race this part fixes).
+          // instanceId/environment are preserved as defense-in-depth so a
+          // PAPER Trade can never be matched while running LIVE (or vice
+          // versa); symbol is kept only as an extra sanity filter, never as
+          // the primary identity, per the "symbol is not enough" rule.
+          const closedTrade = pending.positionId
+            ? await Trade.findOne({
+              position: pending.positionId,
+              instanceId,
+              environment: dbInstance.environment,
+              symbol: pending.symbol,
+            }).lean()
+            : null;
+
+          if (closedTrade) {
+            live.pendingClosedTradeLookup = null;
+            try {
+              await live.modelInstance.onPositionClosed(closedTrade);
+            } catch (err) {
+              await logger.error('BOT', `Bot instance ${instanceId} errored in onPositionClosed: ${err.message}`);
+            }
+          } else if (!pending.positionId
+                     || pending.attempts >= BotManager.CLOSED_TRADE_LOOKUP_MAX_ATTEMPTS
+                     || Date.now() - pending.sinceTs >= BotManager.CLOSED_TRADE_LOOKUP_MAX_WAIT_MS) {
+            await logger.error(
+              'BOT',
+              `Bot instance ${instanceId}: detected a closed position for ${pending.symbol} ` +
+              `(position=${pending.positionId || 'unknown'}) but no matching Trade record appeared after ` +
+              `${pending.attempts} attempts / ${Date.now() - pending.sinceTs}ms — ` +
+              `giving up. This trade's WIN/LOSS outcome was NOT applied to the consecutive-loss safety counter.`
+            );
+            live.pendingClosedTradeLookup = null;
+          }
+          // else: still unresolved and within bounds — retried again on the next tick.
+        }
+      }
+      live.wasPositionOpen = Boolean(positionContext);
+      live.lastOpenPositionId = positionContext ? positionContext._id : null;
 
       try {
         await live.modelInstance.onMarketData(marketUpdate, positionContext || null);

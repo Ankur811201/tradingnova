@@ -39,20 +39,58 @@ window.ModelThinkingRegistry = {
         row('3-Candle Cycle', statusSpan(checks.cycle3Candle.status, ['BUY', 'SELL']))
       );
     },
-    'Model002': (checks) => {
-      // Future model interface mapping (e.g., Mean Reversion / Orderbook Imbalance)
+    'MODEL_002': (checks) => {
+      // Renders the real `checks` object produced by the CURRENT MODEL_002
+      // custom-pattern strategy (bot-models/model-002/Model002.js
+      // _emitDecision -> bot:decision payload). MODEL_002 no longer uses
+      // Daily BOS, 1H confirmation, or EMA — trend is supplied directly by
+      // the user, and support/resistance are the user's own configured
+      // levels, not auto-detected. Every field here is something the
+      // strategy actually computed — nothing invented, matching the same
+      // "unavailable, not fake" rule as MODEL_001's renderer above.
       if (!checks) {
         return '<div class="text-gray-500 italic">No analysis available for this decision yet.</div>';
       }
-      return `
-        <div class="flex justify-between"><span class="text-gray-400">RSI Divergence:</span><span class="text-emerald-400">${checks.rsiDivergence}</span></div>
-        <div class="flex justify-between"><span class="text-gray-400">Orderbook Spread:</span><span class="text-gray-200">${checks.orderbookSpread}</span></div>
-      `;
+
+      const row = (label, valueHtml) =>
+        '<div class="flex justify-between"><span class="text-gray-400">' + label + ':</span>' + valueHtml + '</div>';
+
+      const trendSpan = (status) => {
+        const color = status === 'BULLISH' ? 'text-emerald-400' : status === 'BEARISH' ? 'text-rose-400' : 'text-gray-400';
+        return '<span class="' + color + ' font-bold">' + status + '</span>';
+      };
+
+      const touchSpan = (status, level) => {
+        const color = status === 'TOUCHED' ? 'text-emerald-400' : 'text-gray-400';
+        const levelText = level != null ? ' (' + Number(level).toFixed(2) + ')' : '';
+        return '<span class="' + color + '">' + status + levelText + '</span>';
+      };
+
+      const confirmationHtml = checks.confirmation
+        ? '<span class="' + (checks.confirmation.status === 'PASS' ? 'text-emerald-400' : 'text-rose-400') + '">' + checks.confirmation.status + '</span>' +
+          ' <span class="text-gray-500">(' + Number(checks.confirmation.bodySize).toFixed(2) + ' / 1.5x ' + Number(checks.confirmation.referenceBodySize).toFixed(2) + ')</span>'
+        : '<span class="text-gray-500">N/A</span>';
+
+      return (
+        row('Trend (user-provided)', trendSpan(checks.trend.status)) +
+        row('Support Check', touchSpan(checks.support.status, checks.support.level)) +
+        row('Resistance Check', touchSpan(checks.resistance.status, checks.resistance.level)) +
+        row('Body Confirmation (1.5x)', confirmationHtml)
+      );
     }
   },
 
   render(modelId, containerEl, checks) {
-    const renderer = this.renderers[modelId] || this.renderers['MODEL_001'];
+    const renderer = this.renderers[modelId];
+    if (!renderer) {
+      // An unrecognized model must never silently render as if it were
+      // MODEL_001 — that would show fabricated-looking fields (EMA, Daily
+      // Trend) for a strategy that never computed them. Honest unknown
+      // state instead, matching the "never fabricate" rule used throughout
+      // this panel.
+      containerEl.innerHTML = '<div class="text-gray-500 italic">No renderer available for model "' + (modelId || 'unknown') + '".</div>';
+      return;
+    }
     containerEl.innerHTML = renderer(checks);
   }
 };

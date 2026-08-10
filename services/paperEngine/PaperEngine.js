@@ -289,6 +289,49 @@ class PaperEngine {
   }
 
   /**
+   * Updates an open PAPER position's stop-loss (trailing stop). This is the
+   * ONLY field this method touches — no margin/notional/account balance
+   * changes, since a tighter stop never changes the position's size or
+   * locked margin. refreshUnrealizedForSymbol() (below) already re-reads
+   * position.stopLoss fresh on every price tick, so writing it here is
+   * sufficient for the new stop to take effect on the very next tick — no
+   * separate "activate" step needed.
+   *
+   * Only ever tightens the stop: a LONG's stop may only move up, a SHORT's
+   * stop may only move down. This is enforced here (not just trusted from
+   * the caller) so a bug in a bot model's own trailing-stop math can never
+   * accidentally loosen a stop and increase risk on an open position.
+   */
+  async updateStopLoss({ positionId, stopLoss }) {
+    if (stopLoss === undefined || stopLoss === null || !Number.isFinite(Number(stopLoss)) || Number(stopLoss) <= 0) {
+      throw new AppError('stopLoss must be a positive number', 400);
+    }
+    const position = await Position.findById(positionId);
+    if (!position) throw new AppError('Position not found', 404);
+    if (position.status !== 'OPEN') throw new AppError('Cannot modify stop-loss on a non-OPEN position', 400);
+
+    const nextStopLoss = Number(stopLoss);
+    if (position.stopLoss != null) {
+      if (position.side === 'LONG' && nextStopLoss < position.stopLoss) {
+        throw new AppError(`Refusing to loosen LONG stop-loss (${position.stopLoss} -> ${nextStopLoss})`, 400);
+      }
+      if (position.side === 'SHORT' && nextStopLoss > position.stopLoss) {
+        throw new AppError(`Refusing to loosen SHORT stop-loss (${position.stopLoss} -> ${nextStopLoss})`, 400);
+      }
+    }
+
+    const previousStopLoss = position.stopLoss;
+    position.stopLoss = nextStopLoss;
+    await position.save();
+
+    await logger.info('TRADING', `Paper position ${position._id} stop-loss trailed: ${previousStopLoss} -> ${nextStopLoss}`, {
+      positionId: position._id.toString(), symbol: position.symbol,
+    });
+
+    return { position };
+  }
+
+  /**
    * Refreshes unrealizedPnl for all open paper positions of a symbol using the
    * latest market price. Called from a market-data subscription callback or
    * on an interval. Also checks stop-loss / take-profit triggers.

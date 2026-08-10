@@ -61,6 +61,29 @@ class RiskEngine {
       return reject('NO_ACTION requires no execution');
     }
 
+    // 5b. MODIFY_STOP (trailing stop) — a lighter-weight path than
+    // LONG/SHORT/CLOSE: it never changes notional/margin/capital exposure,
+    // it only tightens an existing, already-approved position's stop, so
+    // it doesn't re-run the capital/margin/daily-loss checks below (those
+    // were already satisfied when the position was opened). It still must
+    // pass every identity/ownership check above (duplicate id, instance
+    // running, environment match, symbol match) plus confirm a real open
+    // position for this instance/symbol actually exists — never trust the
+    // caller's claim that one does.
+    if (command.action === 'MODIFY_STOP') {
+      const existing = await Position.findOne({
+        instanceId: instance.instanceId, symbol: command.symbol, status: 'OPEN',
+      });
+      if (!existing) {
+        return reject('MODIFY_STOP requested but no open position exists for this instance/symbol');
+      }
+      meta.positionId = existing._id;
+      this._recordCommandId(command.commandId);
+      const result = { approved: true, reason: 'Approved', metadata: meta };
+      await this._logDecision(command, result);
+      return result;
+    }
+
     // 6. Market data availability + freshness
     const provider = getMarketDataProvider();
     const status = provider.getConnectionStatus();

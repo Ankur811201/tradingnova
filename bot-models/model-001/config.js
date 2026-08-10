@@ -16,6 +16,11 @@ const TIMEFRAMES_MS = {
   '15m': 15 * 60 * 1000,
   '30m': 30 * 60 * 1000,
   '1h': 60 * 60 * 1000,
+  // PART A (multi-timeframe infra): '1d' added so higher-timeframe models
+  // (e.g. MODEL_002) can hydrate/dispatch on a real Daily bucket. Delta
+  // Exchange natively supports 1d (see services/marketData/timeframeMap.js)
+  // — this is not a synthetic/aggregated timeframe.
+  '1d': 24 * 60 * 60 * 1000,
 };
 
 const DEFAULT_RULESET_V1 = 'DEFAULT_RULESET_V1';

@@ -2,6 +2,7 @@
 
 const Candle = require('../../models/Candle');
 const BotInstance = require('../../models/BotInstance');
+const BotModelMetadata = require('../../models/BotModelMetadata');
 const { TIMEFRAMES_MS } = require('../../bot-models/model-001/config');
 const logger = require('../../utils/logger');
 
@@ -92,21 +93,45 @@ class CandlePersistenceService {
     if (cached && cached.expiresAt > now) return cached;
 
     const running = await BotInstance.find({ symbol, status: 'RUNNING' })
-      .select('instanceId parameters')
+      .select('instanceId modelId parameters')
       .lean();
 
+    // PART A (multi-timeframe infra): a running instance's model may
+    // declare ADDITIONAL timeframes it needs (BotModelMetadata.requiredTimeframes)
+    // beyond its own parameters.timeframe. One query per distinct modelId
+    // among this symbol's running instances — still cached on the same 5s
+    // window as everything else here, so this doesn't add a per-tick cost.
+    const modelIds = Array.from(new Set(running.map((b) => b.modelId).filter(Boolean)));
+    const modelDocs = modelIds.length
+      ? await BotModelMetadata.find({ modelId: { $in: modelIds } }).select('modelId requiredTimeframes').lean()
+      : [];
+    const requiredTimeframesByModel = new Map(modelDocs.map((m) => [m.modelId, m.requiredTimeframes || []]));
+
     const instancesByTimeframe = new Map();
+    const addInstanceForTimeframe = (tf, instanceId) => {
+      if (!tf || !Object.prototype.hasOwnProperty.call(TIMEFRAMES_MS, tf)) return;
+      if (!instancesByTimeframe.has(tf)) instancesByTimeframe.set(tf, []);
+      instancesByTimeframe.get(tf).push(instanceId);
+    };
+
     for (const bot of running) {
       // PART 13.1 -- PHASE D: no fallback default. `status: 'RUNNING'` above
       // is only reachable after onStart succeeded, which now requires an
       // explicit, valid timeframe (see bot-models/model-001/validators.js).
       // A bot without one simply cannot appear in `running` with a usable
-      // timeframe, so it's correctly skipped by the `continue` below rather
-      // than being silently persisted/routed as if it were on 5m.
+      // timeframe, so it's correctly skipped rather than being silently
+      // persisted/routed as if it were on 5m.
       const tf = bot.parameters && bot.parameters.timeframe;
-      if (!tf || !Object.prototype.hasOwnProperty.call(TIMEFRAMES_MS, tf)) continue;
-      if (!instancesByTimeframe.has(tf)) instancesByTimeframe.set(tf, []);
-      instancesByTimeframe.get(tf).push(bot.instanceId);
+      addInstanceForTimeframe(tf, bot.instanceId);
+
+      // PART A: additionally persist/route every timeframe this bot's
+      // model declared, for this SAME instance/room. A model that declares
+      // none (e.g. MODEL_001) adds nothing here — identical to pre-Part-A
+      // behavior.
+      const required = requiredTimeframesByModel.get(bot.modelId) || [];
+      for (const entry of required) {
+        addInstanceForTimeframe(entry.timeframe, bot.instanceId);
+      }
     }
 
     const result = {

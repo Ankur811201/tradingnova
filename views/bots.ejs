@@ -24,11 +24,12 @@
         </div>
 
         <!-- ============================================================
-             CREATE BOT MODAL (existing functionality, improved UI only)
-             Same fields / ids as the original inline form:
-             instModel, instSymbol, instEnv, instLeverage, instCapital,
-             modelParamsSection, modelParamsContainer, createForm, createBtn,
-             createAlert. No new backend calls are introduced.
+             CREATE BOT MODAL — MODEL_002-only.
+             Fields: instName, instModel (fixed, readonly = MODEL_002),
+             instSymbol, instEnv, instLeverage, instCapital, trend radios,
+             instResistance1-3, instSupport1-3, timeframe radios,
+             createForm, createBtn, createAlert. MODEL_001 does not appear
+             anywhere in this form. No new backend calls are introduced.
         ============================================================= -->
        <div class="modal-overlay hidden" id="createBotModal">
   <div class="modal modal-lg">
@@ -59,7 +60,8 @@
 
         <div class="field">
           <label for="instModel">Bot Model</label>
-          <select id="instModel" required></select>
+          <input id="instModel" type="text" value="MODEL_002" readonly class="readonly-field">
+          <small>MODEL_002 — Custom Pattern</small>
         </div>
 
         <div class="field">
@@ -89,18 +91,8 @@
 
         <div class="field">
           <label for="instLeverage">Leverage</label>
-
-          <select id="instLeverage">
-
-            <option>1</option>
-            <option>2</option>
-            <option>3</option>
-            <option>5</option>
-            <option>10</option>
-            <option>20</option>
-
-          </select>
-
+          <input id="instLeverage" type="number" min="1" max="200" step="1" value="1" required>
+          <small>1x to 200x.</small>
         </div>
 
       </div>
@@ -118,140 +110,102 @@
           type="number"
           min="1"
           step="0.01"
-          placeholder="100">
+          placeholder="100"
+          required>
 
         <small>
-          Maximum amount this bot can use.
+          The maximum capital this bot is allowed to use. This is separate from leverage — the
+          model's own risk sizing determines the actual position, capped so notional exposure
+          never exceeds Maximum Capital &times; Leverage.
         </small>
 
       </div>
 
       <!-- ===================== -->
-      <!-- LEVELS (PART 13 — replaces the old non-functional "Layer" -->
-      <!-- selects above with the real prices patternEngine reads)  -->
+      <!-- MODEL_002 STRATEGY INPUTS -->
+      <!-- Shown only when Bot Model = MODEL_002. Trend and every support/  -->
+      <!-- resistance level are supplied directly by the user — MODEL_002  -->
+      <!-- never calculates them (no Daily BOS, no EMA, no 1H confirmation). -->
       <!-- ===================== -->
 
-      <div class="field-row">
+      <div id="model002Section">
 
-        <div class="field">
-          <label for="instTopLevel">Top Level (Optional)</label>
-          <input id="instTopLevel" type="number" min="0" step="any" placeholder="e.g. 64280">
-          <small>Resistance / upper boundary price.</small>
+        <div class="card mt-16">
+          <div class="card-header"><h4>Market Trend</h4></div>
+          <div class="card-body">
+            <div class="field-row" style="grid-template-columns:repeat(2,1fr);">
+              <label class="radio-option">
+                <input type="radio" name="instTrend" id="trendBullish" value="BULLISH" checked>
+                <span>📈 Bullish</span>
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="instTrend" id="trendBearish" value="BEARISH">
+                <span>📉 Bearish</span>
+              </label>
+            </div>
+            <small>You supply the market trend — the bot does not calculate it.</small>
+          </div>
         </div>
 
-        <div class="field">
-          <label for="instBottomLevel">Bottom Level (Optional)</label>
-          <input id="instBottomLevel" type="number" min="0" step="any" placeholder="e.g. 64024">
-          <small>Support / lower boundary price.</small>
+        <div class="card mt-16">
+          <div class="card-header"><h4>Resistance Levels</h4></div>
+          <div class="card-body">
+            <div class="field-row" style="grid-template-columns:repeat(3,1fr);">
+              <div class="field">
+                <label for="instResistance1">Resistance Level 1 *</label>
+                <input id="instResistance1" type="number" step="any" min="0" placeholder="65000" required>
+              </div>
+              <div class="field">
+                <label for="instResistance2">Resistance Level 2 *</label>
+                <input id="instResistance2" type="number" step="any" min="0" placeholder="64990" required>
+              </div>
+              <div class="field">
+                <label for="instResistance3">Resistance Level 3 *</label>
+                <input id="instResistance3" type="number" step="any" min="0" placeholder="64700" required>
+              </div>
+            </div>
+            <small>All 3 required.</small>
+          </div>
+        </div>
+
+        <div class="card mt-16">
+          <div class="card-header"><h4>Support Levels</h4></div>
+          <div class="card-body">
+            <div class="field-row" style="grid-template-columns:repeat(3,1fr);">
+              <div class="field">
+                <label for="instSupport1">Support Level 1 *</label>
+                <input id="instSupport1" type="number" step="any" min="0" placeholder="64400" required>
+              </div>
+              <div class="field">
+                <label for="instSupport2">Support Level 2 *</label>
+                <input id="instSupport2" type="number" step="any" min="0" placeholder="64350" required>
+              </div>
+              <div class="field">
+                <label for="instSupport3">Support Level 3 *</label>
+                <input id="instSupport3" type="number" step="any" min="0" placeholder="64300" required>
+              </div>
+            </div>
+            <small>All 3 required.</small>
+          </div>
+        </div>
+
+        <div class="card mt-16">
+          <div class="card-header"><h4>Execution Timeframe</h4></div>
+          <div class="card-body">
+            <div class="field-row" style="grid-template-columns:repeat(2,1fr);">
+              <label class="radio-option">
+                <input type="radio" name="instTimeframe" id="tf1m" value="1m" checked>
+                <span>1 Minute</span>
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="instTimeframe" id="tf3m" value="3m">
+                <span>3 Minutes</span>
+              </label>
+            </div>
+          </div>
         </div>
 
       </div>
-
-      <div class="field">
-        <label for="instTargets">Target Levels (Optional)</label>
-        <input id="instTargets" type="text" placeholder="e.g. 65000, 66000">
-        <small>Comma-separated take-profit prices. The nearest one on the correct side of entry is used.</small>
-      </div>
-
-      <!-- ===================== -->
-      <!-- SIZING MODE (PART 13) -->
-      <!-- ===================== -->
-
-      <div class="field-row">
-
-        <div class="field">
-          <label for="instSizingMode">Sizing Mode</label>
-          <select id="instSizingMode">
-            <option value="CAPITAL" selected>Capital-based (default)</option>
-            <option value="LOT">Lot / Contract quantity</option>
-          </select>
-        </div>
-
-        <div class="field" id="instLotValueField" style="display:none;">
-          <label for="instLotValue">Lot / Contract Quantity</label>
-          <input id="instLotValue" type="number" min="0" step="any" placeholder="e.g. 4">
-        </div>
-
-      </div>
-
-      <!-- ===================== -->
-      <!-- AUTO CONFIG -->
-      <!-- ===================== -->
-
-      <div class="card mt-16">
-
-        <div class="card-header">
-
-          <h4>Bot Configuration</h4>
-
-        </div>
-
-        <div class="card-body">
-
-          <div class="config-row">
-
-            <span>Timeframe</span>
-
-            <strong id="autoTimeframe">
-
-              Auto (5 Minutes)
-
-            </strong>
-
-          </div>
-
-          <div class="config-row">
-
-            <span>Strategy</span>
-
-            <strong id="autoStrategy">
-
-              Auto
-
-            </strong>
-
-          </div>
-
-          <div class="config-row">
-
-            <span>Indicators</span>
-
-            <strong>
-
-              Auto
-
-            </strong>
-
-          </div>
-
-        </div>
-
-      </div>
-
-      <!-- ===================== -->
-      <!-- ADVANCED -->
-      <!-- ===================== -->
-
-      <details class="mt-16">
-
-        <summary>
-
-          Advanced Strategy Settings
-
-        </summary>
-
-        <div id="modelParamsSection" class="mt-16">
-
-          <div
-            id="modelParamsContainer"
-            class="field-row"
-            style="grid-template-columns:repeat(2,1fr);">
-
-          </div>
-
-        </div>
-
-      </details>
 
       <button
         type="submit"

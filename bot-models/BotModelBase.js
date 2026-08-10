@@ -79,6 +79,25 @@ class BotModelBase {
   async onHydrate(_closedCandles) {}
 
   /**
+   * PART A (multi-timeframe infra) — optional hook. Called by BotManager
+   * once per timeframe the model declared via its registration's
+   * `requiredTimeframes` (see each model folder's index.js), AFTER onHydrate and
+   * strictly BEFORE the instance is registered to receive live market data
+   * — the same hydration-before-dispatch guarantee onHydrate already has.
+   * Each call carries the CLOSED candles for exactly one declared
+   * timeframe, oldest -> newest, at the history depth that timeframe
+   * requested. Same rules as onHydrate: reconstruct state silently, never
+   * emit a DECISION/StrategyEvent implying a trade signal, never submit a
+   * TradeCommand.
+   *
+   * A model that declares no requiredTimeframes, or doesn't override this,
+   * simply never receives it — no behavior change from before Part A.
+   * @param {string} _timeframe e.g. '1h', '1d'
+   * @param {object[]} _closedCandles oldest -> newest
+   */
+  async onHydrateTimeframe(_timeframe, _closedCandles) {}
+
+  /**
    * PART 11 — optional hook. Called by BotManager right after onHydrate
    * with per-level trade counts reconstructed from this instance's
    * authoritative StrategyEvent history, so a restart cannot reset a

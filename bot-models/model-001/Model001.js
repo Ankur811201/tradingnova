@@ -60,10 +60,6 @@ class Model001 extends BotModelBase {
     // BotManager can report real "X / 50 candles" readiness instead of a
     // bare WAIT/insufficient_history with no numbers attached.
     this.minRequiredHistory = 50;
-     console.log(this.params);
-console.log("historySize =", this.params.historySize);
-console.log("timeframe =", this.params.timeframe);
-console.log("minRequired =", this.minRequiredHistory);
 
     this.emitStrategyEvent('MODEL_STARTED', {
       symbol: this.symbol,
@@ -96,16 +92,7 @@ console.log("minRequired =", this.minRequiredHistory);
 
   if (!valid.length) return;
 
-  // <-- Put debug logs HERE
-  console.log("===== HYDRATION =====");
-  console.log("Received:", closedCandles.length);
-  console.log("Valid:", valid.length);
-  console.log("HistorySize:", this.params.historySize);
-
   this.candles = valid.slice(-this.params.historySize);
-
-  console.log("Loaded:", this.candles.length);
-  console.log("Min Required:", this.minRequiredHistory);
 
   this.lastProcessedCandleTimestamp =
     this.candles[this.candles.length - 1].timestamp;

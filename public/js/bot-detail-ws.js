@@ -453,15 +453,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
   // =========================================================
-  // REAL DECISION ENGINE (MODEL_001, authoritative)
+  // REAL DECISION ENGINE (model-agnostic, authoritative)
   // =========================================================
   //
-  // NOVA TRADE -- PART 8: `bot:decision` (emitted by BotManager only when a
-  // real MODEL_001 StrategyEvent of eventType 'DECISION' is produced — see
-  // services/botManager/BotManager.js and bot-models/model-001/Model001.js)
-  // is now the ONLY source that writes to the Decision Engine panel. This
-  // is called both for the server-rendered initial decision on page load
-  // (window.BOT_INITIAL_DECISION) and for every live event.
+  // NOVA TRADE -- PART 8 (later extended for MODEL_002): `bot:decision`
+  // (emitted by BotManager only when a real StrategyEvent of eventType
+  // 'DECISION' is produced by whichever model is actually running — see
+  // services/botManager/BotManager.js and each model's own
+  // onMarketData/_emitDecision, e.g. bot-models/model-001/Model001.js or
+  // bot-models/model-002/Model002.js) is the ONLY source that writes to
+  // the Decision Engine panel. This is called both for the server-rendered
+  // initial decision on page load (window.BOT_INITIAL_DECISION) and for
+  // every live event. The `modelId` used below to select a renderer comes
+  // from window.BOT_CONFIG.modelId — the actual bot's real model, never
+  // hardcoded or defaulted to MODEL_001.
 
   function renderDecision(data) {
     if (!data) return;
@@ -469,7 +474,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Mark latest engine update
     lastDecisionUpdate = Date.now();
 
-    // Strategy checks — real MODEL_001 analysis, or null (unavailable)
+    // Strategy checks — real analysis from whichever model produced this
+    // decision, or null (unavailable). Rendered via ModelThinkingRegistry,
+    // which picks the renderer matching the bot's actual modelId.
     const checksContainer =
       document.getElementById('thinking-checks');
 
@@ -498,7 +505,7 @@ document.addEventListener('DOMContentLoaded', () => {
           : 'text-blue-400');
     }
 
-    // Reason — real MODEL_001 reason, never a fabricated one
+    // Reason — the real reason from the actual decision event, never a fabricated one
     const reasonEl =
       document.getElementById('thinking-reason');
 

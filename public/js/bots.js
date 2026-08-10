@@ -46,52 +46,9 @@
     document.body.classList.remove('modal-open');
   }
 
-  function renderModelParamFields(modelId) {
-    const section = document.getElementById('modelParamsSection');
-    const container = document.getElementById('modelParamsContainer');
-    const model = modelsById[modelId];
-    const params = model && model.defaultParameters;
-    if (!params || !Object.keys(params).length) {
-      section.classList.add('hidden');
-      container.innerHTML = '';
-      return;
-    }
-    section.classList.remove('hidden');
-    container.innerHTML = Object.keys(params).map((key) => {
-      const value = params[key];
-      const inputId = 'param_' + key;
-      let inputHtml;
-      if (typeof value === 'boolean') {
-        inputHtml = '<select id="' + inputId + '" data-type="boolean">' +
-          '<option value="true"' + (value ? ' selected' : '') + '>true</option>' +
-          '<option value="false"' + (!value ? ' selected' : '') + '>false</option></select>';
-      } else if (typeof value === 'number') {
-        inputHtml = '<input type="number" id="' + inputId + '" data-type="number" step="any" value="' + value + '" />';
-      } else {
-        inputHtml = '<input type="text" id="' + inputId + '" data-type="string" value="' + escapeHtml(String(value)) + '" />';
-      }
-      return '<div class="field"><label for="' + inputId + '">' + escapeHtml(key) + '</label>' + inputHtml + '</div>';
-    }).join('');
-  }
-
-  function collectModelParams() {
-    const container = document.getElementById('modelParamsContainer');
-    const inputs = container.querySelectorAll('[data-type]');
-    const result = {};
-    inputs.forEach((el) => {
-      const key = el.id.replace(/^param_/, '');
-      const type = el.dataset.type;
-      if (type === 'boolean') result[key] = el.value === 'true';
-      else if (type === 'number') result[key] = Number(el.value);
-      else result[key] = el.value;
-    });
-    return result;
-  }
-
  async function loadModels() {
 
     const container = document.getElementById('modelsList');
-    const select = document.getElementById('instModel');
 
     try {
 
@@ -103,38 +60,17 @@
             modelsById[m.modelId] = m;
         });
 
-        if (!models.length) {
-
-            if (container) {
-                container.innerHTML =
-                    '<div class="empty-state">No Bot Models Installed</div>';
-            }
-
-            select.innerHTML =
-                '<option value="">No models available</option>';
-
-            return;
-        }
-
         // Only update modelsList if it exists
         if (container) {
-
-            container.innerHTML = models.map(m => `
-                <div class="model-card">
-                    <h3>${escapeHtml(m.name || m.modelId)}</h3>
-                    <p>${escapeHtml(m.description || "")}</p>
-                </div>
-            `).join('');
-
+            container.innerHTML = models.length
+                ? models.map(m => `
+                    <div class="model-card">
+                        <h3>${escapeHtml(m.name || m.modelId)}</h3>
+                        <p>${escapeHtml(m.description || "")}</p>
+                    </div>
+                `).join('')
+                : '<div class="empty-state">No Bot Models Installed</div>';
         }
-
-        select.innerHTML = models.map(m => `
-            <option value="${escapeHtml(m.modelId)}">
-                ${escapeHtml(m.name || m.modelId)}
-            </option>
-        `).join('');
-
-        renderModelParamFields(select.value);
 
     } catch (err) {
 
@@ -144,9 +80,6 @@
             container.innerHTML =
                 '<div class="empty-state">Unable to load bot models</div>';
         }
-
-        select.innerHTML =
-            '<option value="">Unavailable</option>';
     }
 
 }
@@ -306,6 +239,27 @@
       '<span class="info-value' + (cls ? ' ' + cls : '') + '">' + value + '</span></div>';
   }
 
+  // MODEL_002-only display (confirmed requirement §8): trend, support/
+  // resistance configuration, leverage, and max capital, sourced entirely
+  // from instance.parameters/capitalAllocation/leverage — nothing invented,
+  // nothing shown for any other (e.g. obsolete MODEL_001) model.
+  function buildModel002InfoBlock(instance) {
+    if (instance.modelId !== 'MODEL_002') return '';
+    const p = instance.parameters || {};
+    const trend = p.trend || '—';
+    const support = Array.isArray(p.support) ? p.support.join(' / ') : '—';
+    const resistance = Array.isArray(p.resistance) ? p.resistance.join(' / ') : '—';
+    const trendCls = trend === 'BULLISH' ? 'pnl-positive' : trend === 'BEARISH' ? 'pnl-negative' : '';
+    return `
+    <div class="info-grid mt-16">
+      ${infoTile('Trend', escapeHtml(trend), trendCls)}
+      ${infoTile('Leverage', escapeHtml(String(instance.leverage || 1)) + 'x')}
+      ${infoTile('Max Capital', formatUsd(instance.capitalAllocation))}
+      ${infoTile('Support', escapeHtml(support))}
+      ${infoTile('Resistance', escapeHtml(resistance))}
+    </div>`;
+  }
+
   function buildCardHtml(instance, position, latestPrice) {
     const model = modelsById[instance.modelId];
     const strategyName = (model && model.name) || instance.modelId;
@@ -345,6 +299,8 @@
         position ? NovaFormat.sideBadge(position.side) : 'No Open Position'
       )}
     </div>
+
+    ${buildModel002InfoBlock(instance)}
 
     <!-- ===== Bot Message ===== -->
     ${
@@ -515,6 +471,49 @@
     }
   }
 
+  function readNumberField(id) {
+    const raw = document.getElementById(id).value;
+    return raw === '' ? NaN : Number(raw);
+  }
+
+  /** Validates the MODEL_002-specific fields; returns {parameters} or {error}. */
+  function collectAndValidateModel002Fields() {
+    const trendEl = document.querySelector('input[name="instTrend"]:checked');
+    const timeframeEl = document.querySelector('input[name="instTimeframe"]:checked');
+    const trend = trendEl ? trendEl.value : null;
+    const timeframe = timeframeEl ? timeframeEl.value : null;
+
+    if (trend !== 'BULLISH' && trend !== 'BEARISH') {
+      return { error: 'Select a market trend (Bullish or Bearish).' };
+    }
+    if (timeframe !== '1m' && timeframe !== '3m') {
+      return { error: 'Select an execution timeframe (1 Minute or 3 Minutes).' };
+    }
+
+    const resistance = [
+      readNumberField('instResistance1'),
+      readNumberField('instResistance2'),
+      readNumberField('instResistance3'),
+    ];
+    const support = [
+      readNumberField('instSupport1'),
+      readNumberField('instSupport2'),
+      readNumberField('instSupport3'),
+    ];
+
+    for (const level of resistance) {
+      if (!Number.isFinite(level) || level <= 0) return { error: 'All 3 Resistance Levels are required and must be positive numbers.' };
+    }
+    for (const level of support) {
+      if (!Number.isFinite(level) || level <= 0) return { error: 'All 3 Support Levels are required and must be positive numbers.' };
+    }
+
+    // Field names match the existing MODEL_002 parameter contract exactly
+    // (bot-models/model-002/config.js / validators.js: `trend`, `support`,
+    // `resistance`, `timeframe`) — no new backend parameter names invented.
+    return { parameters: { trend, support, resistance, timeframe } };
+  }
+
   function setupCreateForm() {
     const form = document.getElementById('createForm');
     const btn = document.getElementById('createBtn');
@@ -522,54 +521,53 @@
     form.addEventListener('submit', NovaApi.withButtonLoading(btn, async (e) => {
       e.preventDefault();
       alertBox.classList.add('hidden');
+
       const name = document.getElementById('instName').value.trim();
-const modelId = document.getElementById('instModel').value;
+      // Bot Model is fixed/readonly — always MODEL_002. No dropdown, no
+      // possibility of MODEL_001 (or anything else) ever being submitted.
+      const modelId = 'MODEL_002';
       const symbol = document.getElementById('instSymbol').value;
       const environment = document.getElementById('instEnv').value;
-      const leverage = Number(document.getElementById('instLeverage').value) || 1;
-      const capitalAllocation = Number(document.getElementById('instCapital').value);
-      if (!modelId || !symbol || !capitalAllocation) {
-        alertBox.textContent = 'Model, symbol, and capital allocation are required.';
+      const leverage = readNumberField('instLeverage');
+      const capitalAllocation = readNumberField('instCapital');
+
+      if (!name) {
+        alertBox.textContent = 'Bot name is required.';
         alertBox.classList.remove('hidden');
         return;
       }
-      // PART 13 -- PHASE C/O: canonical levels/targets/sizing. All optional —
-      // omitted entirely (not sent as empty/0) when left blank, so the backend
-      // schema defaults (top/bottom null, sizing CAPITAL, targets []) apply,
-      // exactly matching pre-Part-13 bot behavior.
-      const topLevelRaw = document.getElementById('instTopLevel').value;
-      const bottomLevelRaw = document.getElementById('instBottomLevel').value;
-      const levels = (topLevelRaw !== '' && bottomLevelRaw !== '')
-        ? { top: Number(topLevelRaw), bottom: Number(bottomLevelRaw) }
-        : null;
+      if (!symbol || !environment) {
+        alertBox.textContent = 'Trading pair and trading mode are required.';
+        alertBox.classList.remove('hidden');
+        return;
+      }
+      if (!Number.isFinite(capitalAllocation) || capitalAllocation <= 0) {
+        alertBox.textContent = 'Maximum Capital must be a positive number.';
+        alertBox.classList.remove('hidden');
+        return;
+      }
+      if (!Number.isFinite(leverage) || leverage < 1 || leverage > 200) {
+        alertBox.textContent = 'Leverage must be between 1x and 200x.';
+        alertBox.classList.remove('hidden');
+        return;
+      }
 
-      const targetsRaw = document.getElementById('instTargets').value.trim();
-      const targets = targetsRaw
-        ? targetsRaw.split(',').map((s) => s.trim()).filter(Boolean).map((s) => ({ price: Number(s) }))
-        : null;
+      // MODEL_002 payload: ONLY the fields this model uses. No levels/
+      // targets/sizing/legacy technical parameters exist anywhere in this
+      // form, so there is nothing legacy left to accidentally include.
+      const result = collectAndValidateModel002Fields();
+      if (result.error) {
+        alertBox.textContent = result.error;
+        alertBox.classList.remove('hidden');
+        return;
+      }
 
-      const sizingMode = document.getElementById('instSizingMode').value;
-      const lotValueRaw = document.getElementById('instLotValue').value;
-      const sizing = sizingMode === 'LOT'
-        ? { mode: 'LOT', value: Number(lotValueRaw) }
-        : { mode: 'CAPITAL' };
+      const payload = { name, modelId, symbol, environment, leverage, capitalAllocation, parameters: result.parameters };
 
       try {
-        const parameters = collectModelParams();
-await NovaApi.post('/api/bot-instances', {
-    name,
-    modelId,
-    symbol,
-    environment,
-    leverage,
-    capitalAllocation,
-    parameters,
-    levels,
-    targets,
-    sizing
-});        NovaUI.toast('Bot instance created', 'success');
+        await NovaApi.post('/api/bot-instances', payload);
+        NovaUI.toast('Bot instance created', 'success');
         form.reset();
-        renderModelParamFields(document.getElementById('instModel').value);
         closeCreateModal();
         await loadInstances();
       } catch (err) {
@@ -585,35 +583,6 @@ await NovaApi.post('/api/bot-instances', {
     loadInstances();
     setupCreateForm();
 
-    // PART 13 -- PHASE O: only show the Lot/Contract Quantity input when
-    // Sizing Mode is LOT; CAPITAL mode uses the existing dynamic sizing.
-    const sizingModeEl = document.getElementById('instSizingMode');
-    const lotValueFieldEl = document.getElementById('instLotValueField');
-    if (sizingModeEl && lotValueFieldEl) {
-      sizingModeEl.addEventListener('change', () => {
-        lotValueFieldEl.style.display = sizingModeEl.value === 'LOT' ? '' : 'none';
-      });
-    }
-
-document.getElementById('instModel').addEventListener('change', (e) => {
-
-    const modelId = e.target.value;
-
-    renderModelParamFields(modelId);
-
-    // Find selected model
-    const model = registeredModels.find(m => m.modelId === modelId);
-
-    if (!model) return;
-
-    // Update Auto Configuration
-    document.getElementById("autoTimeframe").textContent =
-        `Auto (${model.defaultConfig?.timeframe || "-"})`;
-
-    document.getElementById("autoStrategy").textContent =
-        model.name || model.modelId;
-
-});
     document.getElementById('openCreateModalBtn').addEventListener('click', openCreateModal);
     document.getElementById('closeCreateModalBtn').addEventListener('click', closeCreateModal);
     document.getElementById('createBotModal').addEventListener('click', (e) => {

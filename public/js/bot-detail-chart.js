@@ -132,11 +132,35 @@
       var om = chartManager.overlayManager;
       if (!om || typeof om.setPriceLine !== 'function') return;
       var cfg = window.BOT_CONFIG || {};
-      var levels = cfg.levels || {};
-      if (levels.top != null) om.setPriceLine('cfgTopLevel', levels.top, '#f23645', 'TOP LEVEL', 1);
-      if (levels.bottom != null) om.setPriceLine('cfgBottomLevel', levels.bottom, '#089981', 'BOTTOM LEVEL', 1);
-      (cfg.targets || []).forEach(function (price, idx) {
-        om.setPriceLine('cfgTarget' + idx, price, '#2962ff', 'TARGET ' + (idx + 1), 1);
+      var isModel002 = cfg.modelId === 'MODEL_002';
+
+      // NOVA TRADE -- CHART CLEANUP: Top/Bottom Level and Target Levels are
+      // obsolete MODEL_001-only overlays. The underlying infrastructure
+      // (OverlayManager.setPriceLine, window.BOT_CONFIG.levels/targets) is
+      // left in place — other models/tests still depend on it — but the
+      // active MODEL_002 chart must never draw these lines, regardless of
+      // whether levels/targets happen to be populated on the instance.
+      if (!isModel002) {
+        var levels = cfg.levels || {};
+        if (levels.top != null) om.setPriceLine('cfgTopLevel', levels.top, '#f23645', 'TOP LEVEL', 1);
+        if (levels.bottom != null) om.setPriceLine('cfgBottomLevel', levels.bottom, '#089981', 'BOTTOM LEVEL', 1);
+        (cfg.targets || []).forEach(function (price, idx) {
+          om.setPriceLine('cfgTarget' + idx, price, '#2962ff', 'TARGET ' + (idx + 1), 1);
+        });
+      }
+
+      // MODEL_002 — user-configured Support/Resistance (exactly 3 each,
+      // never auto-detected: no swing detection, no Daily/1H levels).
+      // Same setPriceLine key/dedup mechanism as Top/Bottom Level above —
+      // re-syncing with the same keys (cfgSupport0/1/2, cfgResistance0/1/2)
+      // overwrites rather than duplicates the lines.
+      (cfg.support || []).forEach(function (price, idx) {
+        if (price == null) return;
+        om.setPriceLine('cfgSupport' + idx, price, '#089981', 'S' + (idx + 1), 1);
+      });
+      (cfg.resistance || []).forEach(function (price, idx) {
+        if (price == null) return;
+        om.setPriceLine('cfgResistance' + idx, price, '#f23645', 'R' + (idx + 1), 1);
       });
     })();
 

@@ -133,10 +133,29 @@ test('[Part 9] Performance tab: all-winning-trades profit factor renders as infi
   assert.match(html, /&#8734;/);
 });
 
-test('[Part 9] Max Drawdown / Equity Curve stay honestly unimplemented (N/A / no persisted history), never fabricated', () => {
+test('[Part 5] Max Drawdown renders N/A only when performanceData is genuinely absent, never a fabricated $0.00', () => {
   const html = render(baseArgs({ currentPosition: null, performanceData: null }));
-  const perfPanelMatch = html.match(/data-tab="performance" data-active="true">[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/);
   assert.match(html, /id="perf-drawdown"[^>]*>N\/A/);
+});
+
+test('[Part 5] Max Drawdown renders the real server-computed value (utils/performance.js computeMaxDrawdown) once performanceData exists, including a genuine zero', () => {
+  const performanceData = {
+    totalTrades: 3, winningTrades: 2, losingTrades: 1,
+    totalProfit: 25, grossProfit: 30, grossLoss: 5,
+    winRate: (2 / 3) * 100, profitFactor: 6, todayProfit: 25,
+    maxDrawdown: 12.34,
+  };
+  const html = render(baseArgs({ performanceData, currentPosition: null }));
+  assert.match(html, /id="perf-drawdown"[^>]*>\$12\.34/);
+
+  const zeroDrawdown = Object.assign({}, performanceData, { maxDrawdown: 0 });
+  const html2 = render(baseArgs({ performanceData: zeroDrawdown, currentPosition: null }));
+  assert.match(html2, /id="perf-drawdown"[^>]*>\$0\.00/);
+});
+
+test('[Part 5] Equity Curve stays an honest "not yet wired in" empty state, never fabricated chart points', () => {
+  const html = render(baseArgs({ currentPosition: null, performanceData: null }));
+  assert.match(html, /id="equity-curve-container"[^>]*>[\s\S]*?renders once historical balance data is wired in/);
 });
 
 // ===========================================================
