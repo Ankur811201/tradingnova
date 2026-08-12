@@ -492,6 +492,24 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
+    // MODEL_002 same-side pattern chart overlay — draws the real, fixed
+    // Candle2 upper/lower boundaries the strategy is actually watching, and
+    // clears them once the pattern resolves (BUY/SELL/INVALID/back to
+    // IDLE). Uses only what the backend actually computed
+    // (data.checks.boundaries) — no invented lines.
+    if (modelId === 'MODEL_002' && window.NovaChartPatternOverlay) {
+      try {
+        var boundaries = data.checks && data.checks.boundaries;
+        if (boundaries && boundaries.upper != null && boundaries.lower != null) {
+          window.NovaChartPatternOverlay.setBoundaries(boundaries.upper, boundaries.lower);
+        } else {
+          window.NovaChartPatternOverlay.clearBoundaries();
+        }
+      } catch (err) {
+        console.error('[DECISION] Pattern boundary overlay failed:', err);
+      }
+    }
+
     // Final Decision (WAIT / BUY / SELL)
     const decisionEl =
       document.getElementById('thinking-decision');
@@ -505,14 +523,22 @@ document.addEventListener('DOMContentLoaded', () => {
           : 'text-blue-400');
     }
 
-    // Reason — the real reason from the actual decision event, never a fabricated one
+    // Reason — the real reason from the actual decision event, never a
+    // fabricated one. MODEL_002's own reason field is an internal
+    // snake_case code (e.g. candle1_support_touch_awaiting_candle2) —
+    // routed through the single shared formatter (model002-reason-map.js,
+    // also used server-side for Decision History) so live and
+    // server-rendered text always match. MODEL_001's reason strings are
+    // already human-readable sentences and are left untouched.
     const reasonEl =
       document.getElementById('thinking-reason');
 
     if (reasonEl) {
-      reasonEl.textContent =
-        data.reason ||
-        'Monitoring market conditions...';
+      const rawReason = data.reason || '';
+      const formattedReason = (modelId === 'MODEL_002' && window.Model002ReasonMap)
+        ? window.Model002ReasonMap.formatModel002Reason(rawReason)
+        : rawReason;
+      reasonEl.textContent = formattedReason || 'Monitoring market conditions...';
     }
 
     prependDecisionHistoryRow(data);
@@ -522,7 +548,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // adding a second `socket.on('bot:decision', ...)` listener. WAIT is
     // intentionally excluded -- it isn't a story beat, just monitoring.
     if (data.decision === 'BUY' || data.decision === 'SELL') {
-      appendTradeStoryStep(data.decision, data.reason || '', data.decision === 'BUY' ? 'buy' : 'sell');
+      const storyReason = (modelId === 'MODEL_002' && window.Model002ReasonMap)
+        ? window.Model002ReasonMap.formatModel002Reason(data.reason)
+        : (data.reason || '');
+      appendTradeStoryStep(data.decision, storyReason, data.decision === 'BUY' ? 'buy' : 'sell');
     }
   }
 
@@ -555,7 +584,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const reasonSpan = document.createElement('span');
     reasonSpan.className = 'text-gray-400 truncate max-w-[280px] text-right';
-    reasonSpan.textContent = data.reason || '';
+    reasonSpan.textContent = (modelId === 'MODEL_002' && window.Model002ReasonMap)
+      ? window.Model002ReasonMap.formatModel002Reason(data.reason)
+      : (data.reason || '');
 
     row.appendChild(time);
     row.appendChild(decisionSpan);

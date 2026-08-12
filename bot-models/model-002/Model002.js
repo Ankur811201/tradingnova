@@ -2,15 +2,17 @@
 
 const BotModelBase = require('../BotModelBase');
 const { validateCandle, validateAndMergeParameters } = require('./validators');
-const { resolveTouchedLevel } = require('./levelEngine');
-const { evaluateCounterTrendBuy, evaluateCounterTrendSell } = require('./patternEngine');
 const {
-  computeStopLoss, validateSlDistance, computeQuantity, computeTakeProfit, capExposureToMaxNotional,
-} = require('./riskSizing');
+  findTouchedLevel, computeBuyStopLoss, computeSellStopLoss,
+  candle2TouchesBodyHigh, candle2TouchesBodyLow,
+  evaluateCandle2, computeBoundaries, evaluateBoundaryBreak,
+  computeBuyRiskLength, computeSellRiskLength, computeLotFromRiskLength,
+} = require('./sameSidePatternEngine');
+const { capExposureToMaxNotional } = require('./riskSizing');
 const { ConsecutiveLossSafety } = require('./safetyState');
 
-const RULE_ID_COUNTER_BUY = 'MODEL_002_COUNTER_TREND_BUY';
-const RULE_ID_COUNTER_SELL = 'MODEL_002_COUNTER_TREND_SELL';
+const RULE_ID_BUY = 'MODEL_002_SAME_SIDE_BUY';
+const RULE_ID_SELL = 'MODEL_002_SAME_SIDE_SELL';
 
 const LEVERAGE_MIN = 1;
 const LEVERAGE_MAX = 200;
@@ -18,15 +20,36 @@ const LEVERAGE_MAX = 200;
 /**
  * MODEL_002 — client-driven custom-pattern trading model.
  *
- * This revision fixes 3 confirmed issues on top of the prior custom-
- * pattern implementation (unchanged strategy rules — see patternEngine.js/
- * levelEngine.js, not touched here):
+ * CURRENT CONFIRMED STRATEGY (same-side patterns, fully implemented):
+ *   BULLISH + SUPPORT    -> BUY  (see sameSidePatternEngine.js)
+ *   BEARISH + RESISTANCE -> SELL (see sameSidePatternEngine.js)
+ *   BULLISH + RESISTANCE -> WAIT (opposite-side pattern, not yet specified)
+ *   BEARISH + SUPPORT    -> WAIT (opposite-side pattern, not yet specified)
  *
- *   1. Max Capital x Leverage notional ceiling (was: max capital alone).
- *   2. Real WIN/LOSS detection from the authoritative Trade record via a
- *      new, additive BotManager hook (was: a next-candle-close heuristic).
- *   3. Consecutive-loss safety state persisted across restart by
- *      reconstructing it from Trade history (was: in-memory only).
+ * State machine (this.patternCandidate; null = IDLE):
+ *   WAITING_FOR_CANDLE2      — Candle 1 found, searching for a candle that
+ *                              touches its body-high (BUY) / body-low
+ *                              (SELL). NOT required to be the immediate
+ *                              next candle. A newer Support/Resistance
+ *                              touch during this stage REPLACES Candle 1
+ *                              (last-touch-wins) and restarts the Candle 2
+ *                              search — recomputing SL from the new
+ *                              Candle 1.
+ *   WAITING_FOR_BOUNDARY_BREAK — Candle 2 validated; boundaries fixed at
+ *                              {upper: Candle2.high, lower: Candle2.low}
+ *                              and monitored across as many future candles
+ *                              as needed (confirmed: not only Candle 3) —
+ *                              a strict close-through triggers BUY/SELL or
+ *                              INVALID; touching a boundary or closing
+ *                              exactly at it is WAIT. Last-touch-wins is
+ *                              NOT re-applied at this stage (the
+ *                              requirement only describes it for the
+ *                              Candle1->Candle2 search).
+ *
+ * On BUY/SELL confirmation the candidate is cleared after the
+ * TradeCommand is submitted. On INVALID it is cleared immediately — the
+ * invalidating candle itself is never re-evaluated as a new Candle 1 in
+ * the same tick; search resumes fresh from the next candle.
  */
 class Model002 extends BotModelBase {
   async onStart(instanceConfig) {
@@ -52,6 +75,32 @@ class Model002 extends BotModelBase {
 
     this.candles = [];
     this.lastProcessedTs = null;
+
+    // In-memory 3-candle pattern state machine (spec Steps 1-7/1-6). The
+    // JS object itself is not written to any database, but a restart does
+    // NOT lose the pattern — onHydrate() -> _reconstructPatternStateFromHistory()
+    // reconstructs Candle 1 from the LAST valid same-side touch still
+    // present in the hydrated candle history (see onHydrate below), using
+    // the exact same construction the live touch path uses. A restart
+    // only loses a pattern if the touching candle has aged out of the
+    // hydration window entirely. If a position is already open when this
+    // instance restarts, that position's own persisted stopLoss remains
+    // the hard protection regardless of this in-memory state — see
+    // onPositionClosed/restoreSafetyState below for the equivalent
+    // restart-recovery contract on the safety side.
+    this.patternCandidate = null;
+
+    // One-time R1/S1 calibration flags (opposite-side patterns). In-memory
+    // only — no MongoDB persistence yet, per explicit instruction. Start
+    // false on every onStart/restart; _reconstructPatternStateFromHistory
+    // deterministically re-derives the true value from whatever calibration
+    // evidence is actually present in the hydrated candle window. If that
+    // evidence predates the window, it cannot be seen — this is a known,
+    // documented, tested limitation (not a silent guess): see
+    // tests/model002.sameSidePattern.test.js "CALIBRATION HISTORY OUTSIDE
+    // HYDRATION WINDOW".
+    this.r1Calibrated = false;
+    this.s1Calibrated = false;
 
     // Confirmed — 3 consecutive losses pauses the bot. Real state, driven
     // exclusively by onPositionClosed() below (authoritative Trade
@@ -79,10 +128,149 @@ class Model002 extends BotModelBase {
   async onHydrate(closedCandles) {
     this.candles = this._mergeHydratedCandles(this.candles, closedCandles, this.params.historySize);
     if (this.candles.length) this.lastProcessedTs = this.candles[this.candles.length - 1].timestamp;
+
+    // Client-confirmed rule: "use last touch," extended to the FULL
+    // unfinished pattern, not just Candle 1. After a restart, a pattern
+    // that had already progressed to a validated Candle 2 with fixed
+    // boundaries must not be forgotten and reset back to
+    // WAITING_FOR_CANDLE2 — that would lose real, already-computed state
+    // for no reason. Replays the deterministic state machine across the
+    // full hydrated history to land in whatever stage the live process
+    // actually reached. Never emits a DECISION event and never submits a
+    // TradeCommand — it only reconstructs state; a real BUY/SELL still
+    // only ever happens from a live candle going forward, unchanged.
+    this._reconstructPatternStateFromHistory();
+
     this.emitStrategyEvent('MODEL_HYDRATED', {
       symbol: this.symbol, timeframe: this.params.timeframe,
       candlesLoaded: this.candles.length, required: this.params.historySize,
     });
+  }
+
+  /**
+   * Full deterministic state-machine replay across the hydrated candle
+   * history — NOT just a last-touch scan. A restart must not lose an
+   * already-validated Candle 2 and its fixed boundaries; it must land in
+   * whatever stage (WAITING_FOR_CANDLE2 or WAITING_FOR_BOUNDARY_BREAK) the
+   * live process would actually have reached by the end of this same
+   * candle sequence.
+   *
+   * Replays the exact same transitions the live path uses
+   * (_buildCandle1Candidate, evaluateCandle2, computeBoundaries,
+   * evaluateBoundaryBreak — no new formula, no new rule) forward across
+   * `this.candles`, oldest -> newest, entirely silently: no
+   * emitStrategyEvent, no submitTradeCommand, ever. A historical
+   * BUY/SELL/INVALID resolution, or a candle that fails Candle 2
+   * validation, resets the candidate — but that same candle is then
+   * immediately re-checked for being a fresh same-side touch in its own
+   * right (a failed Candle 2 or a resolved pattern does not mean that
+   * candle wasn't also a valid touch), so a genuine touch is never
+   * silently skipped just because it also played another role. This
+   * mirrors the live re-entry rule (no cooldown) so an already-completed
+   * pattern can never be "reused" as if it were still pending. Whether the
+   * trade that resulted from a historical completion is still open is
+   * irrelevant to this replay's correctness: onMarketData's existing
+   * position_already_open guard independently blocks any new entry
+   * evaluation for as long as a real open Position exists, regardless of
+   * what this method leaves in patternCandidate.
+   */
+  _reconstructPatternStateFromHistory() {
+    const trend = this.params.trend;
+    this.patternCandidate = null;
+    if (trend !== 'BULLISH' && trend !== 'BEARISH') return;
+
+    // Mirrors _searchForPatternStart's trend-based priority for a fresh
+    // touch when no candidate is active: BULLISH checks Support first, then
+    // Resistance; BEARISH checks Resistance first, then Support. Both level
+    // types are real patterns now (BULLISH+RESISTANCE, BEARISH+SUPPORT are
+    // no longer WAIT-only), so replay must consider both, not just one.
+    const findFreshTouch = (candle) => {
+      if (trend === 'BULLISH') {
+        const supportMatch = findTouchedLevel(this.params.support, candle);
+        if (supportMatch) return { direction: 'BUY', match: supportMatch };
+        const resistanceMatch = findTouchedLevel(this.params.resistance, candle);
+        if (resistanceMatch) return { direction: 'SELL', match: resistanceMatch };
+        return null;
+      }
+      const resistanceMatch = findTouchedLevel(this.params.resistance, candle);
+      if (resistanceMatch) return { direction: 'SELL', match: resistanceMatch };
+      const supportMatch = findTouchedLevel(this.params.support, candle);
+      if (supportMatch) return { direction: 'BUY', match: supportMatch };
+      return null;
+    };
+
+    let candidate = null;
+
+    for (let i = 0; i < this.candles.length; i += 1) {
+      const candle = this.candles[i];
+
+      if (candidate && candidate.stage === 'WAITING_FOR_CANDLE2') {
+        // Last-touch-wins applies at this stage, same as live — only the
+        // SAME level type as the active candidate's own direction.
+        const levels = candidate.direction === 'BUY' ? this.params.support : this.params.resistance;
+        const newTouch = findTouchedLevel(levels, candle);
+        if (newTouch) {
+          candidate = this._buildCandle1Candidate(candle, candidate.direction, newTouch);
+          continue; // this candle's role (fresh Candle 1) is fully handled
+        }
+
+        const touchesBody = candidate.direction === 'BUY'
+          ? candle2TouchesBodyHigh(candidate.candle1, candle)
+          : candle2TouchesBodyLow(candidate.candle1, candle);
+        if (touchesBody) {
+          const result = evaluateCandle2(candidate.candle1, candle, candidate.direction);
+          if (result.valid) {
+            candidate = Object.assign({}, candidate, {
+              stage: 'WAITING_FOR_BOUNDARY_BREAK', candle2: candle, points: result.points,
+              boundaries: computeBoundaries(candle),
+            });
+            continue;
+          }
+          // Candle 2 FAILED for the old candidate — this does NOT mean this
+          // candle wasn't a valid touch. It only means it failed to
+          // validate as Candle 2 for that specific Candle 1. Fall through
+          // (do not `continue`) so this exact candle is still checked below
+          // for being a fresh same-side touch in its own right.
+          candidate = null;
+        } else {
+          continue; // still waiting, unchanged — Candle 2 need not be the immediate next candle
+        }
+      } else if (candidate && candidate.stage === 'WAITING_FOR_BOUNDARY_BREAK') {
+        // Last-touch-wins is NOT re-applied at this stage, same as live.
+        const boundaryResult = evaluateBoundaryBreak(candle, candidate.boundaries, candidate.direction);
+        if (boundaryResult.outcome === 'WAIT') continue; // boundaries stay fixed, unchanged
+
+        if (candidate.isCalibrationPattern && (boundaryResult.outcome === 'BUY' || boundaryResult.outcome === 'SELL')) {
+          // One-time calibration, reconstructed deterministically — never a
+          // trade during replay (or ever, for a calibration pattern).
+          // Client-confirmed rule: strictly the NEXT candle may start a
+          // fresh search — this resolving candle is NOT re-checked for a
+          // fresh touch, unlike the general INVALID/failed-Candle-2 case.
+          this._applyCalibration(candidate);
+          candidate = null;
+          continue;
+        }
+
+        // BUY / SELL / INVALID all resolve the pattern historically. Fall
+        // through (do not `continue`) so this exact resolving candle is
+        // still checked below for being a fresh touch of its own — a
+        // pattern resolving on this candle doesn't preclude the SAME
+        // candle also being where the next pattern starts.
+        candidate = null;
+      }
+
+      // No active candidate — either there never was one, or one was just
+      // discarded/resolved above on THIS SAME candle (except the
+      // calibration case above, which explicitly skips this). Check
+      // whether this candle is itself a fresh touch of either level type,
+      // trend-prioritized exactly like the live search.
+      if (!candidate) {
+        const fresh = findFreshTouch(candle);
+        if (fresh) candidate = this._buildCandle1Candidate(candle, fresh.direction, fresh.match);
+      }
+    }
+
+    this.patternCandidate = candidate;
   }
 
   /** Inert no-op — MODEL_002 declares no requiredTimeframes. Kept so shared Part A infra stays intact for other models. */
@@ -104,6 +292,7 @@ class Model002 extends BotModelBase {
     this.paused = true;
     this.emitStrategyEvent('MODEL_STOPPED', { symbol: this.symbol });
     this.candles = [];
+    this.patternCandidate = null;
   }
 
   /**
@@ -200,23 +389,282 @@ class Model002 extends BotModelBase {
     await this._evaluateEntry(candle);
   }
 
-  async _evaluateEntry(confirmationCandle) {
-    const len = this.candles.length;
-    const touchCandle = this.candles[len - 2];
-    const referenceCandleL1 = len >= 3 ? this.candles[len - 3] : null;
+  async _evaluateEntry(candle) {
+    if (this.patternCandidate) {
+      await this._advancePatternCandidate(candle);
+      return;
+    }
+    await this._searchForPatternStart(candle);
+  }
 
+  /** Looks for a fresh Candle 1 (a support/resistance touch) per the confirmed same-side combinations. */
+  async _searchForPatternStart(candle) {
     const trend = this.params.trend;
-    const result = trend === 'BULLISH'
-      ? this._evaluateBullish(touchCandle, referenceCandleL1, confirmationCandle)
-      : this._evaluateBearish(touchCandle, referenceCandleL1, confirmationCandle);
 
-    if (!result.actionable) {
-      this._emitDecision('WAIT', result, confirmationCandle);
+    if (trend === 'BULLISH') {
+      const supportMatch = findTouchedLevel(this.params.support, candle);
+      if (supportMatch) {
+        this._startCandle1(candle, 'BUY', supportMatch);
+        return;
+      }
+      const resistanceMatch = findTouchedLevel(this.params.resistance, candle);
+      if (resistanceMatch) {
+        this._startCandle1(candle, 'SELL', resistanceMatch);
+        return;
+      }
+      this._emitDecision('WAIT', { reason: 'no_level_touch' }, candle);
       return;
     }
 
-    const command = this._buildEntryCommand(result, confirmationCandle);
-    this._emitDecision(result.direction === 'LONG' ? 'BUY' : 'SELL', result, confirmationCandle);
+    // BEARISH
+    const resistanceMatch = findTouchedLevel(this.params.resistance, candle);
+    if (resistanceMatch) {
+      this._startCandle1(candle, 'SELL', resistanceMatch);
+      return;
+    }
+    const supportMatch = findTouchedLevel(this.params.support, candle);
+    if (supportMatch) {
+      this._startCandle1(candle, 'BUY', supportMatch);
+      return;
+    }
+    this._emitDecision('WAIT', { reason: 'no_level_touch' }, candle);
+  }
+
+  /** Constructs the Candle 1 candidate object — the single source of truth for Candle 1 state, reused by both the live touch path and hydration recovery. Never emits anything; callers decide what (if anything) to emit. */
+  /**
+   * One-time R1/S1 calibration (opposite-side patterns only): the FIRST
+   * confirmed pattern at index-1 (R1 for BULLISH+RESISTANCE=SELL, S1 for
+   * BEARISH+SUPPORT=BUY) is never traded — it calibrates that level to
+   * Candle1.high/low instead. Computed fresh every time a Candle 1
+   * candidate is (re)built (including last-touch-wins replacements), so it
+   * always reflects the CURRENT calibration flag at that moment, then
+   * locked into the candidate until it resolves.
+   */
+  _computeIsCalibrationPattern(direction, matchedLevel) {
+    if (direction === 'SELL' && this.params.trend === 'BULLISH' && matchedLevel.index === 1) {
+      return !this.r1Calibrated;
+    }
+    if (direction === 'BUY' && this.params.trend === 'BEARISH' && matchedLevel.index === 1) {
+      return !this.s1Calibrated;
+    }
+    return false;
+  }
+
+  _buildCandle1Candidate(candle, direction, matchedLevel) {
+    return {
+      direction, candle1: candle, matchedLevel, stage: 'WAITING_FOR_CANDLE2',
+      isCalibrationPattern: this._computeIsCalibrationPattern(direction, matchedLevel),
+    };
+  }
+
+  _startCandle1(candle, direction, matchedLevel) {
+    this.patternCandidate = this._buildCandle1Candidate(candle, direction, matchedLevel);
+    this._emitDecision('WAIT', {
+      reason: direction === 'BUY' ? 'candle1_support_touch_awaiting_candle2' : 'candle1_resistance_touch_awaiting_candle2',
+      direction,
+      activeLevel: { side: direction === 'BUY' ? 'SUPPORT' : 'RESISTANCE', index: matchedLevel.index, price: matchedLevel.price },
+      candle1: this._summarizeCandle(candle),
+    }, candle);
+  }
+
+  /** Advances an in-progress pattern candidate through Candle 2 (shape validation, with last-touch-wins) or the fixed-boundary confirmation stage. */
+  async _advancePatternCandidate(candle) {
+    const candidate = this.patternCandidate;
+
+    if (candidate.stage === 'WAITING_FOR_CANDLE2') {
+      // CONFIRMED: "last touch wins" — a newer Support/Resistance touch
+      // while still searching for Candle 2 replaces Candle 1 entirely
+      // (and therefore SL, recomputed from the new Candle 1) and restarts
+      // the Candle 2 search. This check runs BEFORE the body-high/low
+      // touch check, per the requirement's own ordering ("if another
+      // touch happens before Candle 2 is found, replace... restart").
+      const levels = candidate.direction === 'BUY' ? this.params.support : this.params.resistance;
+      const newTouch = findTouchedLevel(levels, candle);
+      if (newTouch) {
+        this._startCandle1(candle, candidate.direction, newTouch);
+        return;
+      }
+
+      // Candle 2 is not required to be the immediate next candle — only
+      // evaluate it once this candle actually touches Candle 1's
+      // body-high (BUY) / body-low (SELL); otherwise keep waiting,
+      // unchanged, for a future candle.
+      const touchesBody = candidate.direction === 'BUY'
+        ? candle2TouchesBodyHigh(candidate.candle1, candle)
+        : candle2TouchesBodyLow(candidate.candle1, candle);
+      if (!touchesBody) {
+        this._emitDecision('WAIT', {
+          reason: 'awaiting_candle2_body_touch', direction: candidate.direction,
+          activeLevel: this._activeLevelFor(candidate),
+          candle1: this._summarizeCandle(candidate.candle1),
+        }, candle);
+        return;
+      }
+
+      const result = evaluateCandle2(candidate.candle1, candle, candidate.direction);
+      if (!result.valid) {
+        this.patternCandidate = null;
+        this._emitDecision('WAIT', {
+          reason: result.reason, direction: candidate.direction,
+          activeLevel: this._activeLevelFor(candidate),
+          candle1: this._summarizeCandle(candidate.candle1),
+          candle2: this._summarizeCandle(candle),
+          points: result.points || null,
+        }, candle);
+        return;
+      }
+
+      const boundaries = computeBoundaries(candle);
+      this.patternCandidate = Object.assign({}, candidate, {
+        stage: 'WAITING_FOR_BOUNDARY_BREAK', candle2: candle, points: result.points, boundaries,
+      });
+      this._emitDecision('WAIT', {
+        reason: 'candle2_confirmed_awaiting_boundary_break', direction: candidate.direction,
+        activeLevel: this._activeLevelFor(candidate),
+        candle1: this._summarizeCandle(candidate.candle1),
+        candle2: this._summarizeCandle(candle),
+        points: result.points,
+        boundaries,
+      }, candle);
+      return;
+    }
+
+    // WAITING_FOR_BOUNDARY_BREAK — boundaries are FIXED at Candle2.high/low
+    // and monitored across as many future candles as needed (confirmed:
+    // not only the immediate next candle). Last-touch-wins is intentionally
+    // NOT re-applied here — the requirement only describes it for the
+    // Candle1->Candle2 search stage.
+    const boundaryResult = evaluateBoundaryBreak(candle, candidate.boundaries, candidate.direction);
+
+    if (boundaryResult.outcome === 'WAIT') {
+      this._emitDecision('WAIT', {
+        reason: 'awaiting_boundary_break', direction: candidate.direction,
+        activeLevel: this._activeLevelFor(candidate),
+        candle1: this._summarizeCandle(candidate.candle1),
+        candle2: this._summarizeCandle(candidate.candle2),
+        candle3: this._summarizeCandle(candle),
+        points: candidate.points,
+        boundaries: candidate.boundaries,
+      }, candle);
+      return;
+    }
+
+    if (boundaryResult.outcome === 'INVALID') {
+      this.patternCandidate = null;
+      this._emitDecision('WAIT', {
+        reason: candidate.direction === 'BUY' ? 'invalidated_close_below_lower_boundary' : 'invalidated_close_above_upper_boundary',
+        direction: candidate.direction,
+        activeLevel: this._activeLevelFor(candidate),
+        candle1: this._summarizeCandle(candidate.candle1),
+        candle2: this._summarizeCandle(candidate.candle2),
+        candle3: this._summarizeCandle(candle),
+        points: candidate.points,
+        boundaries: candidate.boundaries,
+      }, candle);
+      return;
+    }
+
+    // boundaryResult.outcome === 'BUY' or 'SELL'
+    if (candidate.isCalibrationPattern) {
+      this._applyCalibration(candidate);
+      this._emitDecision('WAIT', {
+        reason: candidate.direction === 'SELL' ? 'r1_calibration_confirmed_no_trade' : 's1_calibration_confirmed_no_trade',
+        direction: candidate.direction,
+        activeLevel: this._activeLevelFor(candidate),
+        candle1: this._summarizeCandle(candidate.candle1),
+        candle2: this._summarizeCandle(candidate.candle2),
+        candle3: this._summarizeCandle(candle),
+        points: candidate.points,
+        boundaries: candidate.boundaries,
+      }, candle);
+      this.patternCandidate = null;
+      // Deliberately no same-candle fresh-touch re-check here — the
+      // client-confirmed rule for this specific case is "strictly the next
+      // candle," overriding the general same-candle reprocessing rule that
+      // applies to ordinary failed-Candle-2 / INVALID resolutions.
+      return;
+    }
+
+    await this._confirmAndSubmit(candidate, boundaryResult, candle);
+  }
+
+  /**
+   * One-time R1/S1 calibration — never a trade. Mutates the FIRST element
+   * of the relevant level array (index 0 = R1/S1) to this pattern's own
+   * Candle 1 high/low, and marks that level's calibration flag done for
+   * the rest of this running process. R2/R3/S2/S3 (indices 1/2) are never
+   * touched — array positions are preserved, no reordering.
+   */
+  _applyCalibration(candidate) {
+    if (candidate.direction === 'SELL') {
+      this.params.resistance[0] = candidate.candle1.high;
+      this.r1Calibrated = true;
+    } else {
+      this.params.support[0] = candidate.candle1.low;
+      this.s1Calibrated = true;
+    }
+  }
+
+  _activeLevelFor(candidate) {
+    return { side: candidate.direction === 'BUY' ? 'SUPPORT' : 'RESISTANCE', index: candidate.matchedLevel.index, price: candidate.matchedLevel.price };
+  }
+
+  _summarizeCandle(candle) {
+    if (!candle) return null;
+    return { timestamp: candle.timestamp, open: candle.open, high: candle.high, low: candle.low, close: candle.close };
+  }
+
+  /** Entry/SL/riskLength/LOT pipeline for a resolved (BUY/SELL) pattern — see sameSidePatternEngine.js for every formula. */
+  async _confirmAndSubmit(candidate, boundaryResult, entryCandle) {
+    const direction = candidate.direction;
+    const entryPrice = entryCandle.close;
+    const stopLoss = direction === 'BUY' ? computeBuyStopLoss(candidate.candle1) : computeSellStopLoss(candidate.candle1);
+    const riskLength = direction === 'BUY' ? computeBuyRiskLength(entryPrice, stopLoss) : computeSellRiskLength(entryPrice, stopLoss);
+
+    if (!Number.isFinite(riskLength) || riskLength > 360 || riskLength < 0) {
+      this._emitDecision('WAIT', {
+        reason: 'risk_length_exceeds_maximum', direction, activeLevel: this._activeLevelFor(candidate),
+        entryPrice, stopLoss, riskLength,
+      }, entryCandle);
+      return;
+    }
+
+    const lot = computeLotFromRiskLength(riskLength);
+    if (!lot) {
+      this._emitDecision('WAIT', { reason: 'lot_mapping_unavailable', direction, entryPrice, stopLoss, riskLength }, entryCandle);
+      return;
+    }
+
+    // Existing safety ceiling preserved (confirmed requirement: never
+    // modify RiskEngine/PaperEngine unnecessarily; the max-capital x
+    // leverage notional cap already exists and only ever reduces quantity).
+    const capped = capExposureToMaxNotional(lot, entryPrice, this.capitalAllocation, this.leverage, 0);
+    const finalQuantity = capped.quantity;
+    if (!finalQuantity || finalQuantity <= 0) {
+      this._emitDecision('WAIT', {
+        reason: 'maximum_capital_leverage_limit', direction, entryPrice, stopLoss, riskLength, lot,
+        maximumCapital: this.capitalAllocation, leverage: this.leverage, maximumAllowedNotional: capped.maximumAllowedNotional,
+      }, entryCandle);
+      return;
+    }
+
+    const ruleId = direction === 'BUY' ? RULE_ID_BUY : RULE_ID_SELL;
+    const result = {
+      direction, entryPrice, stopLoss, riskLength, lot, finalQuantity,
+      maximumCapital: this.capitalAllocation, leverage: this.leverage,
+      maximumAllowedNotional: capped.maximumAllowedNotional, maxCapitalCapped: capped.capped,
+      activeLevel: this._activeLevelFor(candidate), ruleId,
+      candle1: this._summarizeCandle(candidate.candle1),
+      candle2: this._summarizeCandle(candidate.candle2),
+      candle3: this._summarizeCandle(entryCandle),
+      boundaries: candidate.boundaries,
+      points: candidate.points,
+      reason: `${direction} pattern confirmed`,
+    };
+
+    const command = this._buildEntryCommand(result, entryCandle);
+    this._emitDecision(direction, result, entryCandle);
+    this.patternCandidate = null;
 
     let approval;
     try {
@@ -233,106 +681,6 @@ class Model002 extends BotModelBase {
     }
   }
 
-  /** BULLISH trend: RESISTANCE = implemented counter-trend SELL; SUPPORT = pending direct BUY (never trades). */
-  _evaluateBullish(touchCandle, referenceCandleL1, confirmationCandle) {
-    const resistanceMatch = resolveTouchedLevel(this.params.resistance, touchCandle, this.params.touchTolerancePct);
-    if (resistanceMatch) {
-      return this._evaluateCounterTrend('SHORT', resistanceMatch, referenceCandleL1, touchCandle, confirmationCandle);
-    }
-    const supportMatch = resolveTouchedLevel(this.params.support, touchCandle, this.params.touchTolerancePct);
-    if (supportMatch) {
-      return this._pendingDirectEntry('LONG', supportMatch);
-    }
-    return this._noTouch();
-  }
-
-  /** BEARISH trend: SUPPORT = implemented counter-trend BUY; RESISTANCE = pending direct SELL (never trades). */
-  _evaluateBearish(touchCandle, referenceCandleL1, confirmationCandle) {
-    const supportMatch = resolveTouchedLevel(this.params.support, touchCandle, this.params.touchTolerancePct);
-    if (supportMatch) {
-      return this._evaluateCounterTrend('LONG', supportMatch, referenceCandleL1, touchCandle, confirmationCandle);
-    }
-    const resistanceMatch = resolveTouchedLevel(this.params.resistance, touchCandle, this.params.touchTolerancePct);
-    if (resistanceMatch) {
-      return this._pendingDirectEntry('SHORT', resistanceMatch);
-    }
-    return this._noTouch();
-  }
-
-  _noTouch() {
-    return { actionable: false, reason: 'no_level_touch', activeLevel: null };
-  }
-
-  _pendingDirectEntry(direction, matchedLevel) {
-    return {
-      actionable: false,
-      reason: 'direct_entry_pending_client_confirmation',
-      direction,
-      activeLevel: { side: direction === 'LONG' ? 'SUPPORT' : 'RESISTANCE', index: matchedLevel.index, price: matchedLevel.price },
-    };
-  }
-
-  /** Confirmed counter-trend formula for either direction, then SL/quantity/TP/max-capital-x-leverage pipeline. */
-  _evaluateCounterTrend(direction, matchedLevel, referenceCandleL1, touchCandle, confirmationCandle) {
-    const usesLevel1Reference = matchedLevel.index === 1;
-    const referenceCandle = usesLevel1Reference ? referenceCandleL1 : touchCandle;
-
-    if (usesLevel1Reference && !referenceCandle) {
-      return { actionable: false, reason: 'insufficient_history_for_level1_reference', direction, activeLevel: { index: matchedLevel.index, price: matchedLevel.price } };
-    }
-
-    const confirmation = direction === 'LONG'
-      ? evaluateCounterTrendBuy(matchedLevel.index, referenceCandle, confirmationCandle)
-      : evaluateCounterTrendSell(matchedLevel.index, referenceCandle, confirmationCandle);
-
-    const activeLevel = { side: direction === 'LONG' ? 'SUPPORT' : 'RESISTANCE', index: matchedLevel.index, price: matchedLevel.price };
-
-    if (!confirmation.passed) {
-      return { actionable: false, reason: 'body_confirmation_failed', direction, activeLevel, confirmation };
-    }
-
-    const entryPrice = confirmationCandle.close;
-    const stopLoss = computeStopLoss(direction, matchedLevel.price, this.params.slBufferPct);
-    const slCheck = validateSlDistance(entryPrice, stopLoss, this.params.slMinDistancePct, this.params.slMaxDistancePct);
-    if (!slCheck.valid) {
-      return { actionable: false, reason: 'sl_distance_invalid', direction, activeLevel, confirmation, entryPrice, stopLoss, stopLossDistance: slCheck.riskDistance };
-    }
-
-    const riskSized = computeQuantity(this.capitalAllocation, this.params.riskPercent, entryPrice, stopLoss, this.params.quantityDecimalPrecision);
-    if (!riskSized.quantity || riskSized.quantity <= 0) {
-      return { actionable: false, reason: 'quantity_below_minimum', direction, activeLevel, confirmation, entryPrice, stopLoss, stopLossDistance: slCheck.riskDistance };
-    }
-
-    // Confirmed §1/§1.2 fix: cap to maximumCapital x leverage, not maximumCapital alone.
-    const capped = capExposureToMaxNotional(riskSized.quantity, entryPrice, this.capitalAllocation, this.leverage, this.params.quantityDecimalPrecision);
-    if (!capped.quantity || capped.quantity <= 0) {
-      return {
-        actionable: false, reason: 'maximum_capital_leverage_limit', direction, activeLevel, confirmation,
-        entryPrice, stopLoss, stopLossDistance: slCheck.riskDistance,
-        maximumCapital: this.capitalAllocation, leverage: this.leverage, maximumAllowedNotional: capped.maximumAllowedNotional,
-      };
-    }
-
-    const takeProfit = computeTakeProfit(direction, entryPrice, stopLoss, this.params.riskRewardRatio);
-    const ruleId = direction === 'LONG' ? RULE_ID_COUNTER_BUY : RULE_ID_COUNTER_SELL;
-
-    return {
-      actionable: true, direction, activeLevel, confirmation,
-      entryPrice, stopLoss, takeProfit,
-      stopLossDistance: slCheck.riskDistance,
-      riskAmount: riskSized.riskAmountUsd,
-      calculatedQuantity: riskSized.quantity,
-      finalQuantity: capped.quantity,
-      finalNotional: capped.notional,
-      maximumCapital: this.capitalAllocation,
-      leverage: this.leverage,
-      maximumAllowedNotional: capped.maximumAllowedNotional,
-      maxCapitalCapped: capped.capped,
-      ruleId,
-      reason: 'Counter-trend entry conditions satisfied',
-    };
-  }
-
   _buildEntryCommand(result, candle) {
     const commandId = `MODEL002:${this.instanceId}:${candle.timestamp}:${result.direction}:${result.ruleId}`;
     return {
@@ -340,20 +688,18 @@ class Model002 extends BotModelBase {
       instanceId: this.instanceId,
       symbol: this.symbol,
       environment: this.environment,
-      action: result.direction,
+      action: result.direction === 'BUY' ? 'LONG' : 'SHORT',
       quantity: result.finalQuantity,
       stopLoss: result.stopLoss,
-      takeProfit: result.takeProfit,
+      takeProfit: null, // no TP formula specified for the same-side pattern — never invented
       reason: result.reason,
       metadata: {
         ruleId: result.ruleId,
         timeframe: this.params.timeframe,
         activeLevel: result.activeLevel,
-        riskAmount: result.riskAmount,
-        stopLossDistance: result.stopLossDistance,
-        calculatedQuantity: result.calculatedQuantity,
+        riskLength: result.riskLength,
+        lot: result.lot,
         finalQuantity: result.finalQuantity,
-        finalNotional: result.finalNotional,
         maximumCapital: result.maximumCapital,
         leverage: result.leverage,
         maximumAllowedNotional: result.maximumAllowedNotional,
@@ -363,6 +709,7 @@ class Model002 extends BotModelBase {
   }
 
   _emitDecision(decisionLabel, result, candle) {
+    const points = result.points || null;
     this.emitStrategyEvent('DECISION', {
       symbol: this.symbol,
       timeframe: this.params.timeframe,
@@ -374,21 +721,26 @@ class Model002 extends BotModelBase {
       activeSupportLevels: this.params.support,
       activeResistanceLevels: this.params.resistance,
       activeLevel: result.activeLevel !== undefined ? result.activeLevel : null,
-      patternStatus: result.confirmation
-        ? {
-          closeCheckPassed: result.confirmation.closeAboveRefBodyHigh !== undefined ? result.confirmation.closeAboveRefBodyHigh : result.confirmation.closeBelowRefBodyLow,
-          bodyRulePassed: result.confirmation.bodyRulePassed,
-        }
-        : null,
-      referenceBodySize: result.confirmation ? result.confirmation.referenceBodySize : null,
-      confirmationBodySize: result.confirmation ? result.confirmation.confirmationBodySize : null,
-      bodyRuleMultiplierRequired: 1.5,
+      // Same-side pattern state — every field here is either the real
+      // candle the pattern engine captured or a value it actually
+      // computed. boundaries are fixed at Candle2.high/low the moment
+      // Candle 2 validates and stay unchanged until BUY/SELL/INVALID.
+      candle1: result.candle1 || null,
+      candle2: result.candle2 || null,
+      candle3: result.candle3 || null,
+      upperBoundary: result.boundaries ? result.boundaries.upper : null,
+      lowerBoundary: result.boundaries ? result.boundaries.lower : null,
+      upperP: points ? points.upperP : null,
+      lowerP: points ? points.lowerP : null,
+      body: points ? points.body : null,
+      bodyP: points ? points.bodyP : null,
+      bodyPIsMaximum: points ? (points.bodyP >= points.upperP && points.bodyP >= points.lowerP) : null,
+      candleNature: result.candle2 ? (result.candle2.close > result.candle2.open ? 'BULLISH' : 'BEARISH') : null,
       entryPrice: result.entryPrice !== undefined ? result.entryPrice : null,
       stopLoss: result.stopLoss !== undefined ? result.stopLoss : null,
-      stopLossDistance: result.stopLossDistance !== undefined ? result.stopLossDistance : null,
-      takeProfit: result.takeProfit !== undefined ? result.takeProfit : null,
-      riskAmount: result.riskAmount !== undefined ? result.riskAmount : null,
-      calculatedQuantity: result.calculatedQuantity !== undefined ? result.calculatedQuantity : null,
+      riskLength: result.riskLength !== undefined ? result.riskLength : null,
+      lot: result.lot !== undefined ? result.lot : null,
+      takeProfit: null, // no TP formula specified for the same-side pattern
       finalQuantity: result.finalQuantity !== undefined ? result.finalQuantity : null,
       finalNotional: result.finalNotional !== undefined ? result.finalNotional : null,
       maximumCapital: this.capitalAllocation,
@@ -402,8 +754,8 @@ class Model002 extends BotModelBase {
       // renderer (Bot Detail "Decision Engine" panel). Every value here is
       // taken directly from what this decision actually computed above —
       // trend is the user-provided configuration (never BOS/EMA), touch/
-      // level/body values come straight from the real touch-zone and
-      // confirmation checks. Nothing here is fabricated.
+      // level/candle/point values come straight from the real pattern
+      // engine. Nothing here is fabricated.
       checks: {
         trend: { status: this.params.trend },
         support: {
@@ -414,13 +766,17 @@ class Model002 extends BotModelBase {
           status: (result.activeLevel && result.activeLevel.side === 'RESISTANCE') ? 'TOUCHED' : 'NOT_TOUCHED',
           level: (result.activeLevel && result.activeLevel.side === 'RESISTANCE') ? result.activeLevel.price : null,
         },
-        confirmation: result.confirmation
-          ? {
-            status: result.confirmation.passed ? 'PASS' : 'FAIL',
-            bodySize: result.confirmation.confirmationBodySize,
-            referenceBodySize: result.confirmation.referenceBodySize,
-          }
-          : null,
+        candle1: result.candle1 || null,
+        candle2: result.candle2 || null,
+        candle3: result.candle3 || null,
+        boundaries: result.boundaries || null,
+        points: points,
+        bodyPIsMaximum: points ? (points.bodyP >= points.upperP && points.bodyP >= points.lowerP) : null,
+        patternState: this.patternCandidate ? this.patternCandidate.stage : (decisionLabel === 'BUY' || decisionLabel === 'SELL' ? 'TRADE_CONFIRMED' : 'IDLE'),
+        entryPrice: result.entryPrice !== undefined ? result.entryPrice : null,
+        stopLoss: result.stopLoss !== undefined ? result.stopLoss : null,
+        riskLength: result.riskLength !== undefined ? result.riskLength : null,
+        lot: result.lot !== undefined ? result.lot : null,
       },
     });
   }

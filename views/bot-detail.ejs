@@ -669,7 +669,7 @@
                 <div class="flex justify-between items-center py-2 px-2 rounded-lg hover:bg-white/[0.03] border-b border-white/5">
                   <span class="text-gray-500 shrink-0"><%= new Date(ev.at).toLocaleTimeString() %></span>
                   <span class="font-bold <%= d.decision === 'BUY' ? 'text-emerald-400' : d.decision === 'SELL' ? 'text-rose-400' : 'text-amber-400' %> shrink-0"><%= d.decision || '--' %></span>
-                  <span class="text-gray-400 truncate max-w-[280px] text-right"><%= d.reason || '' %></span>
+                  <span class="text-gray-400 truncate max-w-[280px] text-right"><%= (bot.modelId === 'MODEL_002' && typeof formatModel002Reason === 'function') ? formatModel002Reason(d.reason) : (d.reason || '') %></span>
                 </div>
               <% }) %>
             <% } else { %>
@@ -1228,6 +1228,7 @@
 <script src="/js/execution-markers.js"></script>
 <script src="/js/bot-socket.js"></script>
 <script src="/js/bot-detail-chart.js"></script>
+<script src="/js/renderers/model002-reason-map.js"></script>
 <script src="/js/renderers/model-thinking-registry.js"></script>
 <script src="/js/bot-detail-ws.js"></script>
 </body>

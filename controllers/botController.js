@@ -6,6 +6,13 @@ const StrategyEvent = require('../models/StrategyEvent');
 const { computePerformance, computeTodayProfit } = require('../utils/performance');
 const { buildTradeStory } = require('../utils/tradeStory');
 const botManager = require('../services/botManager/BotManager');
+// Single source of truth for MODEL_002 reason-code -> human-readable text —
+// shared with the live formatter in public/js/bot-detail-ws.js (loaded
+// browser-side via <script>, see views/bot-detail.ejs). Required here
+// (Node/CommonJS side of the same UMD module) so server-rendered Decision
+// History uses the exact same wording as live decisions after a page
+// refresh, never a second/duplicate map.
+const { formatModel002Reason } = require('../public/js/renderers/model002-reason-map.js');
 
 // NOVA TRADE -- PART 9: real position/PnL/trade-history/performance.
 //
@@ -108,6 +115,11 @@ exports.renderBotDetail = async (req, res, next) => {
       // queried above for other panels -- so this adds zero new Mongo
       // queries (see utils/tradeStory.js).
       initialTradeStory: buildTradeStory({ decisionEvents, trades, currentPosition: currentPositionView }),
+      // Passed as a function value (not pre-applied to the data) so the
+      // template can gate it to MODEL_002 only — MODEL_001's own `reason`
+      // strings are already human-readable sentences and must render
+      // unchanged (see views/bot-detail.ejs Decision History).
+      formatModel002Reason,
     });
   } catch (error) {
     next(error);

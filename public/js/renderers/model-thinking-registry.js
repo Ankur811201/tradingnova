@@ -40,14 +40,18 @@ window.ModelThinkingRegistry = {
       );
     },
     'MODEL_002': (checks) => {
-      // Renders the real `checks` object produced by the CURRENT MODEL_002
-      // custom-pattern strategy (bot-models/model-002/Model002.js
-      // _emitDecision -> bot:decision payload). MODEL_002 no longer uses
-      // Daily BOS, 1H confirmation, or EMA — trend is supplied directly by
-      // the user, and support/resistance are the user's own configured
+      // Renders the real `checks` object produced by MODEL_002's current
+      // same-side pattern strategy (bot-models/model-002/Model002.js
+      // _emitDecision -> bot:decision payload). MODEL_002 uses no Daily
+      // BOS, 1H confirmation, or EMA — trend is supplied directly by the
+      // user, and support/resistance are the user's own configured
       // levels, not auto-detected. Every field here is something the
       // strategy actually computed — nothing invented, matching the same
       // "unavailable, not fake" rule as MODEL_001's renderer above.
+      //
+      // Candle 2's boundaries (fixed at Candle2.high/low the moment
+      // Candle 2 validates) are shown once known and stay unchanged until
+      // BUY/SELL/INVALID resolves the pattern.
       if (!checks) {
         return '<div class="text-gray-500 italic">No analysis available for this decision yet.</div>';
       }
@@ -63,20 +67,48 @@ window.ModelThinkingRegistry = {
       const touchSpan = (status, level) => {
         const color = status === 'TOUCHED' ? 'text-emerald-400' : 'text-gray-400';
         const levelText = level != null ? ' (' + Number(level).toFixed(2) + ')' : '';
-        return '<span class="' + color + '">' + status + levelText + '</span>';
+        return '<span class="' + color + '">' + (status || 'NOT_TOUCHED') + levelText + '</span>';
       };
 
-      const confirmationHtml = checks.confirmation
-        ? '<span class="' + (checks.confirmation.status === 'PASS' ? 'text-emerald-400' : 'text-rose-400') + '">' + checks.confirmation.status + '</span>' +
-          ' <span class="text-gray-500">(' + Number(checks.confirmation.bodySize).toFixed(2) + ' / 1.5x ' + Number(checks.confirmation.referenceBodySize).toFixed(2) + ')</span>'
-        : '<span class="text-gray-500">N/A</span>';
+      const candleSpan = (candle, label) => candle
+        ? '<span class="text-gray-300">' + label + ' O:' + candle.open + ' H:' + candle.high + ' L:' + candle.low + ' C:' + candle.close + '</span>'
+        : '<span class="text-gray-500">—</span>';
 
-      return (
+      const patternStateSpan = (state) => {
+        const color = state === 'TRADE_CONFIRMED' ? 'text-emerald-400'
+          : state === 'WAITING_FOR_BOUNDARY_BREAK' || state === 'WAITING_FOR_CANDLE2' ? 'text-amber-400'
+          : 'text-gray-400';
+        return '<span class="' + color + '">' + (state || 'IDLE') + '</span>';
+      };
+
+      let out =
         row('Trend (user-provided)', trendSpan(checks.trend.status)) +
-        row('Support Check', touchSpan(checks.support.status, checks.support.level)) +
-        row('Resistance Check', touchSpan(checks.resistance.status, checks.resistance.level)) +
-        row('Body Confirmation (1.5x)', confirmationHtml)
-      );
+        row('Support', touchSpan(checks.support.status, checks.support.level)) +
+        row('Resistance', touchSpan(checks.resistance.status, checks.resistance.level)) +
+        row('Pattern State', patternStateSpan(checks.patternState));
+
+      if (checks.candle1) out += row('Candle 1', candleSpan(checks.candle1));
+      if (checks.candle2) out += row('Candle 2', candleSpan(checks.candle2));
+      if (checks.candle3) out += row('Candle 3 (latest)', candleSpan(checks.candle3));
+
+      if (checks.points) {
+        const p = checks.points;
+        const maxLabel = p.bodyP >= p.upperP && p.bodyP >= p.lowerP ? 'BodyP' : (p.upperP > p.lowerP ? 'UpperP' : 'LowerP');
+        out +=
+          row('UpperP', '<span class="text-gray-300">' + Number(p.upperP).toFixed(2) + '</span>') +
+          row('LowerP', '<span class="text-gray-300">' + Number(p.lowerP).toFixed(2) + '</span>') +
+          row('Body', '<span class="text-gray-300">' + Number(p.body).toFixed(2) + '</span>') +
+          row('BodyP (2.5x Body)', '<span class="text-gray-300">' + Number(p.bodyP).toFixed(2) + '</span>') +
+          row('Maximum', '<span class="' + (maxLabel === 'BodyP' ? 'text-emerald-400' : 'text-rose-400') + '">' + maxLabel + (maxLabel === 'BodyP' ? ' (valid)' : ' (invalid — BodyP must be max)') + '</span>');
+      }
+
+      if (checks.boundaries) {
+        out +=
+          row('Upper Boundary (fixed)', '<span class="text-emerald-400">' + Number(checks.boundaries.upper).toFixed(2) + '</span>') +
+          row('Lower Boundary (fixed)', '<span class="text-rose-400">' + Number(checks.boundaries.lower).toFixed(2) + '</span>');
+      }
+
+      return out;
     }
   },
 

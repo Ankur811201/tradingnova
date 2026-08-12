@@ -56,22 +56,6 @@ async function startedModel(parameters, instanceOverrides) {
   return { ctx, model };
 }
 
-/** Drives a full counter-trend BUY (BEARISH + support level 1) to completion, returns {ctx, model}. */
-async function runToBuySignal(instanceOverrides, parameterOverrides) {
-  const { ctx, model } = await startedModel(
-    Object.assign({ timeframe: '1m', trend: 'BEARISH', support: [60000, 50, 25], resistance: [65000, 999000, 998000] }, parameterOverrides),
-    instanceOverrides
-  );
-  await model.onHydrate(flat(17, 61000, BASE));
-  const refL1 = { timestamp: BASE + 17 * MIN, open: 61000, high: 61010, low: 60990, close: 60950, volume: null };
-  const touch = { timestamp: BASE + 18 * MIN, open: 60950, high: 60960, low: 60000, close: 60100, volume: null };
-  const conf = { timestamp: BASE + 19 * MIN, open: 60100, high: 61200, low: 60050, close: 61100, volume: null };
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: refL1.timestamp, data: refL1 }, null);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: touch.timestamp, data: touch }, null);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: conf.timestamp, data: conf }, null);
-  return { ctx, model };
-}
-
 // =========================================================================
 // Registration / no-BOS static checks (unchanged behavior, re-verified)
 // =========================================================================
@@ -134,12 +118,13 @@ test('counter-trend confirmation formulas unchanged (close vs reference body + 1
   assert.equal(evaluateCounterTrendBuy(1, ref, failing).passed, false);
 });
 
-test('END-TO-END: counter-trend BUY still produces a correct command (strategy unchanged)', async () => {
-  const { ctx } = await runToBuySignal();
-  assert.equal(ctx.commands.length, 1);
-  assert.equal(ctx.commands[0].action, 'LONG');
-  assert.equal(ctx.commands[0].stopLoss, 59940);
-});
+// NOTE: the old counter-trend BUY/SELL formula (BEARISH+SUPPORT=BUY,
+// BULLISH+RESISTANCE=SELL, close-vs-reference-body-high/low + 1.5x body)
+// has been SUPERSEDED by the newly confirmed same-side pattern
+// (BULLISH+SUPPORT=BUY, BEARISH+RESISTANCE=SELL, Candle1/2/3 + UpperP/
+// LowerP/BodyP) — see tests/model002.sameSidePattern.test.js for its full
+// coverage, including an end-to-end max-capital x leverage cap test using
+// the new pattern.
 
 // =========================================================================
 // PART 1 — Max Capital x Leverage
@@ -177,19 +162,6 @@ test('capExposureToMaxNotional: final notional NEVER exceeds the limit after rou
   // A price chosen to stress floating-point rounding at 3-decimal precision.
   const result = riskSizing.capExposureToMaxNotional(1000, 33.333333, 100, 200, 3);
   assert.ok(result.notional <= 20000, `finalNotional ${result.notional} must never exceed maximumAllowedNotional 20000`);
-});
-
-test('END-TO-END: max capital x leverage caps the final quantity, notional never exceeds the ceiling', async () => {
-  // A large riskPercent forces the risk-sized quantity's notional well
-  // beyond a modest maxCapital x leverage ceiling, deterministically
-  // exercising the cap regardless of the specific SL-distance scenario.
-  const { ctx } = await runToBuySignal({ capitalAllocation: 10000, leverage: 1 }, { riskPercent: 0.5 }); // ceiling = 10000
-  assert.equal(ctx.commands.length, 1);
-  const cmd = ctx.commands[0];
-  assert.ok(cmd.metadata.finalNotional <= 10000, `finalNotional ${cmd.metadata.finalNotional} must not exceed the ceiling`);
-  assert.equal(cmd.metadata.maximumAllowedNotional, 10000);
-  assert.equal(cmd.metadata.maxCapitalCapped, true);
-  assert.ok(cmd.metadata.finalQuantity < cmd.metadata.calculatedQuantity, 'final quantity must be reduced from the risk-sized quantity, never increased');
 });
 
 test('rejects leverage below 1x, never silently clamps', async () => {

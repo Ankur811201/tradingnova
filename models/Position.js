@@ -16,16 +16,32 @@ const positionSchema = new mongoose.Schema(
 
     entryPrice: { type: Number, required: true },
     currentPrice: { type: Number, required: true },
-    quantity: { type: Number, required: true },
+    quantity: { type: Number, required: true }, // REMAINING quantity — reduced by each partial target fill
+    originalQuantity: { type: Number, default: null }, // fixed at entry, only set for positions with multi-target exits (stopLoss present at open)
     leverage: { type: Number, required: true, default: 1 },
 
-    margin: { type: Number, required: true }, // locked margin (paper) or exchange margin (live, informational)
+    margin: { type: Number, required: true }, // REMAINING locked margin — reduced proportionally by each partial fill
 
-    stopLoss: { type: Number, default: null },
-    takeProfit: { type: Number, default: null },
+    stopLoss: { type: Number, default: null }, // NEVER changes for a multi-target position — no breakeven, no trailing
+    takeProfit: { type: Number, default: null }, // left null for multi-target positions — see `targets` instead
+
+    // Multi-target exit plan (confirmed rules): up to 4 R-multiple targets,
+    // each closing 25% of originalQuantity. Empty array = no multi-target
+    // plan (stopLoss was not provided at open) — existing single-TP
+    // behavior applies unchanged for such positions.
+    targets: {
+      type: [{
+        rMultiple: { type: Number, required: true },
+        price: { type: Number, required: true },
+        quantity: { type: Number, required: true },
+        hit: { type: Boolean, default: false },
+        hitAt: { type: Date, default: null },
+      }],
+      default: [],
+    },
 
     unrealizedPnl: { type: Number, default: 0 },
-    realizedPnl: { type: Number, default: 0 },
+    realizedPnl: { type: Number, default: 0 }, // accumulates partial-fill PnL as targets hit; the final close adds the last slice on top
     feesPaid: { type: Number, default: 0 },
 
     status: { type: String, enum: ['OPEN', 'CLOSED', 'LIQUIDATED'], required: true, default: 'OPEN', index: true },

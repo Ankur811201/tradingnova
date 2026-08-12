@@ -165,6 +165,31 @@
     })();
 
     // -----------------------------------------------------------------
+    // MODEL_002 same-side pattern overlay: Candle 2's fixed upper/lower
+    // confirmation boundaries. Uses the SAME setPriceLine key/dedup
+    // mechanism as the static Support/Resistance lines above — re-syncing
+    // with the same keys overwrites rather than duplicates, and clearing
+    // simply removes the price line (no fabricated line when there is no
+    // active pattern). Called live from bot-detail-ws.js's real
+    // bot:decision handler with the actual checks.boundaries the strategy
+    // computed — never invented here.
+    // -----------------------------------------------------------------
+    window.NovaChartPatternOverlay = {
+      setBoundaries: function (upper, lower) {
+        var om = chartManager.overlayManager;
+        if (!om || typeof om.setPriceLine !== 'function') return;
+        if (upper != null) om.setPriceLine('patternUpperBoundary', upper, '#22c55e', 'UPPER (BUY>)', 2);
+        if (lower != null) om.setPriceLine('patternLowerBoundary', lower, '#f43f5e', 'LOWER (INVALID<)', 2);
+      },
+      clearBoundaries: function () {
+        var om = chartManager.overlayManager;
+        if (!om || typeof om.removePriceLine !== 'function') return;
+        om.removePriceLine('patternUpperBoundary');
+        om.removePriceLine('patternLowerBoundary');
+      },
+    };
+
+    // -----------------------------------------------------------------
     // LIVE UPDATES (Part 5)
     //
     // The socket may already be connected and emitting bot:candle before
