@@ -100,8 +100,27 @@ async function getCandles(req, res, next) {
     if (!Number.isFinite(limit) || limit <= 0) limit = CANDLES_DEFAULT_LIMIT;
     limit = Math.min(limit, CANDLES_MAX_LIMIT);
 
+    // The chart must show exactly the candle history this bot instance can
+    // actually read — the same boundary Model002 hydration already applies
+    // (BotManager._hydrateOneTimeframe: candle.timestamp >= createdAt).
+    // Without this, the chart would load the latest GLOBAL candles for
+    // (symbol, timeframe) regardless of when this specific bot was
+    // created, misrepresenting what the bot's own strategy actually sees.
+    // `instance.createdAt` is immutable (Mongoose {timestamps:true}, set
+    // once at creation, never changes on restart) — same value, same
+    // reasoning as the hydration fix: correct unchanged for a brand-new
+    // bot (nothing before its own creation) and for an existing bot's
+    // restart (its own full accumulated history since creation remains
+    // visible). Backward-compatible: if createdAt is ever missing/invalid,
+    // no filter is applied, preserving prior (unfiltered) behavior rather
+    // than risking an empty chart for a real bot.
+    const candleFilter = { symbol, timeframe };
+    if (instance.createdAt instanceof Date && !Number.isNaN(instance.createdAt.getTime())) {
+      candleFilter.timestamp = { $gte: instance.createdAt.getTime() };
+    }
+
     // Newest-first for the limit to make sense, then reversed to oldest -> newest for the chart.
-    const docs = await Candle.find({ symbol, timeframe })
+    const docs = await Candle.find(candleFilter)
       .sort({ timestamp: -1 })
       .limit(limit)
       .lean();

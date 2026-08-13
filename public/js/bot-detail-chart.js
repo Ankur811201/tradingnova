@@ -283,6 +283,15 @@
       // Never let a live event rewind the chart behind what history already loaded.
       if (lastHistoricalTime !== null && candle.time < lastHistoricalTime) return;
 
+      // Same baseline the historical candles API and Model002 hydration
+      // already apply (candle.timestamp >= bot.createdAt) — a live candle
+      // cannot realistically predate the bot's own creation under normal
+      // operation (candles only ever arrive in real time), but this keeps
+      // both the historical and live paths using the exact same rule
+      // rather than two different, potentially-diverging ones.
+      var createdAtMs = window.BOT_CONFIG && window.BOT_CONFIG.createdAtMs;
+      if (typeof createdAtMs === 'number' && candle.time < Math.floor(createdAtMs / 1000)) return;
+
       applyLiveCandle(candle);
     }
 
@@ -336,9 +345,12 @@
       historyLoaded = true;
 
       if (pendingLiveCandles.length) {
+        var createdAtMsDrain = window.BOT_CONFIG && window.BOT_CONFIG.createdAtMs;
+        var createdAtSecDrain = typeof createdAtMsDrain === 'number' ? Math.floor(createdAtMsDrain / 1000) : null;
         pendingLiveCandles
           .sort(function (a, b) { return a.time - b.time; })
           .filter(function (c) { return lastHistoricalTime === null || c.time >= lastHistoricalTime; })
+          .filter(function (c) { return createdAtSecDrain === null || c.time >= createdAtSecDrain; })
           .forEach(applyLiveCandle);
         pendingLiveCandles = [];
       }

@@ -7,24 +7,24 @@ class ChartManager {
     
     this.chart = LightweightCharts.createChart(this.container, {
       layout: {
-        background: { type: 'solid', color: '#131722' },
-        textColor: '#d1d4dc',
+        background: { type: 'solid', color: '#ffffff' },
+        textColor: '#131722',
         fontSize: 11,
         fontFamily: 'JetBrains Mono, monospace',
       },
       grid: {
-        vertLines: { color: '#1e222d' },
-        horzLines: { color: '#1e222d' },
+        vertLines: { color: '#e0e3eb' },
+        horzLines: { color: '#e0e3eb' },
       },
       crosshair: {
         mode: LightweightCharts.CrosshairMode.Normal,
       },
       rightPriceScale: {
-        borderColor: '#2a2e39',
+        borderColor: '#d1d4dc',
         autoScale: true,
       },
       timeScale: {
-        borderColor: '#2a2e39',
+        borderColor: '#d1d4dc',
         timeVisible: true,
         secondsVisible: false,
       },

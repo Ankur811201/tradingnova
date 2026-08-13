@@ -778,6 +778,10 @@
   instanceId: "<%= bot.instanceId || bot._id %>",
   modelId: "<%= bot.modelId || 'MODEL_UNKNOWN' %>",
   pair: "<%= bot.symbol || bot.tradingPair || 'BTCUSD' %>",
+  // Same immutable baseline the candles API and Model002 hydration already
+  // use (candle.timestamp >= createdAt) — exposed here so the chart's live
+  // candle path can apply the identical rule, never a separate one.
+  createdAtMs: <%- (bot.createdAt) ? bot.createdAt.getTime() : 'null' %>,
   // PART 11 — PHASE N/X: the backend-authoritative lifecycle status at
   // page-load time, used to drive the Control Center button state machine
   // (see applyButtonStateForStatus below) so Start/Pause/Stop/Restart never

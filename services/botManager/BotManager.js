@@ -515,9 +515,37 @@ class BotManager {
     // PART 12.1 — PHASE 7: hydrate from the coherent contiguous recent
     // window only — never old candles + gap + recent candles merely to
     // reach wantCount.
-    return usable.usableCandles.map((c) => ({
+    const candles = usable.usableCandles.map((c) => ({
       timestamp: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
     }));
+
+    // A bot must never learn from market history that existed before it
+    // was created — it starts observing the market from its own creation
+    // point, never before. `dbInstance.createdAt` is set once, at
+    // creation, and never changes, so this single comparison is correct
+    // for BOTH a brand-new bot (nothing has happened since createdAt yet
+    // -> empty/insufficient, exactly as intended) AND an existing bot's
+    // restart (everything it ever legitimately processed happened after
+    // its own createdAt -> full history correctly recovered) — no
+    // "is this new vs. a restart" branching needed anywhere. Candle
+    // timestamps are period-START (see CandlePersistenceService), so a
+    // candle whose period began before creation but which closes after is
+    // still correctly excluded — it never fully belonged to this bot's
+    // observed market. The GLOBAL backfill/history-sufficiency logic
+    // above is entirely untouched by this — it operates on the shared,
+    // per-(symbol,timeframe) Candle collection, benefiting every consumer
+    // regardless of any one bot's own creation time; only what THIS bot
+    // actually receives is filtered here.
+    //
+    // Backward-compatible: if createdAt is ever missing/invalid (should
+    // not happen via the normal creation path — timestamps are Mongoose-
+    // automatic — but never trust it blindly), preserve the existing,
+    // unfiltered behavior rather than risk stalling a real bot.
+    const createdAtMs = dbInstance.createdAt instanceof Date && !Number.isNaN(dbInstance.createdAt.getTime())
+      ? dbInstance.createdAt.getTime()
+      : null;
+    if (createdAtMs === null) return candles;
+    return candles.filter((c) => c.timestamp >= createdAtMs);
   }
 
   /**
@@ -900,6 +928,18 @@ class BotManager {
         // this set has exactly one member — byte-identical to the old
         // exact-match check.
         if (!this._instanceAcceptsTimeframe(dbInstance, marketUpdate.timeframe)) continue;
+
+        // Defensive: a bot must never process a candle whose period started
+        // before the bot was created — see _hydrateOneTimeframe for the
+        // primary fix (historical hydration). Under normal operation this
+        // is structurally unreachable (dispatchMarketData only ever carries
+        // genuinely real-time closed candles, always after creation), but
+        // guards against any future/edge-case path that could otherwise
+        // feed a stale-timestamped candle into live dispatch.
+        const createdAtMs = dbInstance.createdAt instanceof Date && !Number.isNaN(dbInstance.createdAt.getTime())
+          ? dbInstance.createdAt.getTime()
+          : null;
+        if (createdAtMs !== null && marketUpdate.timestamp < createdAtMs) continue;
       }
 
       const Position = require('../../models/Position');
