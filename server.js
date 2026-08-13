@@ -36,6 +36,20 @@ async function main() {
 
   await botManager.discoverModels();
 
+  // Startup recovery: reconcile MongoDB's RUNNING BotInstance records
+  // against this freshly-started process's empty liveInstances Map. An
+  // ungraceful termination of a prior process (crash, deploy, OOM) never
+  // demotes a RUNNING bot to STOPPED — only a graceful stop does that —
+  // so without this, such a bot's status field (and every UI reading it)
+  // keeps reporting RUNNING while it silently never receives another
+  // candle. Must complete before market-data subscriptions are wired up
+  // below, so hydration is always finished before any live dispatch could
+  // possibly reach a recovered instance.
+  const recovery = await botManager.recoverRunningInstances();
+  if (recovery.length) {
+    await logger.info('BOT', `Startup recovery: ${recovery.filter((r) => r.recovered).length}/${recovery.length} RUNNING bot instance(s) recovered`);
+  }
+
   // Wire market-data price updates -> paper P&L refresh + bot dispatch + socket broadcast.
   // Only subscribes to symbols that are actually referenced by an existing bot
   // instance or that the allowed-symbols list declares, to avoid unbounded

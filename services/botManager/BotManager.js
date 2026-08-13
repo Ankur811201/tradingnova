@@ -276,8 +276,27 @@ class BotManager {
     // another start/stop/restart for this same instanceId — by the time
     // this line runs, any prior in-flight call for this instanceId has
     // already fully completed and its status write is visible here.
+    //
+    // This guard is scoped to THIS process's lifetime — see
+    // recoverRunningInstances() below for the startup-recovery path,
+    // which deliberately does NOT go through this guard (recovery exists
+    // precisely because status is 'RUNNING' with no corresponding
+    // liveInstances entry in a freshly-started process).
     if (dbInstance.status === 'RUNNING') return dbInstance;
+    return this._initializeInstanceRuntime(dbInstance);
+  }
 
+  /**
+   * The actual runtime bring-up for a bot instance: model creation,
+   * onStart, hydration, level-count/safety-state recovery, liveInstances
+   * registration, and the RUNNING status write. Extracted so both the
+   * normal start path (_startInstanceUnlocked, gated by the idempotency
+   * guard above) and startup recovery (recoverRunningInstances, which
+   * must NOT go through that guard) share the exact same initialization —
+   * no duplicated logic, no risk of the two paths drifting apart.
+   */
+  async _initializeInstanceRuntime(dbInstance) {
+    const instanceId = dbInstance.instanceId;
     const modelDef = this.registeredModels.get(dbInstance.modelId);
     if (!modelDef) {
       throw new AppError(`Bot model "${dbInstance.modelId}" is not currently registered in this running process`, 409);
@@ -317,7 +336,11 @@ class BotManager {
     // whole block runs synchronously-awaited inside one HTTP request with
     // no interleaving visible to other code, no live candle for this
     // instance can be dispatched, missed, or double-processed relative to
-    // hydration — the ordering itself is the race guard.
+    // hydration — the ordering itself is the race guard. The same argument
+    // holds for startup recovery: recoverRunningInstances() awaits this
+    // whole method to completion for one instance before moving to the
+    // next, and server.js awaits recoverRunningInstances() to completion
+    // before wiring up market-data subscriptions at all.
     this._setReadiness(instanceId, 'HYDRATING', { have: 0, required: 0 });
     try {
       await this._hydrateInstance(dbInstance, modelInstance);
@@ -344,6 +367,68 @@ class BotManager {
     await logger.info('BOT', `Bot instance started: ${instanceId}`);
     this._broadcastStatus(dbInstance);
     return dbInstance;
+  }
+
+  /**
+   * STARTUP RECOVERY — call once, after discoverModels() and before any
+   * market-data subscription is wired up (see server.js). Reconciles
+   * MongoDB's RUNNING BotInstance records against this freshly-started
+   * process's empty liveInstances Map.
+   *
+   * Root cause this closes: an ungraceful process termination (crash,
+   * deploy, OOM, process manager restart) never runs _stopInstanceUnlocked
+   * — the only code path that ever sets status to 'STOPPED' — so a bot
+   * that was genuinely RUNNING stays 'RUNNING' in MongoDB forever, even
+   * though the new process's liveInstances (and dispatchMarketData, which
+   * only ever iterates that Map) has no entry for it at all. Every UI
+   * reading dbInstance.status continues to correctly report RUNNING while
+   * the bot silently never receives another candle.
+   *
+   * Deliberately calls _initializeInstanceRuntime directly, NOT
+   * _startInstanceUnlocked — that method's `status === 'RUNNING'` guard
+   * exists specifically to prevent a double-start within one process's
+   * lifetime (i.e. liveInstances already has the entry). Here we are
+   * recovering PRECISELY BECAUSE status is 'RUNNING' with no
+   * corresponding liveInstances entry — going through that guard would
+   * make recovery a permanent no-op, which is the exact bug being fixed.
+   *
+   * Idempotent: an instance already present in liveInstances (should
+   * never happen at a genuine cold boot, but guarded defensively in case
+   * this is ever called more than once in a process's lifetime) is
+   * skipped entirely — no duplicate model instance, no duplicate
+   * hydration, no duplicate subscription. Each instance is still
+   * recovered through the normal per-instanceId lock, so it can never
+   * race a concurrent admin action (start/stop/restart/delete) for that
+   * same instance. A genuinely STOPPED or PAUSED bot is never touched —
+   * only documents whose status is exactly 'RUNNING' are queried at all.
+   * One instance's recovery failure (e.g. its model is not registered,
+   * or hydration fails) is logged and does not prevent any other
+   * instance from recovering.
+   */
+  async recoverRunningInstances() {
+    const runningInstances = await BotInstance.find({ status: 'RUNNING' });
+    const results = [];
+    for (const dbInstance of runningInstances) {
+      if (this.liveInstances.has(dbInstance.instanceId)) {
+        results.push({ instanceId: dbInstance.instanceId, recovered: false, reason: 'already live in this process' });
+        continue;
+      }
+      try {
+        await this._withLock(dbInstance.instanceId, () => this._initializeInstanceRuntime(dbInstance));
+        results.push({ instanceId: dbInstance.instanceId, recovered: true });
+        await logger.info('BOT', `Recovered RUNNING bot instance after process restart: ${dbInstance.instanceId}`);
+      } catch (err) {
+        results.push({ instanceId: dbInstance.instanceId, recovered: false, reason: err.message });
+        // Deliberately does NOT flip dbInstance.status to anything else —
+        // a transient failure here (e.g. a momentary Mongo hiccup) should
+        // not permanently reclassify a bot the operator believes is
+        // running; the existing hydration-failure path inside
+        // _initializeInstanceRuntime already leaves status untouched for
+        // the exact same reason on a normal start.
+        await logger.error('BOT', `Failed to recover RUNNING bot instance ${dbInstance.instanceId}: ${err.message}`);
+      }
+    }
+    return results;
   }
 
   /**
