@@ -8,10 +8,15 @@ const {
   evaluateCandle2, computeBoundaries, evaluateBoundaryBreak,
   computeBuyRiskLength, computeSellRiskLength, computeLotFromRiskLength,
 } = require('./sameSidePatternEngine');
-const { capExposureToMaxNotional } = require('./riskSizing');
 const { ConsecutiveLossSafety } = require('./safetyState');
 
 const RULE_ID_BUY = 'MODEL_002_SAME_SIDE_BUY';
+
+// Confirmed requirement: a bot becomes ready for level monitoring after
+// exactly 3 NEW eligible closed candles — a fixed rule, not a per-bot
+// configurable value (unlike historySize, which stays a `parameters` key
+// governing the pattern engine's rolling buffer window).
+const MIN_CANDLES_FOR_READINESS = 3;
 const RULE_ID_SELL = 'MODEL_002_SAME_SIDE_SELL';
 
 const LEVERAGE_MIN = 1;
@@ -143,7 +148,7 @@ class Model002 extends BotModelBase {
 
     this.emitStrategyEvent('MODEL_HYDRATED', {
       symbol: this.symbol, timeframe: this.params.timeframe,
-      candlesLoaded: this.candles.length, required: this.params.historySize,
+      candlesLoaded: this.candles.length, required: MIN_CANDLES_FOR_READINESS,
     });
   }
 
@@ -278,7 +283,18 @@ class Model002 extends BotModelBase {
 
   getReadiness() {
     const have = this.candles.length;
-    const required = this.params.historySize;
+    // Startup readiness is DECOUPLED from historySize (confirmed
+    // requirement — do not conflate "how many candles until the bot will
+    // attempt a decision" with "how large a rolling buffer window
+    // Candle-2/last-touch-wins search can look back across", which is
+    // what historySize actually governs elsewhere: _mergeHydratedCandles/
+    // _appendAndTrim (buffer cap) and BotManager's hydration fetch cap).
+    // this.candles is already scoped to only post-creation (and, after a
+    // levels/trend change, post-levelsUpdatedAt) candles by BotManager's
+    // hydration filter — so "3 candles in the buffer" already means
+    // exactly "3 NEW eligible closed candles", with no separate timestamp
+    // tracking needed here.
+    const required = MIN_CANDLES_FOR_READINESS;
     return { ready: have >= required, have, required };
   }
 
@@ -635,24 +651,41 @@ class Model002 extends BotModelBase {
       return;
     }
 
-    // Existing safety ceiling preserved (confirmed requirement: never
-    // modify RiskEngine/PaperEngine unnecessarily; the max-capital x
-    // leverage notional cap already exists and only ever reduces quantity).
-    const capped = capExposureToMaxNotional(lot, entryPrice, this.capitalAllocation, this.leverage, 0);
-    const finalQuantity = capped.quantity;
-    if (!finalQuantity || finalQuantity <= 0) {
-      this._emitDecision('WAIT', {
-        reason: 'maximum_capital_leverage_limit', direction, entryPrice, stopLoss, riskLength, lot,
-        maximumCapital: this.capitalAllocation, leverage: this.leverage, maximumAllowedNotional: capped.maximumAllowedNotional,
-      }, entryCandle);
-      return;
-    }
+    // CONFIRMED CHANGE: the risk-based lot computed above IS the final
+    // quantity — it is no longer passed through the maxCapital x leverage
+    // notional-capping helper (riskSizing.js) and can no longer be reduced
+    // (or zeroed out, as it was at decimalPrecision=0) by that ceiling.
+    // The capping helper itself is intentionally left intact in
+    // riskSizing.js — this only removes MODEL_002's call site, so any
+    // other legitimate caller (and that function's own unit tests) is
+    // unaffected. maximumAllowedNotional/finalNotional below are now
+    // purely informational (surfaced in DECISION/TradeCommand metadata
+    // for visibility) and never gate or shrink the trade.
+    //
+    // LOT -> BTC CONVERSION (confirmed business rule): 1 lot = 0.001 BTC.
+    // `lot` itself is a risk-based lot count (4-10, see
+    // computeLotFromRiskLength) and is kept unchanged below for
+    // decision/audit/UI purposes. `finalQuantity` is the value that
+    // actually flows into TradeCommand/RiskEngine/execution, so it must
+    // be expressed in base-asset (BTC) terms -- this is the only place
+    // that conversion happens.
+    const finalQuantity = lot * 0.001;
+    const maximumAllowedNotional = this.capitalAllocation * this.leverage;
+    const finalNotional = entryPrice * finalQuantity;
 
+    // Diagnostic trail for this trade decision — persisted via the
+    // existing StrategyEvent/DECISION pipeline (BotManager writes every
+    // emitStrategyEvent call to the StrategyEvent collection), so no
+    // separate logger call is needed here. At minimum this captures:
+    // entryPrice, stopLoss, riskAmount (riskLength — this pipeline has no
+    // separate dollar risk amount; riskLength IS the risk distance used
+    // to look up the lot), riskDistance (riskLength), calculatedLot, and
+    // finalQuantity.
     const ruleId = direction === 'BUY' ? RULE_ID_BUY : RULE_ID_SELL;
     const result = {
-      direction, entryPrice, stopLoss, riskLength, lot, finalQuantity,
+      direction, entryPrice, stopLoss, riskLength, lot, finalQuantity, finalNotional,
       maximumCapital: this.capitalAllocation, leverage: this.leverage,
-      maximumAllowedNotional: capped.maximumAllowedNotional, maxCapitalCapped: capped.capped,
+      maximumAllowedNotional, maxCapitalCapped: false,
       activeLevel: this._activeLevelFor(candidate), ruleId,
       candle1: this._summarizeCandle(candidate.candle1),
       candle2: this._summarizeCandle(candidate.candle2),

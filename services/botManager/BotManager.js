@@ -34,6 +34,9 @@ const { DEFAULT_PARAMETERS, TIMEFRAMES_MS } = require('../../bot-models/model-00
 const {
   validateLevels, validateTargets, validateSizing, validateLeverage,
 } = require('../../bot-models/model-001/configContract');
+const {
+  validateTrend: validateModel002Trend, validateLevelArray: validateModel002LevelArray,
+} = require('../../bot-models/model-002/validators');
 
 // PHASE Q — strategy-sensitive configuration fields cannot be changed while
 // an instance is RUNNING (same policy already applied to `timeframe` before
@@ -544,8 +547,26 @@ class BotManager {
     const createdAtMs = dbInstance.createdAt instanceof Date && !Number.isNaN(dbInstance.createdAt.getTime())
       ? dbInstance.createdAt.getTime()
       : null;
-    if (createdAtMs === null) return candles;
-    return candles.filter((c) => c.timestamp >= createdAtMs);
+
+    // A Trend/Support/Resistance configuration change establishes its own
+    // NEW evaluation baseline, on top of (never instead of) createdAt —
+    // the new levels must never be tested against candles that existed
+    // before the change was saved (see updateConfiguration, where this is
+    // set only when a value genuinely changed). Not a new schema field —
+    // levelsUpdatedAt is a key inside the already-existing `parameters`
+    // Mixed object, absent entirely for a bot whose configuration was
+    // never edited, in which case this is simply a no-op and createdAt
+    // alone governs the baseline exactly as before.
+    const levelsUpdatedAtMs = dbInstance.parameters && typeof dbInstance.parameters.levelsUpdatedAt === 'number'
+      ? dbInstance.parameters.levelsUpdatedAt
+      : null;
+
+    const baselineMs = levelsUpdatedAtMs !== null
+      ? Math.max(createdAtMs || 0, levelsUpdatedAtMs)
+      : createdAtMs;
+
+    if (baselineMs === null) return candles;
+    return candles.filter((c) => c.timestamp >= baselineMs);
   }
 
   /**
@@ -782,6 +803,55 @@ class BotManager {
       paramPatch.timeframe = updates.timeframe;
     }
 
+    // MODEL_002 — Trend / Support / Resistance. Reuses the exact existing
+    // MODEL_002 validation rules (validateTrend/validateLevelArray from
+    // bot-models/model-002/validators.js) — no new rules invented here.
+    // Restricted to MODEL_002 instances only, so this can never silently
+    // affect a MODEL_001 bot's configuration. Same RUNNING guard as every
+    // other strategy-sensitive field on this instance (timeframe/levels/
+    // targets/sizing/leverage) — enforces the required Pause/Stop -> edit
+    // -> Save -> Restart workflow; a running model instance can never have
+    // its levels changed out from under it.
+    if (has('trend') || has('support') || has('resistance')) {
+      if (dbInstance.modelId !== 'MODEL_002') {
+        throw new AppError('trend/support/resistance are only valid for MODEL_002 instances', 400);
+      }
+      if (dbInstance.status === 'RUNNING') {
+        throw new AppError('Cannot change trend/support/resistance while the bot is RUNNING. Pause or stop it first.', 409);
+      }
+
+      const existingParams = dbInstance.parameters || {};
+      let levelsChanged = false;
+
+      if (has('trend')) {
+        const trend = validateModel002Trend(updates.trend);
+        if (trend !== existingParams.trend) levelsChanged = true;
+        paramPatch.trend = trend;
+      }
+      if (has('support')) {
+        const support = validateModel002LevelArray(updates.support, 'support');
+        if (JSON.stringify(support) !== JSON.stringify(existingParams.support)) levelsChanged = true;
+        paramPatch.support = support;
+      }
+      if (has('resistance')) {
+        const resistance = validateModel002LevelArray(updates.resistance, 'resistance');
+        if (JSON.stringify(resistance) !== JSON.stringify(existingParams.resistance)) levelsChanged = true;
+        paramPatch.resistance = resistance;
+      }
+
+      if (levelsChanged) {
+        // A key inside the ALREADY-EXISTING, intentionally free-form
+        // `parameters` object — not a new schema field (timeframe/riskPct/
+        // etc. are already just keys within it the same way). Hydration
+        // (_hydrateOneTimeframe) uses this, alongside createdAt (never
+        // touched here), to exclude pre-change candles from replay — the
+        // new levels must never be tested against candles that existed
+        // before this configuration was saved. Only set when a value
+        // genuinely changed, never on a no-op re-save of the same values.
+        paramPatch.levelsUpdatedAt = Date.now();
+      }
+    }
+
     // PHASE D/E — canonical Top/Bottom Level. Accepts either a nested
     // `levels: {top, bottom}` object or flat `topLevel`/`bottomLevel` keys
     // (the latter kept for a gentler migration path from the old
@@ -930,16 +1000,22 @@ class BotManager {
         if (!this._instanceAcceptsTimeframe(dbInstance, marketUpdate.timeframe)) continue;
 
         // Defensive: a bot must never process a candle whose period started
-        // before the bot was created — see _hydrateOneTimeframe for the
-        // primary fix (historical hydration). Under normal operation this
-        // is structurally unreachable (dispatchMarketData only ever carries
-        // genuinely real-time closed candles, always after creation), but
-        // guards against any future/edge-case path that could otherwise
-        // feed a stale-timestamped candle into live dispatch.
+        // before the bot was created, or before its Trend/Support/
+        // Resistance configuration was last changed — see
+        // _hydrateOneTimeframe for the primary fix (historical hydration).
+        // Under normal operation this is structurally unreachable
+        // (dispatchMarketData only ever carries genuinely real-time closed
+        // candles), but guards against any future/edge-case path that
+        // could otherwise feed a stale-timestamped candle into live
+        // dispatch.
         const createdAtMs = dbInstance.createdAt instanceof Date && !Number.isNaN(dbInstance.createdAt.getTime())
           ? dbInstance.createdAt.getTime()
           : null;
-        if (createdAtMs !== null && marketUpdate.timestamp < createdAtMs) continue;
+        const levelsUpdatedAtMs = dbInstance.parameters && typeof dbInstance.parameters.levelsUpdatedAt === 'number'
+          ? dbInstance.parameters.levelsUpdatedAt
+          : null;
+        const baselineMs = levelsUpdatedAtMs !== null ? Math.max(createdAtMs || 0, levelsUpdatedAtMs) : createdAtMs;
+        if (baselineMs !== null && marketUpdate.timestamp < baselineMs) continue;
       }
 
       const Position = require('../../models/Position');

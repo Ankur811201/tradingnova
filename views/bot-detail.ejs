@@ -452,6 +452,7 @@
       </div>
 
       <div id="adv-settings" data-open="false">
+        <% var ctlRunningLocked = bot.status === 'RUNNING'; %>
         <% if (bot.modelId !== 'MODEL_002') { %>
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4">
           <div>
@@ -474,7 +475,6 @@
              pause or stop to edit, matching BotManager.updateConfiguration.
              MODEL_001 only — MODEL_002 uses user-supplied trend/support/
              resistance instead (see the MODEL_002 block below). -->
-        <% var ctlRunningLocked = bot.status === 'RUNNING'; %>
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3">
           <div>
             <label class="text-[10px] text-gray-500 uppercase tracking-wide">Top Level</label>
@@ -502,16 +502,19 @@
         </div>
         <% } else { %>
         <!-- MODEL_002 — Custom Pattern: trend/support/resistance are
-             user-supplied at bot creation (never auto-detected — no Daily
-             BOS, no 1H confirmation, no EMA). Shown read-only here; this
-             page does not offer inline editing of the strategy configuration
-             for MODEL_002 — the same values shown at Create Bot time. -->
+             user-supplied. Editable here (same Pause/Stop -> edit -> Save
+             -> Restart workflow as every other field on this page), using
+             the existing Save Configuration mechanism and the existing
+             MODEL_002 validation rules (exactly 3 numeric positive levels
+             each) — see collectConfigPayload() below and
+             BotManager.updateConfiguration server-side. -->
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4">
           <div>
             <label class="text-[10px] text-gray-500 uppercase tracking-wide">Trend</label>
-            <div id="ctl-m002-trend" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono <%= (bot.parameters && bot.parameters.trend === 'BULLISH') ? 'text-emerald-400' : (bot.parameters && bot.parameters.trend === 'BEARISH') ? 'text-rose-400' : 'text-gray-200' %>">
-              <%= (bot.parameters && bot.parameters.trend) || '—' %>
-            </div>
+            <select id="ctl-m002-trend" <%= ctlRunningLocked ? 'disabled title="Pause or stop the bot to change trend"' : '' %> class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono <%= (bot.parameters && bot.parameters.trend === 'BULLISH') ? 'text-emerald-400' : (bot.parameters && bot.parameters.trend === 'BEARISH') ? 'text-rose-400' : 'text-gray-200' %> focus:outline-none focus:border-blue-500/50 <%= ctlRunningLocked ? 'opacity-60 cursor-not-allowed' : '' %>">
+              <option value="BULLISH" <%= (bot.parameters && bot.parameters.trend === 'BULLISH') ? 'selected' : '' %>>BULLISH</option>
+              <option value="BEARISH" <%= (bot.parameters && bot.parameters.trend === 'BEARISH') ? 'selected' : '' %>>BEARISH</option>
+            </select>
           </div>
           <div>
             <label class="text-[10px] text-gray-500 uppercase tracking-wide">Maximum Capital</label>
@@ -521,14 +524,20 @@
           </div>
           <div>
             <label class="text-[10px] text-gray-500 uppercase tracking-wide">Support Levels (S1 / S2 / S3)</label>
-            <div id="ctl-m002-support" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200">
-              <%= (bot.parameters && Array.isArray(bot.parameters.support) && bot.parameters.support.length) ? bot.parameters.support.join(' / ') : '—' %>
+            <div class="grid grid-cols-3 gap-1 mt-1">
+              <% var s = (bot.parameters && Array.isArray(bot.parameters.support)) ? bot.parameters.support : []; %>
+              <% for (var si = 0; si < 3; si++) { %>
+              <input id="ctl-m002-support-<%= si %>" type="text" inputmode="decimal" placeholder="S<%= si + 1 %>" value="<%= (s[si] != null) ? s[si] : '' %>" <%= ctlRunningLocked ? 'readonly title="Pause or stop the bot to change support"' : '' %> class="w-full bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50 <%= ctlRunningLocked ? 'opacity-60 cursor-not-allowed' : '' %>">
+              <% } %>
             </div>
           </div>
           <div>
             <label class="text-[10px] text-gray-500 uppercase tracking-wide">Resistance Levels (R1 / R2 / R3)</label>
-            <div id="ctl-m002-resistance" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-gray-200">
-              <%= (bot.parameters && Array.isArray(bot.parameters.resistance) && bot.parameters.resistance.length) ? bot.parameters.resistance.join(' / ') : '—' %>
+            <div class="grid grid-cols-3 gap-1 mt-1">
+              <% var r = (bot.parameters && Array.isArray(bot.parameters.resistance)) ? bot.parameters.resistance : []; %>
+              <% for (var ri = 0; ri < 3; ri++) { %>
+              <input id="ctl-m002-resistance-<%= ri %>" type="text" inputmode="decimal" placeholder="R<%= ri + 1 %>" value="<%= (r[ri] != null) ? r[ri] : '' %>" <%= ctlRunningLocked ? 'readonly title="Pause or stop the bot to change resistance"' : '' %> class="w-full bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500/50 <%= ctlRunningLocked ? 'opacity-60 cursor-not-allowed' : '' %>">
+              <% } %>
             </div>
           </div>
         </div>
@@ -881,22 +890,12 @@
       var el = document.getElementById(id);
       return el ? el.value : null;
     };
-    // PART 13 -- PHASE P/Q: only include levels/targets/sizing in the
-    // payload when the user actually touched them (both level fields
-    // filled, or the targets field non-empty) — an intentionally blank
-    // field must not overwrite an existing saved value with null. These
-    // fields are also disabled/readonly client-side while RUNNING (see the
-    // ctlRunningLocked EJS block above), matching the backend's own guard.
-    //
     // NOVA TRADE -- BOT DETAIL CLEANUP: emaLength/breakoutLookback/
     // minBodyRatio/levels/targets/sizing are MODEL_001-only configuration.
-    // MODEL_002 trend/support/resistance are read-only on this page (no
-    // backend endpoint accepts them here — see Bot Configuration above),
-    // so a MODEL_002 Save only ever touches capital/riskPct/leverage/
-    // timeframe. The ctl-ema-length/ctl-top-level/etc inputs don't even
-    // exist in the DOM for a MODEL_002 bot (see the modelId-gated Advanced
-    // Settings block above), but we also gate here explicitly so a
-    // MODEL_002 payload never carries these keys at all — not even as null.
+    // MODEL_002 trend/support/resistance are handled in the isModel002
+    // branch below — collected only when the user actually touched them
+    // (all 3 of an array filled, matching the existing "don't overwrite
+    // with blanks" convention used for levels/targets above).
     var payload = {
       capital: val('ctl-capital'),
       riskPct: val('ctl-risk'),
@@ -905,7 +904,20 @@
     };
 
     var isModel002 = window.BOT_CONFIG && window.BOT_CONFIG.modelId === 'MODEL_002';
-    if (!isModel002) {
+    if (isModel002) {
+      var trendEl = document.getElementById('ctl-m002-trend');
+      if (trendEl) payload.trend = trendEl.value;
+
+      var supportVals = [val('ctl-m002-support-0'), val('ctl-m002-support-1'), val('ctl-m002-support-2')];
+      if (supportVals.every(function(v) { return v !== null && v !== ''; })) {
+        payload.support = supportVals.map(Number);
+      }
+
+      var resistanceVals = [val('ctl-m002-resistance-0'), val('ctl-m002-resistance-1'), val('ctl-m002-resistance-2')];
+      if (resistanceVals.every(function(v) { return v !== null && v !== ''; })) {
+        payload.resistance = resistanceVals.map(Number);
+      }
+    } else {
       payload.emaLength = val('ctl-ema-length');
       payload.breakoutLookback = val('ctl-breakout-lookback');
       payload.minBodyRatio = val('ctl-body-ratio');

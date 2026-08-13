@@ -1297,3 +1297,148 @@ test('CALIBRATION HISTORY OUTSIDE HYDRATION WINDOW: when Pattern 1\'s calibratio
   );
   assert.equal(model.r1Calibrated, false, 'r1Calibrated honestly reflects only what THIS window\'s replay actually witnessed — never guessed true');
 });
+
+// =========================================================================
+// READINESS DECOUPLING: startup readiness is a fixed 3-candle threshold,
+// independent of historySize (which continues to govern the pattern
+// engine's rolling buffer window and hydration fetch cap, unchanged).
+// =========================================================================
+
+test('READINESS: bot is NOT ready with 0, 1, or 2 candles, and becomes ready at exactly 3 — not 20 (historySize)', async () => {
+  const { ctx, model } = await startedModel({ trend: 'BEARISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] });
+  assert.equal(model.getReadiness().required, 3, 'readiness threshold must be 3, decoupled from historySize=20');
+
+  await model.onHydrate([]);
+  assert.equal(model.getReadiness().ready, false);
+  assert.equal(model.getReadiness().have, 0);
+
+  const flatCandle = (i) => candleAt(i, 64800, 64830, 64770, 64800, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: flatCandle(0).timestamp, data: flatCandle(0) }, null);
+  assert.equal(model.getReadiness().have, 1);
+  assert.equal(model.getReadiness().ready, false);
+
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: flatCandle(1).timestamp, data: flatCandle(1) }, null);
+  assert.equal(model.getReadiness().have, 2);
+  assert.equal(model.getReadiness().ready, false);
+
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: flatCandle(2).timestamp, data: flatCandle(2) }, null);
+  assert.equal(model.getReadiness().have, 3);
+  assert.equal(model.getReadiness().ready, true, 'must become ready at exactly the 3rd new closed candle');
+});
+
+test('READINESS: the model still correctly evaluates real patterns once ready — decoupling readiness from historySize does not affect pattern detection', async () => {
+  const { ctx, model } = await startedModel({ trend: 'BEARISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] });
+  await model.onHydrate([]);
+  for (let i = 0; i < 3; i += 1) {
+    const flat = candleAt(i, 64800, 64830, 64770, 64800, BASE);
+    await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: flat.timestamp, data: flat }, null);
+  }
+  assert.equal(model.getReadiness().ready, true);
+
+  const touch = candleAt(3, 64900, 64960, 64890, 64920, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: touch.timestamp, data: touch }, null);
+  assert.ok(model.patternCandidate, 'a real Resistance touch must still correctly start a pattern once ready');
+  assert.equal(model.patternCandidate.stage, 'WAITING_FOR_CANDLE2');
+});
+
+// =========================================================================
+// CAPITAL x LEVERAGE CAP REMOVAL — the risk-calculated lot is now the
+// final quantity, unconditionally. Reproduces the reported bug scenario
+// (Capital=$1000, Leverage=1x, entry ~$63,188 — the maxCapital x leverage
+// notional ceiling used to floor(1000/63188) = 0 at decimalPrecision 0,
+// producing 'maximum_capital_leverage_limit' and no trade) and proves the
+// cap no longer reduces or zeroes out a valid risk-calculated lot.
+// =========================================================================
+
+test('CAP REMOVED: low capital/high leverage-1x/high entry price — a valid risk-calculated lot is no longer zeroed by maxCapital x leverage', async () => {
+  // Capital=$1000, Leverage=1x -> old maximumAllowedNotional = $1000.
+  // Entry ~63188 x any lot (min lot is 4) is always >> $1000, so under the
+  // OLD behavior this always produced 'maximum_capital_leverage_limit'.
+  const { ctx, model } = await startedModel(
+    { trend: 'BULLISH', support: [63132, 50, 25], resistance: [999000, 998000, 997000] },
+    { capitalAllocation: 1000, leverage: 1 },
+  );
+  await model.onHydrate(flat(20, 64000, BASE));
+  const c1 = { timestamp: BASE + 20 * MIN, open: 63182, high: 63192, low: 63132, close: 63172, volume: null }; // touches support 63132
+  const c2 = { timestamp: BASE + 21 * MIN, open: 63181, high: 63186, low: 63180.5, close: 63183, volume: null }; // touches Candle1 body-high(63182)
+  const breakout = { timestamp: BASE + 22 * MIN, open: 63184, high: 63192, low: 63183, close: 63188, volume: null }; // closes above 63186, entryPrice = 63188
+
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c1.timestamp, data: c1 }, null);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c2.timestamp, data: c2 }, null);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: breakout.timestamp, data: breakout }, null);
+
+  assert.equal(ctx.commands.length, 1, 'a valid risk-calculated lot must still produce a TradeCommand, not a WAIT');
+  const cmd = ctx.commands[0];
+  assert.equal(cmd.action, 'LONG');
+  assert.equal(cmd.stopLoss, 63127); // Candle1.low(63132) - 5
+  assert.equal(cmd.metadata.riskLength, 61); // 63188 - 63127
+  assert.equal(cmd.metadata.lot, 10, 'riskLength 61 -> 0 <= 61 < 90 -> lot 10, per the natural-number lot table');
+  assert.equal(cmd.quantity, cmd.metadata.lot * 0.001, 'finalQuantity must equal the risk-calculated lot converted to BTC (1 lot = 0.001 BTC)');
+  assert.equal(cmd.quantity, 0.010);
+  assert.notEqual(cmd.quantity, 0);
+  assert.notEqual(cmd.quantity, null);
+
+  const decision = lastDecision(ctx);
+  assert.equal(decision.payload.reason, 'BUY pattern confirmed');
+  assert.notEqual(decision.payload.reason, 'maximum_capital_leverage_limit');
+  assert.equal(decision.payload.lot, 10, 'raw lot must remain unconverted in decision/audit data');
+  assert.equal(decision.payload.finalQuantity, 0.010);
+  assert.equal(decision.payload.maxCapitalCapped, false, 'the cap must never be reported as having reduced the quantity');
+});
+
+test('CAP REMOVED: MODEL_002 never emits the maximum_capital_leverage_limit decision for a valid risk-calculated lot, across a range of tiny capital/leverage combinations', async () => {
+  const combos = [
+    { capitalAllocation: 1000, leverage: 1 },
+    { capitalAllocation: 10, leverage: 1 },
+    { capitalAllocation: 1, leverage: 1 },
+  ];
+  for (const overrides of combos) {
+    const { ctx, model } = await startedModel(
+      { trend: 'BULLISH', support: [63132, 50, 25], resistance: [999000, 998000, 997000] },
+      overrides,
+    );
+    await model.onHydrate(flat(20, 64000, BASE));
+    const c1 = { timestamp: BASE + 20 * MIN, open: 63182, high: 63192, low: 63132, close: 63172, volume: null };
+    const c2 = { timestamp: BASE + 21 * MIN, open: 63181, high: 63186, low: 63180.5, close: 63183, volume: null };
+    const breakout = { timestamp: BASE + 22 * MIN, open: 63184, high: 63192, low: 63183, close: 63188, volume: null };
+    await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c1.timestamp, data: c1 }, null);
+    await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c2.timestamp, data: c2 }, null);
+    await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: breakout.timestamp, data: breakout }, null);
+
+    assert.equal(ctx.commands.length, 1, `capitalAllocation=${overrides.capitalAllocation}, leverage=${overrides.leverage} must still trade`);
+    assert.equal(ctx.commands[0].quantity, 0.010, 'quantity must be lot converted to BTC (1 lot = 0.001 BTC), not the raw lot count');
+    const reasons = ctx.events.filter((e) => e.eventType === 'DECISION').map((e) => e.payload.reason);
+    assert.ok(!reasons.includes('maximum_capital_leverage_limit'), `must never emit maximum_capital_leverage_limit for combo ${JSON.stringify(overrides)}`);
+  }
+});
+
+test('CAP REMOVED: risk_length_exceeds_maximum and lot_mapping_unavailable WAIT paths are unaffected — invalid setups still WAIT regardless of capital/leverage', async () => {
+  // riskLength > 360 -> still rejected before the lot/quantity step is ever reached.
+  const { ctx, model } = await startedModel(
+    { trend: 'BULLISH', support: [63000, 50, 25], resistance: [999000, 998000, 997000] },
+    { capitalAllocation: 1000000, leverage: 200 }, // deliberately huge — proves this WAIT is not capital/leverage related
+  );
+  await model.onHydrate(flat(20, 64000, BASE));
+  const c1 = { timestamp: BASE + 20 * MIN, open: 63400, high: 63410, low: 63000, close: 63390, volume: null }; // touches support 63000, bodyHigh=63400
+  const c2 = { timestamp: BASE + 21 * MIN, open: 63399, high: 63404, low: 63398.5, close: 63401, volume: null };
+  const breakout = { timestamp: BASE + 22 * MIN, open: 63402, high: 64100, low: 63401, close: 64000, volume: null }; // entry 64000, SL=Candle1.low(63000)-5=62995 -> riskLength=1005 > 360
+
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c1.timestamp, data: c1 }, null);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c2.timestamp, data: c2 }, null);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: breakout.timestamp, data: breakout }, null);
+
+  assert.equal(ctx.commands.length, 0);
+  assert.equal(lastDecision(ctx).payload.reason, 'risk_length_exceeds_maximum');
+});
+
+test('CAP REMOVED: capExposureToMaxNotional is no longer imported/called by Model002.js, but remains intact in riskSizing.js', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const model002Src = fs.readFileSync(path.join(__dirname, '..', 'bot-models', 'model-002', 'Model002.js'), 'utf8');
+  assert.equal(/capExposureToMaxNotional\(/.test(model002Src), false, 'Model002.js must no longer CALL capExposureToMaxNotional');
+  assert.equal(/require\(['"]\.\/riskSizing['"]\)/.test(model002Src), false, 'Model002.js must no longer import anything from riskSizing.js');
+  assert.equal(/reason:\s*'maximum_capital_leverage_limit'/.test(model002Src), false, 'the maximum_capital_leverage_limit decision path must be removed from Model002.js');
+
+  const riskSizing = require('../bot-models/model-002/riskSizing');
+  assert.equal(typeof riskSizing.capExposureToMaxNotional, 'function', 'capExposureToMaxNotional must remain exported from riskSizing.js for any other legitimate caller/its own tests');
+});
