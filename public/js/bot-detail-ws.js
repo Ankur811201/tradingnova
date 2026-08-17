@@ -57,6 +57,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
 
+    // Chart price-axis label (#chart-price-label): the SAME live Delta price
+    // from this SAME handler -- no extra socket, no extra poll. The label
+    // module writes the text and re-derives its Y coordinate from the
+    // chart's own priceToCoordinate() so it stays pinned to the price level.
+    // Before the chart has finished initialising this is a no-op, and the
+    // dashboard CURRENT PRICE metric above is unaffected either way.
+    if (window.NovaChartPriceLabel) {
+      window.NovaChartPriceLabel.setPrice(price);
+    }
+
+
     // Update current position price if position exists
     const positionPriceEl =
       document.getElementById('pos-current-price');
@@ -441,7 +452,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // already has an explicit configured timeframe (see
         // bot-models/model-001/validators.js), so this is a defensive
         // bail-out only, never a guess.
-        const timeframe = window.BOT_CONFIG && window.BOT_CONFIG.timeframe;
+        // ACTIVE analysis timeframe (one-time opposite-market switch): equals
+        // BOT_CONFIG.timeframe unless this bot switched to 1m.
+        const timeframe = window.BOT_CONFIG && (window.BOT_CONFIG.activeTimeframe || window.BOT_CONFIG.timeframe);
         if (!timeframe) throw new Error('No configured timeframe for this bot; cannot bucket execution marker');
         const liveMarkers = window.NovaExecutionMarkers.deriveLiveMarkers(data, timeframe);
         liveMarkers.forEach((marker) => window.NovaBotChartManager.addExecutionMarker(marker));

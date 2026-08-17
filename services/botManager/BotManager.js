@@ -14,6 +14,13 @@ const { newInstanceId } = require('../../utils/ids');
 const logger = require('../../utils/logger');
 const { env } = require('../../config/env');
 const { AppError } = require('../../utils/apiResponse');
+// ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH: the single shared definition of
+// "which timeframe is this instance actually analysing" + the analysis
+// baseline. Pure helpers, no new state, no new stream — see
+// utils/activeTimeframe.js.
+const {
+  getActiveTimeframe, applySwitch, hasSwitched, computeAnalysisBaselineMs,
+} = require('../../utils/activeTimeframe');
 
 // PART 11: how many recent CLOSED candles to hydrate a newly-started
 // instance with. patternEngine.js requires >= 50 (50-period EMA is the
@@ -450,7 +457,10 @@ class BotManager {
     // real, explicit value by this point. A fallback here would just hide
     // that guarantee ever broke.
     if (typeof modelInstance.onHydrate === 'function') {
-      const timeframe = dbInstance.parameters.timeframe;
+      // A restarted instance that already switched hydrates its ACTIVE
+      // timeframe (1m), never its configured one — otherwise it would come
+      // back analysing 3m candles again.
+      const timeframe = getActiveTimeframe(dbInstance);
       const wantCount = Math.max(
         HYDRATION_MIN_CANDLES,
         Math.min((dbInstance.parameters && dbInstance.parameters.historySize) || 0, 200)
@@ -544,26 +554,10 @@ class BotManager {
     // not happen via the normal creation path — timestamps are Mongoose-
     // automatic — but never trust it blindly), preserve the existing,
     // unfiltered behavior rather than risk stalling a real bot.
-    const createdAtMs = dbInstance.createdAt instanceof Date && !Number.isNaN(dbInstance.createdAt.getTime())
-      ? dbInstance.createdAt.getTime()
-      : null;
-
-    // A Trend/Support/Resistance configuration change establishes its own
-    // NEW evaluation baseline, on top of (never instead of) createdAt —
-    // the new levels must never be tested against candles that existed
-    // before the change was saved (see updateConfiguration, where this is
-    // set only when a value genuinely changed). Not a new schema field —
-    // levelsUpdatedAt is a key inside the already-existing `parameters`
-    // Mixed object, absent entirely for a bot whose configuration was
-    // never edited, in which case this is simply a no-op and createdAt
-    // alone governs the baseline exactly as before.
-    const levelsUpdatedAtMs = dbInstance.parameters && typeof dbInstance.parameters.levelsUpdatedAt === 'number'
-      ? dbInstance.parameters.levelsUpdatedAt
-      : null;
-
-    const baselineMs = levelsUpdatedAtMs !== null
-      ? Math.max(createdAtMs || 0, levelsUpdatedAtMs)
-      : createdAtMs;
+    // Baseline = max(createdAt, levelsUpdatedAt, timeframeSwitchedAt) — see
+    // utils/activeTimeframe.js. The switch term is what stops 1m candles
+    // that predate the switch from being hydrated back in after a restart.
+    const baselineMs = computeAnalysisBaselineMs(dbInstance);
 
     if (baselineMs === null) return candles;
     return candles.filter((c) => c.timestamp >= baselineMs);
@@ -974,7 +968,12 @@ class BotManager {
    * single-timeframe set that existed before Part A.
    */
   _instanceAcceptsTimeframe(dbInstance, timeframe) {
-    if (dbInstance.parameters.timeframe === timeframe) return true;
+    // ACTIVE (not configured) timeframe: identical to parameters.timeframe
+    // for every instance that never switched; '1m' for one that has. This
+    // is the ONLY routing change needed for the switch — the existing
+    // exact-match rule (a candle only reaches instances on that exact
+    // timeframe) is otherwise untouched, so no other bot is affected.
+    if (getActiveTimeframe(dbInstance) === timeframe) return true;
     const modelDef = this.registeredModels.get(dbInstance.modelId);
     const required = (modelDef && modelDef.requiredTimeframes) || [];
     return required.some((entry) => entry.timeframe === timeframe);
@@ -1008,13 +1007,13 @@ class BotManager {
         // candles), but guards against any future/edge-case path that
         // could otherwise feed a stale-timestamped candle into live
         // dispatch.
-        const createdAtMs = dbInstance.createdAt instanceof Date && !Number.isNaN(dbInstance.createdAt.getTime())
-          ? dbInstance.createdAt.getTime()
-          : null;
-        const levelsUpdatedAtMs = dbInstance.parameters && typeof dbInstance.parameters.levelsUpdatedAt === 'number'
-          ? dbInstance.parameters.levelsUpdatedAt
-          : null;
-        const baselineMs = levelsUpdatedAtMs !== null ? Math.max(createdAtMs || 0, levelsUpdatedAtMs) : createdAtMs;
+        // Same createdAt/levelsUpdatedAt baseline as before, now also
+        // including timeframeSwitchedAt (see utils/activeTimeframe.js).
+        // That single addition is what makes the candle already forming at
+        // the moment of the switch un-analysable: only a candle whose
+        // period STARTED at or after the switch instant — i.e. the next
+        // newly closed 1m candle — passes.
+        const baselineMs = computeAnalysisBaselineMs(dbInstance);
         if (baselineMs !== null && marketUpdate.timestamp < baselineMs) continue;
       }
 
@@ -1129,7 +1128,46 @@ class BotManager {
         eventType: event.eventType, payload: event.payload, at: new Date(event.at),
       });
       dbInstance.lastSignalAt = new Date();
+
+      // ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH (persistence side).
+      // The model detected the touch and emitted this through the existing
+      // StrategyEvent pipeline (which is also what puts it in Decision
+      // History / the bot:event log — no new logging system). BotManager,
+      // the only component that owns BotInstance persistence, applies it to
+      // the SAME `parameters` object that is about to be saved below, so no
+      // extra write is added. applySwitch() is a no-op (returns null) if the
+      // instance already switched or is configured on 1m, so this can never
+      // fire twice and never touches `parameters.timeframe`.
+      let timeframeSwitchApplied = false;
+      if (event.eventType === 'ACTIVE_TIMEFRAME_SWITCHED') {
+        const switched = applySwitch(dbInstance.parameters || {}, event.payload && event.payload.at);
+        if (switched) {
+          dbInstance.parameters = switched;
+          dbInstance.markModified('parameters');
+          timeframeSwitchApplied = true;
+        }
+      }
+
       await dbInstance.save();
+
+      if (timeframeSwitchApplied) {
+        // The candle builder decides which timeframes to persist from the
+        // running instances' active timeframes; drop its short-lived cache
+        // for this symbol so the existing 1m stream starts serving this
+        // instance immediately instead of up to one cache window later.
+        try {
+          require('../marketData/CandlePersistenceService').invalidateSymbol(dbInstance.symbol);
+        } catch (err) {
+          await logger.warn('BOT', `Could not refresh candle routing after timeframe switch for ${instanceId}: ${err.message}`);
+        }
+        await logger.info('BOT', (event.payload && event.payload.message)
+          || `Bot instance ${instanceId} switched active analysis timeframe to ${getActiveTimeframe(dbInstance)}`);
+        // Reuses the EXISTING bot:status event (room:bots, which the Bot
+        // Detail page already joins) rather than opening a second socket
+        // or inventing a new channel.
+        this._broadcastStatus(dbInstance);
+      }
+
       if (this.ioRef) this.ioRef.to('room:bots').emit('bot:event', { instanceId, ...event });
 
       // NOVA TRADE -- PART 8: real MODEL_001 decisions (see Model001._emitDecision)
@@ -1309,10 +1347,18 @@ class BotManager {
 
   _broadcastStatus(dbInstance) {
     if (this.ioRef) {
+      // ACTIVE-TIMEFRAME fields are additive on the EXISTING bot:status
+      // event (§13: reuse an existing event rather than adding one). For a
+      // bot that never switched, configuredTimeframe === activeTimeframe and
+      // timeframeSwitched is false, so nothing about the payload's meaning
+      // changes for any existing consumer.
       this.ioRef.to('room:bots').emit('bot:status', {
         instanceId: dbInstance.instanceId,
         status: dbInstance.status,
         lastError: dbInstance.lastError,
+        configuredTimeframe: dbInstance.parameters && dbInstance.parameters.timeframe,
+        activeTimeframe: getActiveTimeframe(dbInstance),
+        timeframeSwitched: hasSwitched(dbInstance.parameters),
       });
     }
   }

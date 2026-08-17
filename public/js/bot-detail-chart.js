@@ -118,6 +118,31 @@
     // trade-marker part) instead of re-initializing the chart.
     window.NovaBotChartManager = chartManager;
 
+    // PRICE-AXIS LABEL: Lightweight Charts' own single-line last-value label
+    // is hidden so our two-line price + countdown label (#chart-price-label)
+    // owns that exact spot on the right price axis instead of sitting next
+    // to a duplicate. Applied to THIS page's chart instance only — the
+    // shared CandleSeriesManager (and the terminal page's chart) is
+    // untouched, as are the series data, the price scale itself, and the
+    // dashboard's own CURRENT PRICE metric.
+    try {
+      chartManager.candleSeries.candlestickSeries.applyOptions({ lastValueVisible: false });
+    } catch (err) {
+      console.warn('[CHART] could not hide last-value price label:', err);
+    }
+
+    // Attach the price-axis label to this chart instance. It positions
+    // itself from series.priceToCoordinate() and is fed by the EXISTING
+    // market:price handler (bot-detail-ws.js) — it opens no socket, starts
+    // no timer, and does no countdown maths of its own.
+    if (window.NovaChartPriceLabel) {
+      window.NovaChartPriceLabel.attach({
+        chartManager: chartManager,
+        container: document.getElementById(CHART_CONTAINER_ID).parentElement,
+        label: document.getElementById('chart-price-label'),
+      });
+    }
+
     // -----------------------------------------------------------------
     // PART 13 -- PHASE T: configured Top/Bottom/Target Level overlays.
     // These are CONFIGURATION reference lines (horizontal price lines from
@@ -230,7 +255,9 @@
     // PART 13.1 -- PHASE D: no '5m' fallback. window.BOT_CONFIG.timeframe is
     // now only ever '' for a bot with no real configured timeframe, and
     // such a bot cannot have real candles to bucket markers against anyway.
-    var timeframe = window.BOT_CONFIG && window.BOT_CONFIG.timeframe;
+    // ACTIVE analysis timeframe (one-time opposite-market switch): equals
+    // BOT_CONFIG.timeframe unless this bot switched to 1m.
+    var timeframe = window.BOT_CONFIG && (window.BOT_CONFIG.activeTimeframe || window.BOT_CONFIG.timeframe);
     if (!timeframe) return;
     var trades = Array.isArray(window.BOT_INITIAL_TRADES) ? window.BOT_INITIAL_TRADES : [];
     var openPosition = window.BOT_INITIAL_POSITION || null;
@@ -264,6 +291,10 @@
       }
 
       chartManager.onLiveCandle(candle);
+
+      // A new/updated candle can rescale the price axis — re-derive the
+      // label's Y from the same price it is already showing.
+      if (window.NovaChartPriceLabel) window.NovaChartPriceLabel.position();
     }
 
     function handleBotCandleEvent(evt) {

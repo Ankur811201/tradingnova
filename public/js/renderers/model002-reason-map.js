@@ -44,6 +44,9 @@
     // Searching for Candle 1
     no_level_touch: 'Waiting for price to touch a configured level',
 
+    // One-time opposite-market active-timeframe switch (ACTIVE_TIMEFRAME_SWITCHED)
+    opposite_market_level_touch: 'Opposite market level touched — analysis timeframe switched to 1m',
+
     // Candle 1 found, awaiting Candle 2
     candle1_support_touch_awaiting_candle2: 'Support touched — Candle 1 set, awaiting Candle 2',
     candle1_resistance_touch_awaiting_candle2: 'Resistance touched — Candle 1 set, awaiting Candle 2',

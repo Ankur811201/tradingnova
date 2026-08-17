@@ -8,7 +8,12 @@ const {
   evaluateCandle2, computeBoundaries, evaluateBoundaryBreak,
   computeBuyRiskLength, computeSellRiskLength, computeLotFromRiskLength,
 } = require('./sameSidePatternEngine');
+const { capExposureToMaxNotional } = require('./riskSizing');
 const { ConsecutiveLossSafety } = require('./safetyState');
+const {
+  isOppositeMarketTouch, getActiveTimeframe, hasSwitched, shouldSwitch,
+  OPPOSITE_TOUCH_TIMEFRAME,
+} = require('../../utils/activeTimeframe');
 
 const RULE_ID_BUY = 'MODEL_002_SAME_SIDE_BUY';
 
@@ -115,10 +120,22 @@ class Model002 extends BotModelBase {
     this.paused = false;
     this.stopped = false;
 
+    // ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH — per-instance state, read
+    // back from this instance's own persisted `parameters` (written by
+    // BotManager when the switch happened). Never a module-level/global
+    // value: two Model002 instances in the same process each carry their
+    // own flag, so one bot switching can never affect another. On a
+    // restart these come back as `true`/'1m' from MongoDB, which is what
+    // prevents the switch (and its log entry) from happening a second time.
+    this.timeframeSwitched = hasSwitched(this.params);
+    this.activeTimeframe = getActiveTimeframe(this.params);
+
     this.emitStrategyEvent('MODEL_STARTED', {
       symbol: this.symbol,
       environment: this.environment,
       timeframe: this.params.timeframe,
+      activeTimeframe: this.activeTimeframe,
+      timeframeSwitched: this.timeframeSwitched,
       trend: this.params.trend,
       support: this.params.support,
       resistance: this.params.resistance,
@@ -473,8 +490,53 @@ class Model002 extends BotModelBase {
     };
   }
 
+  /**
+   * ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH (detection side).
+   *
+   * Deliberately NOT a second, independent detector: it is called from
+   * _startCandle1 — the single existing place where a fresh Support/
+   * Resistance touch is recognised (both the normal search and the
+   * last-touch-wins replacement path go through it) — and it reuses that
+   * path's own already-computed `direction`/`matchedLevel`. A SELL
+   * candidate is by definition a RESISTANCE touch and a BUY candidate a
+   * SUPPORT touch, so the opposite-market rule can be evaluated directly
+   * from the existing state with no re-derivation that could ever disagree
+   * with MODEL_002's own touch logic.
+   *
+   * It fires on the TOUCH itself — never on Candle 2, boundary break,
+   * invalidation, or BUY/SELL (§16) — and only ever ONCE per BotInstance.
+   * The model does not (and must not) persist anything itself: it emits a
+   * StrategyEvent through the existing emit pipeline and BotManager owns
+   * persistence + candle routing.
+   */
+  _maybeSwitchToOppositeMarketTimeframe(candle, direction, matchedLevel) {
+    if (this.timeframeSwitched) return;                    // §5 one-time latch
+    if (!shouldSwitch(this.params)) return;                // §6 already 1m -> nothing to do
+
+    const touchedSide = direction === 'BUY' ? 'SUPPORT' : 'RESISTANCE';
+    if (!isOppositeMarketTouch(this.params.trend, touchedSide)) return;
+
+    const from = this.activeTimeframe;
+    this.timeframeSwitched = true;
+    this.activeTimeframe = OPPOSITE_TOUCH_TIMEFRAME;
+
+    this.emitStrategyEvent('ACTIVE_TIMEFRAME_SWITCHED', {
+      reason: 'opposite_market_level_touch',
+      trend: this.params.trend,
+      touchedSide,
+      level: { index: matchedLevel.index, price: matchedLevel.price },
+      configuredTimeframe: this.params.timeframe,
+      previousActiveTimeframe: from,
+      activeTimeframe: OPPOSITE_TOUCH_TIMEFRAME,
+      at: candle.timestamp,
+      message: `Opposite market detected: ${this.params.trend} + ${touchedSide === 'SUPPORT' ? 'Support' : 'Resistance'} touch. `
+        + `Analysis timeframe switched from ${from} to ${OPPOSITE_TOUCH_TIMEFRAME}.`,
+    });
+  }
+
   _startCandle1(candle, direction, matchedLevel) {
     this.patternCandidate = this._buildCandle1Candidate(candle, direction, matchedLevel);
+    this._maybeSwitchToOppositeMarketTimeframe(candle, direction, matchedLevel);
     this._emitDecision('WAIT', {
       reason: direction === 'BUY' ? 'candle1_support_touch_awaiting_candle2' : 'candle1_resistance_touch_awaiting_candle2',
       direction,
@@ -651,41 +713,24 @@ class Model002 extends BotModelBase {
       return;
     }
 
-    // CONFIRMED CHANGE: the risk-based lot computed above IS the final
-    // quantity — it is no longer passed through the maxCapital x leverage
-    // notional-capping helper (riskSizing.js) and can no longer be reduced
-    // (or zeroed out, as it was at decimalPrecision=0) by that ceiling.
-    // The capping helper itself is intentionally left intact in
-    // riskSizing.js — this only removes MODEL_002's call site, so any
-    // other legitimate caller (and that function's own unit tests) is
-    // unaffected. maximumAllowedNotional/finalNotional below are now
-    // purely informational (surfaced in DECISION/TradeCommand metadata
-    // for visibility) and never gate or shrink the trade.
-    //
-    // LOT -> BTC CONVERSION (confirmed business rule): 1 lot = 0.001 BTC.
-    // `lot` itself is a risk-based lot count (4-10, see
-    // computeLotFromRiskLength) and is kept unchanged below for
-    // decision/audit/UI purposes. `finalQuantity` is the value that
-    // actually flows into TradeCommand/RiskEngine/execution, so it must
-    // be expressed in base-asset (BTC) terms -- this is the only place
-    // that conversion happens.
-    const finalQuantity = lot * 0.001;
-    const maximumAllowedNotional = this.capitalAllocation * this.leverage;
-    const finalNotional = entryPrice * finalQuantity;
+    // Existing safety ceiling preserved (confirmed requirement: never
+    // modify RiskEngine/PaperEngine unnecessarily; the max-capital x
+    // leverage notional cap already exists and only ever reduces quantity).
+    const capped = capExposureToMaxNotional(lot, entryPrice, this.capitalAllocation, this.leverage, 0);
+    const finalQuantity = capped.quantity;
+    if (!finalQuantity || finalQuantity <= 0) {
+      this._emitDecision('WAIT', {
+        reason: 'maximum_capital_leverage_limit', direction, entryPrice, stopLoss, riskLength, lot,
+        maximumCapital: this.capitalAllocation, leverage: this.leverage, maximumAllowedNotional: capped.maximumAllowedNotional,
+      }, entryCandle);
+      return;
+    }
 
-    // Diagnostic trail for this trade decision — persisted via the
-    // existing StrategyEvent/DECISION pipeline (BotManager writes every
-    // emitStrategyEvent call to the StrategyEvent collection), so no
-    // separate logger call is needed here. At minimum this captures:
-    // entryPrice, stopLoss, riskAmount (riskLength — this pipeline has no
-    // separate dollar risk amount; riskLength IS the risk distance used
-    // to look up the lot), riskDistance (riskLength), calculatedLot, and
-    // finalQuantity.
     const ruleId = direction === 'BUY' ? RULE_ID_BUY : RULE_ID_SELL;
     const result = {
-      direction, entryPrice, stopLoss, riskLength, lot, finalQuantity, finalNotional,
+      direction, entryPrice, stopLoss, riskLength, lot, finalQuantity,
       maximumCapital: this.capitalAllocation, leverage: this.leverage,
-      maximumAllowedNotional, maxCapitalCapped: false,
+      maximumAllowedNotional: capped.maximumAllowedNotional, maxCapitalCapped: capped.capped,
       activeLevel: this._activeLevelFor(candidate), ruleId,
       candle1: this._summarizeCandle(candidate.candle1),
       candle2: this._summarizeCandle(candidate.candle2),

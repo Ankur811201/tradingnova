@@ -159,6 +159,23 @@
             <div id="bot-chart-state" class="absolute inset-0 flex items-center justify-center text-xs text-gray-500 font-mono pointer-events-none">
               Loading market candles...
             </div>
+            <!-- PRICE-AXIS LABEL (TradingView style): one compact label
+                 pinned to the RIGHT PRICE AXIS carrying the live price
+                 (larger) and the next-candle countdown (smaller) — no
+                 English labels, no icon. `top` is set in pixels by
+                 chart-price-label.js from series.priceToCoordinate(price),
+                 never a fixed percentage, so it tracks the actual price
+                 level through zoom/scroll/autoscale/resize. Hidden until
+                 the first real price arrives. #chart-next-candle is written
+                 by the existing next-candle-countdown.js render pass; the
+                 price by the existing market:price handler. -->
+            <div id="chart-price-label"
+                 class="hidden absolute right-0 z-10 pointer-events-none -translate-y-1/2
+                        rounded-md border border-emerald-400/30 bg-[#0b1220]/95
+                        px-2 py-1 text-center leading-tight shadow-lg">
+              <div class="text-xs font-bold font-mono text-white" id="chart-current-price">--</div>
+              <div class="text-[10px] font-semibold font-mono text-emerald-400" id="chart-next-candle">--:--</div>
+            </div>
           </div>
         </div>
 
@@ -698,6 +715,14 @@
             <div class="glass-tight rounded-xl p-3 text-center">
               <div class="text-[10px] text-gray-500 uppercase">Timeframe</div>
               <div class="text-sm font-bold font-mono text-gray-200 mt-1"><%= (bot.parameters && bot.parameters.timeframe) || '--' %></div>
+              <!-- ONE-TIME OPPOSITE-MARKET SWITCH: the user's configured
+                   timeframe above never changes; this line appears only once
+                   the bot has actually switched, so the page can never show
+                   a stale "3m" while the bot is really analysing 1m. -->
+              <div id="active-timeframe-row" class="mt-1 <%= (bot.parameters && bot.parameters.timeframeSwitched === true) ? '' : 'hidden' %>">
+                <div class="text-[10px] text-gray-500 uppercase">Active</div>
+                <div class="text-sm font-bold font-mono text-emerald-400" id="active-timeframe-value"><%= (bot.parameters && bot.parameters.activeTimeframe) || '--' %></div>
+              </div>
             </div>
             <div class="glass-tight rounded-xl p-3 text-center">
               <div class="text-[10px] text-gray-500 uppercase">Support (S1/S2/S3)</div>
@@ -812,6 +837,12 @@
   // by the client, see bot-detail-ws.js/bot-detail-chart.js) is the honest
   // value; a stored-but-invalid timeframe still fails loudly elsewhere.
   timeframe: "<%= (bot.parameters && bot.parameters.timeframe) || '' %>",
+  // ONE-TIME OPPOSITE-MARKET SWITCH: the timeframe this bot is ACTUALLY
+  // analysing. Equals `timeframe` for any bot that never switched; '1m'
+  // afterwards. Chart candles, execution markers and the next-candle
+  // countdown all follow this value so none of them can go stale.
+  activeTimeframe: "<%= (bot.parameters && bot.parameters.timeframeSwitched === true && bot.parameters.activeTimeframe) || (bot.parameters && bot.parameters.timeframe) || '' %>",
+  timeframeSwitched: <%- (bot.parameters && bot.parameters.timeframeSwitched === true) ? 'true' : 'false' %>,
   // Legacy level/target configuration is exposed only to legacy models.
   // MODEL_002 has no Top/Bottom/Target overlay data in its chart config;
   // its chart source is exclusively the user-configured Support/Resistance
@@ -1074,37 +1105,62 @@
   }
 
   // =========================================================
-  // PART 11 — PHASE H: NEXT CANDLE COUNTDOWN
+  // ACTIVE ANALYSIS TIMEFRAME (one-time opposite-market switch)
   // =========================================================
   //
-  // Derived purely from the canonical timeframe (window.BOT_CONFIG.timeframe,
-  // the same value CandlePersistenceService/MODEL_001 use — see the
-  // TIMEFRAMES_MS docstring above) and wall-clock time, so it needs no
-  // separate server round-trip and self-corrects across reconnect/tab
-  // backgrounding (it always recomputes from Date.now(), never drifts from
-  // an accumulating client-side timer).
-  const NEXT_CANDLE_TIMEFRAMES_MS = {
-    '1m': 60 * 1000, '3m': 3 * 60 * 1000, '5m': 5 * 60 * 1000,
-    '15m': 15 * 60 * 1000, '30m': 30 * 60 * 1000, '1h': 60 * 60 * 1000,
-  };
+  // Purely a display + retarget concern: the switch itself is decided by
+  // MODEL_002 and persisted by BotManager. This only makes sure the page
+  // never keeps showing the configured timeframe after the bot has really
+  // moved to 1m, and repoints the existing countdown at the new timeframe
+  // (NovaNextCandle.setTimeframe — the same single timer, not a new one).
+  function renderActiveTimeframe(data) {
+    if (!data || data.timeframeSwitched !== true || !data.activeTimeframe) return;
+    if (window.BOT_CONFIG.activeTimeframe === data.activeTimeframe && window.BOT_CONFIG.timeframeSwitched) return;
 
-  function renderNextCandleCountdown() {
-    const el = document.getElementById('stat-next-candle');
-    if (!el) return;
-    const tfMs = NEXT_CANDLE_TIMEFRAMES_MS[window.BOT_CONFIG && window.BOT_CONFIG.timeframe];
-    if (!tfMs) { el.textContent = '--'; return; }
+    window.BOT_CONFIG.activeTimeframe = data.activeTimeframe;
+    window.BOT_CONFIG.timeframeSwitched = true;
 
-    const now = Date.now();
-    const bucketStart = Math.floor(now / tfMs) * tfMs;
-    const msRemaining = (bucketStart + tfMs) - now;
-    const totalSeconds = Math.max(0, Math.floor(msRemaining / 1000));
-    const mm = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
-    const ss = String(totalSeconds % 60).padStart(2, '0');
-    el.textContent = `${mm}:${ss}`;
+    const row = document.getElementById('active-timeframe-row');
+    const val = document.getElementById('active-timeframe-value');
+    if (val) val.textContent = data.activeTimeframe;
+    if (row) row.classList.remove('hidden');
+
+    if (window.NovaNextCandle && window.NovaNextCandle.current) {
+      window.NovaNextCandle.current.setTimeframe(data.activeTimeframe);
+    }
   }
 
-  setInterval(renderNextCandleCountdown, 1000);
-  renderNextCandleCountdown();
+  // =========================================================
+  // NEXT CANDLE COUNTDOWN (PART 11 — PHASE H, reworked)
+  // =========================================================
+  //
+  // Previously this block ran its own setInterval over `Date.now()`, i.e.
+  // the browser's local clock. Nova Trade's candles are bucketed from Delta
+  // Exchange tick timestamps by CandlePersistenceService, so a skewed client
+  // clock produced a countdown that disagreed with the candles actually being
+  // persisted and traded.
+  //
+  // The calculation now lives in ONE place (public/js/next-candle-countdown.js)
+  // and is driven by the authoritative server/exchange clock:
+  //   * the EXISTING `market:price` event's Delta ticker timestamp
+  //   * GET /api/market/time for bootstrap / periodic resync
+  // A single interval renders BOTH the on-chart card and this right-panel
+  // metric, so the two can never show different values.
+  // Deferred to DOMContentLoaded because this inline block executes BEFORE
+  // the <script src> tags at the end of <body> (bot-socket.js /
+  // next-candle-countdown.js) have run.
+  document.addEventListener('DOMContentLoaded', function initNextCandleCountdown() {
+    if (!window.NovaNextCandle) return; // never break the page if the script is absent
+    window.NovaNextCandle.init({
+      timeframe: window.BOT_CONFIG && (window.BOT_CONFIG.activeTimeframe || window.BOT_CONFIG.timeframe),
+      symbol: window.BOT_CONFIG && window.BOT_CONFIG.pair,
+      instanceId: window.BOT_CONFIG && window.BOT_CONFIG.instanceId,
+      socket: window.NovaBotSocket, // the shared connection — no second socket
+      elementIds: ['stat-next-candle', 'chart-next-candle'],
+    });
+    // Cleanup: no orphan interval / socket listeners when leaving the page.
+    window.addEventListener('pagehide', function () { window.NovaNextCandle.destroy(); });
+  });
 
   // =========================================================
   // PART 11 — PHASE F: STRATEGY READINESS DISPLAY
@@ -1140,6 +1196,10 @@
         if (!data || data.instanceId !== window.BOT_CONFIG.instanceId) return;
         window.BOT_CONFIG.status = data.status;
         applyButtonStateForStatus(data.status);
+        // ONE-TIME OPPOSITE-MARKET SWITCH: bot:status now also carries
+        // activeTimeframe/timeframeSwitched (see BotManager._broadcastStatus).
+        // No new event and no second socket — this handler already exists.
+        renderActiveTimeframe(data);
         const badge = document.getElementById('bot-status-badge');
         if (badge) {
           badge.textContent = data.status;
@@ -1243,6 +1303,8 @@
 <script src="/js/marker-manager.js"></script>
 <script src="/js/execution-markers.js"></script>
 <script src="/js/bot-socket.js"></script>
+<script src="/js/next-candle-countdown.js"></script>
+<script src="/js/chart-price-label.js"></script>
 <script src="/js/bot-detail-chart.js"></script>
 <script src="/js/renderers/model002-reason-map.js"></script>
 <script src="/js/renderers/model-thinking-registry.js"></script>

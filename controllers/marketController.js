@@ -45,4 +45,18 @@ async function getFreshness(req, res, next) {
   }
 }
 
-module.exports = { getPrice, getCandles, getStatus, getFreshness };
+/**
+ * NEXT CANDLE TIMING — authoritative clock for the Bot Detail countdown.
+ *
+ * Deliberately trivial: no DB query, no Delta REST call, no provider work.
+ * The frontend calls this once at page load (and rarely afterwards) purely
+ * to learn its offset from the server clock; every countdown tick is then
+ * computed locally. Live `market:price` events (which already carry the
+ * Delta ticker timestamp) keep that offset fresh in between, so this route
+ * is never on a per-second path.
+ */
+function getServerTime(req, res) {
+  return success(res, { serverTime: Date.now() });
+}
+
+module.exports = { getPrice, getCandles, getStatus, getFreshness, getServerTime };
