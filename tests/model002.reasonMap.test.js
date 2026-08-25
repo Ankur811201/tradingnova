@@ -57,8 +57,11 @@ test('every reason code actually emitted by Model002.js/sameSidePatternEngine.js
     'bodyP_not_maximum', 'candle2_not_bullish', 'candle2_not_bearish', 'candle2_confirmed',
     'candle2_confirmed_awaiting_boundary_break', 'awaiting_boundary_break',
     'invalidated_close_below_lower_boundary', 'invalidated_close_above_upper_boundary',
-    'risk_length_exceeds_maximum', 'lot_mapping_unavailable', 'maximum_capital_leverage_limit',
+    'risk_length_exceeds_maximum', 'lot_mapping_unavailable',
     'r1_calibration_confirmed_no_trade', 's1_calibration_confirmed_no_trade',
+    'no_prior_candle_for_ab_validation', 'ab_body_high_not_greater', 'ab_body_low_not_less',
+    'candle2_confirmed_awaiting_candle3', 'invalidated_candle3_wrong_or_no_boundary_touch',
+    'invalidated_both_boundaries_tick_order', 'invalidated_both_boundaries_no_tick_evidence',
     'rejected',
   ];
   for (const code of realReasonCodes) {

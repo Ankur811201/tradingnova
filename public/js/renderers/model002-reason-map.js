@@ -52,6 +52,18 @@
     candle1_resistance_touch_awaiting_candle2: 'Resistance touched — Candle 1 set, awaiting Candle 2',
     awaiting_candle2_body_touch: 'Waiting for a candle to touch Candle 1\'s body',
 
+    // NEW ENGINE (A/B/C wick-trigger spec) — same-side combinations only.
+    // A/B validation (instant, at the touch candle itself)
+    no_prior_candle_for_ab_validation: 'Touch detected, but no prior candle is available yet to validate against',
+    ab_body_high_not_greater: 'Rejected — touch candle\'s body-high did not exceed the prior candle\'s',
+    ab_body_low_not_less: 'Rejected — touch candle\'s body-low did not go below the prior candle\'s',
+    // Candle 2 (B) confirmed, awaiting Candle 3 (the one and only trigger candle)
+    candle2_confirmed_awaiting_candle3: 'Candle 2 confirmed — boundaries fixed, awaiting Candle 3',
+    // Candle 3 (C) invalidation outcomes
+    invalidated_candle3_wrong_or_no_boundary_touch: 'Pattern invalidated — Candle 3 did not trigger correctly',
+    invalidated_both_boundaries_tick_order: 'Pattern invalidated — live price reached the wrong boundary first',
+    invalidated_both_boundaries_no_tick_evidence: 'Pattern invalidated — both boundaries touched, order could not be determined',
+
     // Candle 2 shape validation
     candle2_did_not_touch_body_high: 'Candle 2 rejected — did not touch Candle 1 body-high',
     candle2_did_not_touch_body_low: 'Candle 2 rejected — did not touch Candle 1 body-low',
@@ -71,7 +83,11 @@
     // Risk / sizing rejections
     risk_length_exceeds_maximum: 'No trade — risk length exceeds the maximum (360)',
     lot_mapping_unavailable: 'No trade — risk length has no valid lot mapping',
-    maximum_capital_leverage_limit: 'No trade — exceeds maximum capital x leverage limit',
+    // maximum_capital_leverage_limit removed: the maximum-capital x leverage
+    // cap was removed from the active MODEL_002 path (Model002.js no longer
+    // emits this reason), so this entry is now unreachable. Unmapped codes
+    // fall back to the raw code (see formatModel002Reason below), so this
+    // never silently hides a genuinely unknown/legacy code.
 
     // One-time R1/S1 calibration (opposite-side patterns) — never a trade
     r1_calibration_confirmed_no_trade: 'Pattern confirmed — R1 updated, waiting for next R1 pattern',

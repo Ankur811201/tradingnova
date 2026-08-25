@@ -74,5 +74,17 @@ class ChartManager {
   addExecutionMarker(marker) {
     this.markerManager.addExecutionMarker(marker);
   }
+
+  /**
+   * MODEL_002 pattern-role markers. These are purely visual and are kept
+   * separate inside MarkerManager so they can never erase execution markers.
+   */
+  setPatternMarkers(markers) {
+    this.markerManager.setPatternMarkers(markers);
+  }
+
+  clearPatternMarkers() {
+    this.markerManager.clearPatternMarkers();
+  }
 }
 window.ChartManager = ChartManager;

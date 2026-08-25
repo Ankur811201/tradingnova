@@ -7,8 +7,14 @@ const {
   candle2TouchesBodyHigh, candle2TouchesBodyLow,
   evaluateCandle2, computeBoundaries, evaluateBoundaryBreak,
   computeBuyRiskLength, computeSellRiskLength, computeLotFromRiskLength,
+  computeCandle2Points, isBodyPMaximum, isCorrectCandleNature,
 } = require('./sameSidePatternEngine');
-const { capExposureToMaxNotional } = require('./riskSizing');
+// NEW spec (A/B/C wick-trigger reversal pattern) — same-side combinations
+// (BULLISH+SUPPORT -> BUY, BEARISH+RESISTANCE -> SELL) ONLY. The opposite-
+// side combinations (BULLISH+RESISTANCE, BEARISH+SUPPORT, with R1/S1
+// calibration) are out of scope for this spec and keep using
+// sameSidePatternEngine.js unchanged — see _tryStartFreshPattern below.
+const reversalEngine = require('./reversalPatternEngine');
 const { ConsecutiveLossSafety } = require('./safetyState');
 const {
   isOppositeMarketTouch, getActiveTimeframe, hasSwitched, shouldSwitch,
@@ -201,32 +207,26 @@ class Model002 extends BotModelBase {
     this.patternCandidate = null;
     if (trend !== 'BULLISH' && trend !== 'BEARISH') return;
 
-    // Mirrors _searchForPatternStart's trend-based priority for a fresh
-    // touch when no candidate is active: BULLISH checks Support first, then
-    // Resistance; BEARISH checks Resistance first, then Support. Both level
-    // types are real patterns now (BULLISH+RESISTANCE, BEARISH+SUPPORT are
-    // no longer WAIT-only), so replay must consider both, not just one.
-    const findFreshTouch = (candle) => {
-      if (trend === 'BULLISH') {
-        const supportMatch = findTouchedLevel(this.params.support, candle);
-        if (supportMatch) return { direction: 'BUY', match: supportMatch };
-        const resistanceMatch = findTouchedLevel(this.params.resistance, candle);
-        if (resistanceMatch) return { direction: 'SELL', match: resistanceMatch };
-        return null;
-      }
-      const resistanceMatch = findTouchedLevel(this.params.resistance, candle);
-      if (resistanceMatch) return { direction: 'SELL', match: resistanceMatch };
-      const supportMatch = findTouchedLevel(this.params.support, candle);
-      if (supportMatch) return { direction: 'BUY', match: supportMatch };
-      return null;
-    };
-
     let candidate = null;
 
     for (let i = 0; i < this.candles.length; i += 1) {
       const candle = this.candles[i];
+      const prevCandle = i > 0 ? this.candles[i - 1] : null;
 
-      if (candidate && candidate.stage === 'WAITING_FOR_CANDLE2') {
+      if (candidate && candidate.engine === 'NEW' && candidate.stage === 'AWAITING_CANDLE3') {
+        // Candle 3 (C) — no live tick evidence exists during replay, so the
+        // both-boundaries-touched case conservatively resolves to INVALID
+        // (same documented fallback as live — see reversalPatternEngine.js).
+        // Always resolves (BUY/SELL/INVALID); either way this exact candle
+        // is NOT re-checked as a fresh touch (spec: restart never reuses
+        // old Candle1/Candle2 — the only "previous candle" for this one is
+        // the just-resolved Candle 2).
+        reversalEngine.evaluateCandle3(candle, candidate.boundaries, candidate.direction, null);
+        candidate = null;
+        continue;
+      }
+
+      if (candidate && candidate.engine === 'OLD' && candidate.stage === 'WAITING_FOR_CANDLE2') {
         // Last-touch-wins applies at this stage, same as live — only the
         // SAME level type as the active candidate's own direction.
         const levels = candidate.direction === 'BUY' ? this.params.support : this.params.resistance;
@@ -283,12 +283,14 @@ class Model002 extends BotModelBase {
 
       // No active candidate — either there never was one, or one was just
       // discarded/resolved above on THIS SAME candle (except the
-      // calibration case above, which explicitly skips this). Check
-      // whether this candle is itself a fresh touch of either level type,
-      // trend-prioritized exactly like the live search.
+      // calibration case above, and the NEW-engine Candle-3 resolution
+      // above, both of which explicitly skip this). Check whether this
+      // candle is itself a fresh pattern start, via the SAME shared logic
+      // the live path uses (_tryStartFreshPattern) — silently: a rejected
+      // same-side A/B attempt is simply not adopted, never emitted here.
       if (!candidate) {
-        const fresh = findFreshTouch(candle);
-        if (fresh) candidate = this._buildCandle1Candidate(candle, fresh.direction, fresh.match);
+        const attempt = this._tryStartFreshPattern(candle, prevCandle);
+        if (attempt && attempt.candidate) candidate = attempt.candidate;
       }
     }
 
@@ -388,6 +390,16 @@ class Model002 extends BotModelBase {
   async onMarketData(marketUpdate, positionContext) {
     if (this.paused || this.stopped) return;
     if (!marketUpdate || marketUpdate.symbol !== this.symbol) return;
+
+    // Existing type:'price' tick stream (already dispatched by
+    // BotManager.dispatchMarketData to every live instance on the symbol —
+    // no new connection/listener) — reused ONLY to break the "Candle 3
+    // touches both boundaries" tie (spec §10). No other side effects.
+    if (marketUpdate.type === 'price') {
+      this._trackLiveBoundaryTouch(marketUpdate);
+      return;
+    }
+
     if (marketUpdate.type !== 'candle') return;
     if (marketUpdate.timeframe !== this.params.timeframe) return; // only the configured execution timeframe — never Daily/1H
 
@@ -430,37 +442,146 @@ class Model002 extends BotModelBase {
     await this._searchForPatternStart(candle);
   }
 
-  /** Looks for a fresh Candle 1 (a support/resistance touch) per the confirmed same-side combinations. */
+  /**
+   * Looks for a fresh pattern start, trend-prioritized exactly as before
+   * (BULLISH checks Support first then Resistance; BEARISH the mirror).
+   * Delegates the actual same-side/opposite-side decision + engine
+   * selection to _tryStartFreshPattern (shared with hydration replay).
+   */
   async _searchForPatternStart(candle) {
-    const trend = this.params.trend;
+    const prevCandle = this.candles.length >= 2 ? this.candles[this.candles.length - 2] : null;
+    const attempt = this._tryStartFreshPattern(candle, prevCandle, /* live */ true);
 
-    if (trend === 'BULLISH') {
-      const supportMatch = findTouchedLevel(this.params.support, candle);
-      if (supportMatch) {
-        this._startCandle1(candle, 'BUY', supportMatch);
-        return;
-      }
-      const resistanceMatch = findTouchedLevel(this.params.resistance, candle);
-      if (resistanceMatch) {
-        this._startCandle1(candle, 'SELL', resistanceMatch);
-        return;
-      }
+    if (!attempt) {
       this._emitDecision('WAIT', { reason: 'no_level_touch' }, candle);
       return;
     }
 
-    // BEARISH
-    const resistanceMatch = findTouchedLevel(this.params.resistance, candle);
-    if (resistanceMatch) {
-      this._startCandle1(candle, 'SELL', resistanceMatch);
+    if (attempt.rejected) {
+      // A same-side touch (B) was found but failed A/B/BodyP/nature
+      // validation — per spec §4, do NOT create Candle1/Candle2; stay IDLE
+      // and keep searching from the next candle.
+      this.patternCandidate = null;
+      this._emitDecision('WAIT', attempt.rejected, candle);
       return;
     }
-    const supportMatch = findTouchedLevel(this.params.support, candle);
-    if (supportMatch) {
-      this._startCandle1(candle, 'BUY', supportMatch);
+
+    this.patternCandidate = attempt.candidate;
+
+    if (attempt.candidate.engine === 'NEW') {
+      this._emitDecision('WAIT', {
+        reason: 'candle2_confirmed_awaiting_candle3', direction: attempt.candidate.direction,
+        activeLevel: this._activeLevelFor(attempt.candidate),
+        candle1: this._summarizeCandle(attempt.candidate.candle1),
+        candle2: this._summarizeCandle(attempt.candidate.candle2),
+        points: attempt.candidate.points, boundaries: attempt.candidate.boundaries,
+      }, candle);
       return;
     }
-    this._emitDecision('WAIT', { reason: 'no_level_touch' }, candle);
+
+    // OLD engine (opposite-side) — identical WAIT emit to the pre-existing behavior.
+    this._emitDecision('WAIT', {
+      reason: attempt.candidate.direction === 'BUY' ? 'candle1_support_touch_awaiting_candle2' : 'candle1_resistance_touch_awaiting_candle2',
+      direction: attempt.candidate.direction,
+      activeLevel: this._activeLevelFor(attempt.candidate),
+      candle1: this._summarizeCandle(attempt.candidate.candle1),
+    }, candle);
+  }
+
+  /**
+   * Shared "is this candle a valid fresh pattern start?" logic, used by
+   * BOTH the live search (_searchForPatternStart, above) and the silent
+   * hydration replay (_reconstructPatternStateFromHistory) — a single
+   * source of truth so live and replay can never disagree.
+   *
+   * Same-side combination for the current trend (BULLISH->Support,
+   * BEARISH->Resistance) is checked FIRST using the NEW A/B/C engine —
+   * `prevCandle` (the candle immediately before `candle`) is REQUIRED for
+   * its body-high/body-low (A vs B) validation, per spec §2/§3/§12. If
+   * that's not touched, the opposite-side combination is checked using the
+   * unchanged OLD engine (candle1_touch -> WAITING_FOR_CANDLE2), exactly
+   * as before this spec revision.
+   *
+   * Returns:
+   *   null                    — nothing touched at all.
+   *   { candidate }           — a valid new pattern candidate (either engine).
+   *   { rejected: {...} }     — a same-side (NEW engine) touch was found but
+   *                             failed A/B/BodyP/nature validation; caller
+   *                             decides whether/how to report it (silent
+   *                             during replay).
+   */
+  _tryStartFreshPattern(candle, prevCandle, live = false) {
+    const trend = this.params.trend;
+    if (trend !== 'BULLISH' && trend !== 'BEARISH') return null;
+
+    const sameSideLevels = trend === 'BULLISH' ? this.params.support : this.params.resistance;
+    const sameSideDirection = trend === 'BULLISH' ? 'BUY' : 'SELL';
+    const oppositeSideLevels = trend === 'BULLISH' ? this.params.resistance : this.params.support;
+    const oppositeSideDirection = trend === 'BULLISH' ? 'SELL' : 'BUY';
+
+    const newTouch = reversalEngine.findTouchedLevel(sameSideLevels, candle, sameSideDirection);
+    if (newTouch) {
+      // ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH fires on the touch
+      // itself, live only — hydration replay must stay entirely silent
+      // (no emitStrategyEvent), exactly as it always has.
+      if (live) this._maybeSwitchToOppositeMarketTimeframe(candle, sameSideDirection, newTouch);
+
+      if (!prevCandle) {
+        return { rejected: {
+          reason: 'no_prior_candle_for_ab_validation', direction: sameSideDirection,
+          activeLevel: this._activeLevelFor({ direction: sameSideDirection, matchedLevel: newTouch }),
+        } };
+      }
+
+      const ab = reversalEngine.validateAB(prevCandle, candle, sameSideDirection);
+      if (!ab.valid) {
+        return { rejected: {
+          reason: sameSideDirection === 'BUY' ? 'ab_body_high_not_greater' : 'ab_body_low_not_less',
+          direction: sameSideDirection,
+          activeLevel: this._activeLevelFor({ direction: sameSideDirection, matchedLevel: newTouch }),
+          candle1: this._summarizeCandle(prevCandle), candle2: this._summarizeCandle(candle),
+        } };
+      }
+
+      // Preserved existing Candle-2 validation (BodyP-maximum-of-three,
+      // correct candle nature) — applied to B now that it's Candle 2,
+      // per spec §5 ("do not silently remove these existing validations
+      // unless they directly contradict the new explicit rules"). The old
+      // touch-based candle2TouchesBodyHigh/Low check IS superseded (the
+      // new body-high/low comparison directly contradicts it), so it is
+      // NOT applied here.
+      const points = computeCandle2Points(candle, sameSideDirection);
+      if (!isBodyPMaximum(points)) {
+        return { rejected: {
+          reason: 'bodyP_not_maximum', direction: sameSideDirection,
+          activeLevel: this._activeLevelFor({ direction: sameSideDirection, matchedLevel: newTouch }),
+          candle1: this._summarizeCandle(prevCandle), candle2: this._summarizeCandle(candle), points,
+        } };
+      }
+      if (!isCorrectCandleNature(candle, sameSideDirection)) {
+        return { rejected: {
+          reason: sameSideDirection === 'BUY' ? 'candle2_not_bullish' : 'candle2_not_bearish', direction: sameSideDirection,
+          activeLevel: this._activeLevelFor({ direction: sameSideDirection, matchedLevel: newTouch }),
+          candle1: this._summarizeCandle(prevCandle), candle2: this._summarizeCandle(candle), points,
+        } };
+      }
+
+      const boundaries = reversalEngine.computeBoundaries(candle);
+      return { candidate: {
+        engine: 'NEW', direction: sameSideDirection, candle1: prevCandle, candle2: candle,
+        matchedLevel: newTouch, stage: 'AWAITING_CANDLE3', boundaries, points,
+        firstLiveBoundaryTouch: null, // live tick tie-break — see _trackLiveBoundaryTouch
+      } };
+    }
+
+    // Opposite-side combination — OLD engine, entirely unchanged.
+    const oldTouch = findTouchedLevel(oppositeSideLevels, candle);
+    if (oldTouch) {
+      if (live) this._maybeSwitchToOppositeMarketTimeframe(candle, oppositeSideDirection, oldTouch);
+      return { candidate: this._buildCandle1Candidate(candle, oppositeSideDirection, oldTouch) };
+    }
+
+    return null;
   }
 
   /** Constructs the Candle 1 candidate object — the single source of truth for Candle 1 state, reused by both the live touch path and hydration recovery. Never emits anything; callers decide what (if anything) to emit. */
@@ -485,6 +606,7 @@ class Model002 extends BotModelBase {
 
   _buildCandle1Candidate(candle, direction, matchedLevel) {
     return {
+      engine: 'OLD', // opposite-side combinations only — see _tryStartFreshPattern
       direction, candle1: candle, matchedLevel, stage: 'WAITING_FOR_CANDLE2',
       isCalibrationPattern: this._computeIsCalibrationPattern(direction, matchedLevel),
     };
@@ -548,6 +670,11 @@ class Model002 extends BotModelBase {
   /** Advances an in-progress pattern candidate through Candle 2 (shape validation, with last-touch-wins) or the fixed-boundary confirmation stage. */
   async _advancePatternCandidate(candle) {
     const candidate = this.patternCandidate;
+
+    if (candidate.engine === 'NEW') {
+      await this._advanceNewEngineCandidate(candle);
+      return;
+    }
 
     if (candidate.stage === 'WAITING_FOR_CANDLE2') {
       // CONFIRMED: "last touch wins" — a newer Support/Resistance touch
@@ -713,24 +840,17 @@ class Model002 extends BotModelBase {
       return;
     }
 
-    // Existing safety ceiling preserved (confirmed requirement: never
-    // modify RiskEngine/PaperEngine unnecessarily; the max-capital x
-    // leverage notional cap already exists and only ever reduces quantity).
-    const capped = capExposureToMaxNotional(lot, entryPrice, this.capitalAllocation, this.leverage, 0);
-    const finalQuantity = capped.quantity;
-    if (!finalQuantity || finalQuantity <= 0) {
-      this._emitDecision('WAIT', {
-        reason: 'maximum_capital_leverage_limit', direction, entryPrice, stopLoss, riskLength, lot,
-        maximumCapital: this.capitalAllocation, leverage: this.leverage, maximumAllowedNotional: capped.maximumAllowedNotional,
-      }, entryCandle);
-      return;
-    }
+    // Maximum-capital x leverage notional cap removed (confirmed
+    // requirement): quantity is no longer reduced, and trades are no
+    // longer rejected, for this reason. The risk-based lot from
+    // computeLotFromRiskLength (unchanged normal quantity calculation) is
+    // used as the final quantity as-is.
+    const finalQuantity = lot;
 
     const ruleId = direction === 'BUY' ? RULE_ID_BUY : RULE_ID_SELL;
     const result = {
       direction, entryPrice, stopLoss, riskLength, lot, finalQuantity,
       maximumCapital: this.capitalAllocation, leverage: this.leverage,
-      maximumAllowedNotional: capped.maximumAllowedNotional, maxCapitalCapped: capped.capped,
       activeLevel: this._activeLevelFor(candidate), ruleId,
       candle1: this._summarizeCandle(candidate.candle1),
       candle2: this._summarizeCandle(candidate.candle2),
@@ -742,6 +862,133 @@ class Model002 extends BotModelBase {
 
     const command = this._buildEntryCommand(result, entryCandle);
     this._emitDecision(direction, result, entryCandle);
+    this.patternCandidate = null;
+
+    let approval;
+    try {
+      approval = await this.submitTradeCommand(command);
+    } catch (err) {
+      this.emitError(`submitTradeCommand threw unexpectedly: ${err.message}`, { commandId: command.commandId });
+      return;
+    }
+
+    if (approval && approval.approved) {
+      this.emitStrategyEvent('SIGNAL_GENERATED', { commandId: command.commandId, action: command.action, executed: Boolean(approval.execution) });
+    } else {
+      this.emitStrategyEvent('SIGNAL_REJECTED', { commandId: command.commandId, reason: (approval && approval.reason) || 'rejected' });
+    }
+  }
+
+  // =========================================================================
+  // NEW ENGINE (A/B/C wick-trigger spec) — same-side combinations only.
+  // =========================================================================
+
+  /**
+   * Candle 3 (C) — the ONLY trigger candle for this pattern attempt (spec
+   * §7-§10). Resolves immediately to BUY/SELL or INVALID; there is no WAIT
+   * state here and, either way, the candidate is always cleared — a
+   * genuinely fresh touch can only start on the NEXT candle (spec test
+   * #12: restart never reuses old Candle1/Candle2, so this same candle C
+   * is never re-checked as a new B here either).
+   */
+  async _advanceNewEngineCandidate(candleC) {
+    const candidate = this.patternCandidate;
+    const tieBreakSide = candidate.firstLiveBoundaryTouch;
+    const boundaryResult = reversalEngine.evaluateCandle3(candleC, candidate.boundaries, candidate.direction, tieBreakSide);
+
+    if (boundaryResult.outcome === 'INVALID') {
+      this.patternCandidate = null;
+      const reason = boundaryResult.bothTouched
+        ? (boundaryResult.tieBreakUsed ? 'invalidated_both_boundaries_tick_order' : 'invalidated_both_boundaries_no_tick_evidence')
+        : 'invalidated_candle3_wrong_or_no_boundary_touch';
+      this._emitDecision('WAIT', {
+        reason, direction: candidate.direction,
+        activeLevel: this._activeLevelFor(candidate),
+        candle1: this._summarizeCandle(candidate.candle1),
+        candle2: this._summarizeCandle(candidate.candle2),
+        candle3: this._summarizeCandle(candleC),
+        points: candidate.points, boundaries: candidate.boundaries,
+      }, candleC);
+      return;
+    }
+
+    await this._confirmAndSubmitNew(candidate, candleC);
+  }
+
+  /**
+   * Live tie-break tracking for the "both boundaries touched within
+   * Candle 3" case (spec §10) — reuses the EXISTING type:'price' tick
+   * stream already dispatched by BotManager.dispatchMarketData to every
+   * live instance on the symbol (no new Delta connection, no new
+   * listener). Only matters while a NEW-engine candidate is primed for
+   * Candle 3; records the FIRST boundary it sees a live price cross, then
+   * ignores further ticks for that same candidate.
+   */
+  _trackLiveBoundaryTouch(marketUpdate) {
+    const candidate = this.patternCandidate;
+    if (!candidate || candidate.engine !== 'NEW' || candidate.stage !== 'AWAITING_CANDLE3') return;
+    if (candidate.firstLiveBoundaryTouch) return;
+    const price = marketUpdate.data && marketUpdate.data.price;
+    if (typeof price !== 'number' || !Number.isFinite(price)) return;
+    if (price >= candidate.boundaries.upper) candidate.firstLiveBoundaryTouch = 'upper';
+    else if (price <= candidate.boundaries.lower) candidate.firstLiveBoundaryTouch = 'lower';
+  }
+
+  /**
+   * NEW-engine entry/SL/riskLength/lot pipeline for a resolved BUY/SELL —
+   * see reversalPatternEngine.js for the SL formula. Everything from
+   * riskLength onward (>360 check, lot mapping, quantity = lot as-is with
+   * NO capital x leverage cap, TradeCommand build/submit) is identical in
+   * spirit to _confirmAndSubmit (OLD engine) — duplicated rather than
+   * shared to avoid touching that already-tested path.
+   */
+  async _confirmAndSubmitNew(candidate, candleC) {
+    const direction = candidate.direction;
+    // No candle close is required to trigger (spec §8/§14) — the fill
+    // price used is the boundary level itself, the exact price the trade
+    // triggers at, not Candle 3's eventual close (which the spec says is
+    // irrelevant to the trigger).
+    const entryPrice = direction === 'BUY' ? candidate.boundaries.upper : candidate.boundaries.lower;
+    const stopLoss = direction === 'BUY'
+      ? reversalEngine.computeBuyStopLoss(candidate.candle2, candleC)
+      : reversalEngine.computeSellStopLoss(candidate.candle2, candleC);
+    const riskLength = direction === 'BUY' ? computeBuyRiskLength(entryPrice, stopLoss) : computeSellRiskLength(entryPrice, stopLoss);
+
+    if (!Number.isFinite(riskLength) || riskLength > 360 || riskLength < 0) {
+      this.patternCandidate = null;
+      this._emitDecision('WAIT', {
+        reason: 'risk_length_exceeds_maximum', direction, activeLevel: this._activeLevelFor(candidate),
+        entryPrice, stopLoss, riskLength,
+      }, candleC);
+      return;
+    }
+
+    const lot = computeLotFromRiskLength(riskLength);
+    if (!lot) {
+      this.patternCandidate = null;
+      this._emitDecision('WAIT', { reason: 'lot_mapping_unavailable', direction, entryPrice, stopLoss, riskLength }, candleC);
+      return;
+    }
+
+    // Maximum-capital x leverage notional cap remains removed (unchanged
+    // requirement) — quantity is the plain risk-based lot, as-is.
+    const finalQuantity = lot;
+
+    const ruleId = direction === 'BUY' ? RULE_ID_BUY : RULE_ID_SELL;
+    const result = {
+      direction, entryPrice, stopLoss, riskLength, lot, finalQuantity,
+      maximumCapital: this.capitalAllocation, leverage: this.leverage,
+      activeLevel: this._activeLevelFor(candidate), ruleId,
+      candle1: this._summarizeCandle(candidate.candle1),
+      candle2: this._summarizeCandle(candidate.candle2),
+      candle3: this._summarizeCandle(candleC),
+      boundaries: candidate.boundaries,
+      points: candidate.points,
+      reason: `${direction} pattern confirmed`,
+    };
+
+    const command = this._buildEntryCommand(result, candleC);
+    this._emitDecision(direction, result, candleC);
     this.patternCandidate = null;
 
     let approval;
@@ -780,8 +1027,6 @@ class Model002 extends BotModelBase {
         finalQuantity: result.finalQuantity,
         maximumCapital: result.maximumCapital,
         leverage: result.leverage,
-        maximumAllowedNotional: result.maximumAllowedNotional,
-        maxCapitalCapped: result.maxCapitalCapped,
       },
     };
   }

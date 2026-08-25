@@ -523,6 +523,29 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
+
+    // MODEL_002 pattern-role labels — show the actual backend-confirmed
+    // Candle 1 / Candle 2 / Candle 3 directly on the chart as 1 / 2 / 3.
+    // No candle is inferred on the client. If the chart is still initializing
+    // when the initial decision arrives, keep it pending; bot-detail-chart.js
+    // consumes the same payload once the chart is ready.
+    if (modelId === 'MODEL_002') {
+      try {
+        var patternChecks = data.checks;
+        if (window.NovaChartPatternMarkers) {
+          if (patternChecks && patternChecks.candle1 && patternChecks.candle2) {
+            window.NovaChartPatternMarkers.setFromChecks(patternChecks);
+          } else {
+            window.NovaChartPatternMarkers.clear();
+          }
+        } else {
+          window.NovaPendingPatternChecks = patternChecks || null;
+        }
+      } catch (err) {
+        console.error('[DECISION] Pattern candle marker update failed:', err);
+      }
+    }
+
     // Final Decision (WAIT / BUY / SELL)
     const decisionEl =
       document.getElementById('thinking-decision');

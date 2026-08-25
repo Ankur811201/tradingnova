@@ -23,6 +23,10 @@ class MarkerManager {
   constructor(candlestickSeries) {
     this.series = candlestickSeries;
     this.markersById = new Map();
+    // Pattern-role markers (Candle 1/2/3) are kept separately from
+    // authoritative execution markers so pattern visuals can be replaced
+    // without ever deleting BUY/SELL/EXIT execution markers.
+    this.patternMarkersById = new Map();
   }
 
   /**
@@ -53,9 +57,31 @@ class MarkerManager {
     return true;
   }
 
+  /**
+   * Replace the MODEL_002 pattern-role markers (Candle 1/2/3) while
+   * preserving all authoritative execution markers already on the chart.
+   */
+  setPatternMarkers(markers) {
+    this.patternMarkersById.clear();
+    (markers || []).forEach((marker) => {
+      if (!marker || !marker.id || !Number.isFinite(marker.time)) return;
+      this.patternMarkersById.set(marker.id, marker);
+    });
+    this._apply();
+  }
+
+  /** Remove all Candle 1/2/3 visual markers without touching executions. */
+  clearPatternMarkers() {
+    if (this.patternMarkersById.size === 0) return;
+    this.patternMarkersById.clear();
+    this._apply();
+  }
+
   /** Lightweight Charts requires markers passed to setMarkers() sorted ascending by time. */
   _apply() {
-    const sorted = Array.from(this.markersById.values()).sort((a, b) => a.time - b.time);
+    const combined = Array.from(this.markersById.values())
+      .concat(Array.from(this.patternMarkersById.values()));
+    const sorted = combined.sort((a, b) => a.time - b.time);
     this.series.setMarkers(sorted);
   }
 }

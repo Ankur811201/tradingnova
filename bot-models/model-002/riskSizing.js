@@ -87,61 +87,6 @@ function updateTrailingStop(direction, currentTrailingStop, latestConfirmedSwing
     : Math.min(currentTrailingStop, candidate);
 }
 
-/**
- * Maximum allowed notional exposure — confirmed formula:
- *   maximumAllowedNotional = maximumCapital x leverage
- * (maximumCapital is NOT itself the notional ceiling — leverage multiplies it.)
- */
-function computeMaxAllowedNotional(maximumCapital, leverage) {
-  if (!Number.isFinite(maximumCapital) || maximumCapital <= 0) return null;
-  if (!Number.isFinite(leverage) || leverage <= 0) return null;
-  return maximumCapital * leverage;
-}
-
-/**
- * Caps position exposure to maximumAllowedNotional (= maximumCapital x
- * leverage, confirmed §1/§1.2). If the risk-sized quantity's notional
- * (entryPrice x quantity) exceeds it, quantity is reduced so notional
- * never exceeds the ceiling — recomputed and re-verified after rounding
- * so floating-point precision can never push it back above the limit.
- * Never increases quantity beyond what the risk formula already computed.
- */
-function capExposureToMaxNotional(quantity, entryPrice, maximumCapital, leverage, decimalPrecision) {
-  if (quantity === null || !Number.isFinite(quantity) || quantity <= 0) {
-    return { quantity, notional: null, capped: false, maximumAllowedNotional: null };
-  }
-  const maximumAllowedNotional = computeMaxAllowedNotional(maximumCapital, leverage);
-  const notional = entryPrice * quantity;
-
-  if (maximumAllowedNotional === null) {
-    // No usable max-capital/leverage configured — nothing to cap against.
-    return { quantity, notional, capped: false, maximumAllowedNotional: null };
-  }
-  if (notional <= maximumAllowedNotional) {
-    return { quantity, notional, capped: false, maximumAllowedNotional };
-  }
-
-  const scale = Math.pow(10, decimalPrecision);
-  let cappedQuantity = Math.floor((maximumAllowedNotional / entryPrice) * scale) / scale;
-  let finalNotional = entryPrice * cappedQuantity;
-
-  // Guard against floating-point rounding pushing finalNotional back above
-  // the ceiling (confirmed §1.2: "never allow floating-point rounding to
-  // push it above the limit") — step down by one precision unit until it
-  // genuinely fits, or until quantity hits zero.
-  while (finalNotional > maximumAllowedNotional && cappedQuantity > 0) {
-    cappedQuantity = Math.round((cappedQuantity - 1 / scale) * scale) / scale;
-    finalNotional = entryPrice * cappedQuantity;
-  }
-
-  return {
-    quantity: cappedQuantity > 0 ? cappedQuantity : null,
-    notional: cappedQuantity > 0 ? finalNotional : null,
-    capped: true,
-    maximumAllowedNotional,
-  };
-}
-
 module.exports = {
   computeStopLoss,
   validateSlDistance,
@@ -149,6 +94,4 @@ module.exports = {
   computeTakeProfit,
   computeTrailingTrigger,
   updateTrailingStop,
-  computeMaxAllowedNotional,
-  capExposureToMaxNotional,
 };

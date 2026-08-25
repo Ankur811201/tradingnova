@@ -136,18 +136,16 @@ class RiskEngine {
         return reject(`Notional (${notional.toFixed(2)}) exceeds global max position size (${env.RISK_MAX_POSITION_SIZE_USD})`);
       }
 
-      const openPositionsForInstance = await Position.find({ instanceId: instance.instanceId, status: 'OPEN' });
-      const allocatedNotional = openPositionsForInstance.reduce(
-        (sum, p) => sum + p.entryPrice * p.quantity,
-        0
-      );
-      if (allocatedNotional + notional > instance.capitalAllocation) {
-        return reject(
-          `Capital allocation exceeded: allocated=${instance.capitalAllocation}, ` +
-          `already used=${allocatedNotional.toFixed(2)}, requested=${notional.toFixed(2)}`
-        );
-      }
-
+      // Maximum-capital x leverage position-size cap removed (confirmed
+      // requirement): this used to reject whenever
+      // allocatedNotional + notional > instance.capitalAllocation — a
+      // capital-based notional ceiling that didn't even factor in
+      // leverage, making it the strictest form of the removed cap. It is
+      // gone; instance.capitalAllocation is no longer read anywhere in
+      // RiskEngine to reduce or reject a trade. The remaining checks
+      // below (PAPER account availableBalance can cover margin+fee, daily
+      // loss limit) are separate, legitimate protections and are
+      // unaffected by this removal.
       const requiredMargin = notional / instance.leverage;
       meta.requiredMargin = requiredMargin;
 

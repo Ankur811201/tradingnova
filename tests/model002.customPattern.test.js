@@ -123,45 +123,19 @@ test('counter-trend confirmation formulas unchanged (close vs reference body + 1
 // has been SUPERSEDED by the newly confirmed same-side pattern
 // (BULLISH+SUPPORT=BUY, BEARISH+RESISTANCE=SELL, Candle1/2/3 + UpperP/
 // LowerP/BodyP) — see tests/model002.sameSidePattern.test.js for its full
-// coverage, including an end-to-end max-capital x leverage cap test using
-// the new pattern.
+// coverage.
 
 // =========================================================================
-// PART 1 — Max Capital x Leverage
+// PART 1 — Max Capital x Leverage cap REMOVED (confirmed requirement)
 // =========================================================================
+// computeMaxAllowedNotional / capExposureToMaxNotional have been deleted
+// from riskSizing.js entirely — quantity is no longer reduced for
+// exceeding capital x leverage notional, and the trade is no longer
+// rejected for this reason. These tests confirm the removal.
 
-test('computeMaxAllowedNotional: maxCapital=100, leverage=200 -> 20000', () => {
-  assert.equal(riskSizing.computeMaxAllowedNotional(100, 200), 20000);
-});
-
-test('computeMaxAllowedNotional: maxCapital=100, leverage=1 -> 100', () => {
-  assert.equal(riskSizing.computeMaxAllowedNotional(100, 1), 100);
-});
-
-test('capExposureToMaxNotional: calculated notional below the limit is allowed unchanged', () => {
-  const result = riskSizing.capExposureToMaxNotional(1, 15000, 100, 200, 3); // notional 15000 <= 20000
-  assert.equal(result.capped, false);
-  assert.equal(result.quantity, 1);
-  assert.equal(result.maximumAllowedNotional, 20000);
-});
-
-test('capExposureToMaxNotional: calculated notional exactly at the limit is allowed', () => {
-  const result = riskSizing.capExposureToMaxNotional(2, 10000, 100, 200, 3); // notional exactly 20000
-  assert.equal(result.capped, false);
-  assert.equal(result.notional, 20000);
-});
-
-test('capExposureToMaxNotional: calculated notional above the limit is capped, quantity only ever reduced', () => {
-  const result = riskSizing.capExposureToMaxNotional(2, 12500, 100, 200, 3); // notional 25000 > 20000
-  assert.equal(result.capped, true);
-  assert.ok(result.quantity < 2);
-  assert.ok(result.notional <= 20000);
-});
-
-test('capExposureToMaxNotional: final notional NEVER exceeds the limit after rounding (floating-point guard)', () => {
-  // A price chosen to stress floating-point rounding at 3-decimal precision.
-  const result = riskSizing.capExposureToMaxNotional(1000, 33.333333, 100, 200, 3);
-  assert.ok(result.notional <= 20000, `finalNotional ${result.notional} must never exceed maximumAllowedNotional 20000`);
+test('riskSizing no longer exports the max-capital x leverage cap functions', () => {
+  assert.equal(riskSizing.computeMaxAllowedNotional, undefined);
+  assert.equal(riskSizing.capExposureToMaxNotional, undefined);
 });
 
 test('rejects leverage below 1x, never silently clamps', async () => {

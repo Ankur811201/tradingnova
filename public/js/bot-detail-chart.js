@@ -214,6 +214,61 @@
       },
     };
 
+
+    // -----------------------------------------------------------------
+    // MODEL_002 pattern-role markers: visually label the actual candles
+    // used by the NEW A/B/C pattern as 1, 2 and 3. These are chart-only
+    // markers derived from the backend decision payload; they do not affect
+    // strategy state or execution. MarkerManager merges them with existing
+    // BUY/SELL/EXIT execution markers so one never erases the other.
+    // -----------------------------------------------------------------
+    function patternCandleTime(candle) {
+      if (!candle) return null;
+      var raw = Number(candle.timestamp != null ? candle.timestamp : candle.time);
+      if (!Number.isFinite(raw) || raw <= 0) return null;
+      // Backend candle timestamps are milliseconds; Lightweight Charts uses
+      // Unix seconds. Also accept seconds defensively for older payloads.
+      return raw > 100000000000 ? Math.floor(raw / 1000) : Math.floor(raw);
+    }
+
+    function buildPatternRoleMarkers(checks) {
+      if (!checks || !checks.candle1 || !checks.candle2) return [];
+      var direction = checks.direction === 'SELL' ? 'SELL' : 'BUY';
+      var position = direction === 'SELL' ? 'aboveBar' : 'belowBar';
+      var color1 = '#64748b';
+      var color2 = '#3b82f6';
+      var color3 = direction === 'SELL' ? '#f43f5e' : '#22c55e';
+      var specs = [
+        { key: 'c1', text: '1', candle: checks.candle1, color: color1 },
+        { key: 'c2', text: '2', candle: checks.candle2, color: color2 },
+        { key: 'c3', text: '3', candle: checks.candle3, color: color3 },
+      ];
+
+      return specs.map(function (spec) {
+        var time = patternCandleTime(spec.candle);
+        if (time == null) return null;
+        return {
+          id: 'model002-pattern-' + spec.key,
+          time: time,
+          position: position,
+          color: spec.color,
+          shape: 'circle',
+          text: spec.text,
+        };
+      }).filter(Boolean);
+    }
+
+    window.NovaChartPatternMarkers = {
+      setFromChecks: function (checks) {
+        if (!chartManager || typeof chartManager.setPatternMarkers !== 'function') return;
+        chartManager.setPatternMarkers(buildPatternRoleMarkers(checks));
+      },
+      clear: function () {
+        if (!chartManager || typeof chartManager.clearPatternMarkers !== 'function') return;
+        chartManager.clearPatternMarkers();
+      },
+    };
+
     // -----------------------------------------------------------------
     // LIVE UPDATES (Part 5)
     //
@@ -368,6 +423,18 @@
         lastHistoricalTime = candles[candles.length - 1].time;
         setChartState(null);
         loadInitialExecutionMarkers(candles);
+
+        // If the server-rendered initial decision already contains a live
+        // MODEL_002 A/B/C pattern, draw its role markers now that the chart
+        // and historical candles are ready. bot-detail-ws.js also handles
+        // subsequent live decisions through the same public helper.
+        if (window.BOT_CONFIG && window.BOT_CONFIG.modelId === 'MODEL_002') {
+          var initialChecks = window.NovaPendingPatternChecks || (window.BOT_INITIAL_DECISION && window.BOT_INITIAL_DECISION.checks);
+          if (initialChecks && initialChecks.candle1 && initialChecks.candle2) {
+            window.NovaChartPatternMarkers.setFromChecks(initialChecks);
+          }
+          window.NovaPendingPatternChecks = null;
+        }
       }
     } catch (err) {
       console.error('[CHART] Failed to load candle history:', err);
