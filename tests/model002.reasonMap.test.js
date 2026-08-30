@@ -72,7 +72,8 @@ test('every reason code actually emitted by Model002.js/sameSidePatternEngine.js
 
 test('formatModel002Reason never returns a raw snake_case code for a known reason', () => {
   assert.equal(formatModel002Reason('candle1_support_touch_awaiting_candle2'), 'Support touched — Candle 1 set, awaiting Candle 2');
-  assert.equal(formatModel002Reason('awaiting_boundary_break'), 'Awaiting a close through the fixed boundary');
+  // Display wording only — Candle 3 triggers on a touch/cross, never on a close.
+  assert.equal(formatModel002Reason('awaiting_boundary_break'), 'Waiting for Candle 3 to touch/cross the boundary');
   assert.equal(formatModel002Reason('direct_entry_pending_client_confirmation'), 'Opposite-side pattern — pending client confirmation, not traded');
   assert.equal(/_/.test(formatModel002Reason('candle1_support_touch_awaiting_candle2')), false);
 });

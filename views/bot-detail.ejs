@@ -860,7 +860,23 @@
   // R1-R3 reference lines using the SAME values shown in Bot Configuration
   // above — no separate/derived source.
   support: <%- JSON.stringify((bot.parameters && Array.isArray(bot.parameters.support)) ? bot.parameters.support : []) %>,
-  resistance: <%- JSON.stringify((bot.parameters && Array.isArray(bot.parameters.resistance)) ? bot.parameters.resistance : []) %>
+  resistance: <%- JSON.stringify((bot.parameters && Array.isArray(bot.parameters.resistance)) ? bot.parameters.resistance : []) %>,
+  // PERSISTENT LEVEL-TOUCH STATE — this bot's own latch, straight from the
+  // authoritative BotInstance.parameters (written by BotManager when
+  // MODEL_002 emitted LEVEL_TOUCHED). Per-instance by construction. Used
+  // only as a one-way floor on page load, so a decision stored before this
+  // feature existed still shows "Support: TOUCHED" correctly — the browser
+  // never detects a touch itself.
+  levelTouch: <%- JSON.stringify({
+    supportTouched: !!(bot.parameters && bot.parameters.supportTouched === true),
+    supportTouchedAt: (bot.parameters && typeof bot.parameters.supportTouchedAt === 'number') ? bot.parameters.supportTouchedAt : null,
+    supportTouchedLevel: (bot.parameters && typeof bot.parameters.supportTouchedLevel === 'number') ? bot.parameters.supportTouchedLevel : null,
+    supportTouchedIndex: (bot.parameters && typeof bot.parameters.supportTouchedIndex === 'number') ? bot.parameters.supportTouchedIndex : null,
+    resistanceTouched: !!(bot.parameters && bot.parameters.resistanceTouched === true),
+    resistanceTouchedAt: (bot.parameters && typeof bot.parameters.resistanceTouchedAt === 'number') ? bot.parameters.resistanceTouchedAt : null,
+    resistanceTouchedLevel: (bot.parameters && typeof bot.parameters.resistanceTouchedLevel === 'number') ? bot.parameters.resistanceTouchedLevel : null,
+    resistanceTouchedIndex: (bot.parameters && typeof bot.parameters.resistanceTouchedIndex === 'number') ? bot.parameters.resistanceTouchedIndex : null
+  }) %>
 };
   // NOVA TRADE -- PART 8: the real MODEL_001 decision (StrategyEvent,
   // eventType 'DECISION') loaded server-side in controllers/botController.js.
@@ -1307,6 +1323,7 @@
 <script src="/js/chart-price-label.js"></script>
 <script src="/js/bot-detail-chart.js"></script>
 <script src="/js/renderers/model002-reason-map.js"></script>
+<script src="/js/renderers/model002-level-state.js"></script>
 <script src="/js/renderers/model-thinking-registry.js"></script>
 <script src="/js/bot-detail-ws.js"></script>
 </body>

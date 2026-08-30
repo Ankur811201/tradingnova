@@ -74,7 +74,10 @@
 
     // Candle 2 valid, awaiting boundary break
     candle2_confirmed_awaiting_boundary_break: 'Candle 2 confirmed — boundaries fixed, awaiting breakout',
-    awaiting_boundary_break: 'Awaiting a close through the fixed boundary',
+    // DISPLAY WORDING ONLY. The backend trigger rule is unchanged — see
+    // sameSidePatternEngine.evaluateBoundaryBreak / reversalPatternEngine
+    // .evaluateCandle3; nothing about when a trade fires depends on this map.
+    awaiting_boundary_break: 'Waiting for Candle 3 to touch/cross the boundary',
 
     // Invalidation
     invalidated_close_below_lower_boundary: 'Pattern invalidated — closed below the lower boundary',

@@ -375,7 +375,11 @@ test('bot-detail-ws.js wires the real decision boundaries (not invented) into th
   const content = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'bot-detail-ws.js'), 'utf8');
   assert.match(content, /modelId === 'MODEL_002' && window\.NovaChartPatternOverlay/);
   assert.match(content, /data\.checks && data\.checks\.boundaries/);
-  assert.match(content, /window\.NovaChartPatternOverlay\.setBoundaries\(boundaries\.upper, boundaries\.lower\)/);
+  // The boundaries are still the real ones from the decision; the third
+  // argument is the ACTIVE pattern's direction, also from the backend
+  // payload (patternVisual.direction) — never derived in the browser.
+  assert.match(content, /window\.NovaChartPatternOverlay\.setBoundaries\(boundaries\.upper, boundaries\.lower, patternGroup\.direction\)/);
+  assert.match(content, /var patternGroup = data\.checks && data\.checks\.patternVisual/);
   assert.match(content, /window\.NovaChartPatternOverlay\.clearBoundaries\(\)/);
 });
 

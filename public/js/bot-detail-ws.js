@@ -493,12 +493,30 @@ document.addEventListener('DOMContentLoaded', () => {
     const checksContainer =
       document.getElementById('thinking-checks');
 
+    // MODEL_002 persistent LEVEL state: the backend latch is authoritative
+    // and already arrives inside data.checks. The floor below only covers
+    // the reload case where the newest stored decision predates the latch
+    // — it raises NOT_TOUCHED to TOUCHED from this bot's own persisted
+    // parameters (window.BOT_CONFIG.levelTouch) and can never do the
+    // reverse. No touch is ever detected in the browser.
+    let renderChecks = data.checks || null;
+    if (modelId === 'MODEL_002' && renderChecks && window.Model002LevelState) {
+      try {
+        renderChecks = window.Model002LevelState.applyPersistedFloor(
+          renderChecks,
+          (window.BOT_CONFIG && window.BOT_CONFIG.levelTouch) || null
+        );
+      } catch (err) {
+        console.error('[DECISION] Level-touch state merge failed:', err);
+      }
+    }
+
     if (checksContainer && window.ModelThinkingRegistry) {
       try {
         window.ModelThinkingRegistry.render(
           modelId,
           checksContainer,
-          data.checks || null
+          renderChecks
         );
       } catch (err) {
         console.error('[DECISION] Renderer failed:', err);
@@ -512,14 +530,39 @@ document.addEventListener('DOMContentLoaded', () => {
     // (data.checks.boundaries) — no invented lines.
     if (modelId === 'MODEL_002' && window.NovaChartPatternOverlay) {
       try {
+        // The boundary lines belong to the active pattern group, so they
+        // are drawn only while there IS one — an INVALID decision still
+        // carries `boundaries` in its payload, and drawing from that alone
+        // left the lines on the chart after the pattern had died.
+        var patternGroup = data.checks && data.checks.patternVisual;
         var boundaries = data.checks && data.checks.boundaries;
-        if (boundaries && boundaries.upper != null && boundaries.lower != null) {
-          window.NovaChartPatternOverlay.setBoundaries(boundaries.upper, boundaries.lower);
+        if (patternGroup && boundaries && boundaries.upper != null && boundaries.lower != null) {
+          // Direction comes from the backend group — never from the trend.
+          window.NovaChartPatternOverlay.setBoundaries(boundaries.upper, boundaries.lower, patternGroup.direction);
         } else {
           window.NovaChartPatternOverlay.clearBoundaries();
         }
       } catch (err) {
         console.error('[DECISION] Pattern boundary overlay failed:', err);
+      }
+
+      // FEATURE 1 — visual-only helper line at candle A's body high/low.
+      // Drawn only while the backend reports an active A/B pattern
+      // (data.checks.bodyReference); removed on invalidation or whenever no
+      // pattern is active, through the same overlay lifecycle as the
+      // boundary lines above. Purely presentational — nothing here is fed
+      // back into any decision.
+      try {
+        var bodyReference = window.Model002LevelState
+          ? window.Model002LevelState.normalizeBodyReference(data.checks)
+          : null;
+        if (bodyReference) {
+          window.NovaChartPatternOverlay.setBodyReference(bodyReference);
+        } else {
+          window.NovaChartPatternOverlay.clearBodyReference();
+        }
+      } catch (err) {
+        console.error('[DECISION] Body reference line update failed:', err);
       }
     }
 
@@ -531,15 +574,19 @@ document.addEventListener('DOMContentLoaded', () => {
     // consumes the same payload once the chart is ready.
     if (modelId === 'MODEL_002') {
       try {
-        var patternChecks = data.checks;
+        var patternChecks = data.checks || null;
         if (window.NovaChartPatternMarkers) {
-          if (patternChecks && patternChecks.candle1 && patternChecks.candle2) {
-            window.NovaChartPatternMarkers.setFromChecks(patternChecks);
-          } else {
-            window.NovaChartPatternMarkers.clear();
-          }
+          // Always hand the decision over: the marker layer draws the
+          // backend's C1/C2/C3 group when there is one and clears every
+          // label when there isn't. An INVALID decision still carries
+          // candle1/candle2/candle3 for the Decision Engine panel, so the
+          // old truthiness check on those fields re-drew the labels of the
+          // pattern that had just been invalidated — the group
+          // (checks.patternVisual, null on invalidation) is the only
+          // correct signal.
+          window.NovaChartPatternMarkers.setFromChecks(patternChecks);
         } else {
-          window.NovaPendingPatternChecks = patternChecks || null;
+          window.NovaPendingPatternChecks = patternChecks;
         }
       } catch (err) {
         console.error('[DECISION] Pattern candle marker update failed:', err);

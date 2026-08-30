@@ -20,6 +20,10 @@ const {
   isOppositeMarketTouch, getActiveTimeframe, hasSwitched, shouldSwitch,
   OPPOSITE_TOUCH_TIMEFRAME,
 } = require('../../utils/activeTimeframe');
+const {
+  readLevelTouchState, applyLevelTouch, toChecksLevelStatus,
+} = require('../../utils/levelTouchState');
+const { buildPatternVisual } = require('../../utils/model002PatternVisual');
 
 const RULE_ID_BUY = 'MODEL_002_SAME_SIDE_BUY';
 
@@ -136,6 +140,22 @@ class Model002 extends BotModelBase {
     this.timeframeSwitched = hasSwitched(this.params);
     this.activeTimeframe = getActiveTimeframe(this.params);
 
+    // PERSISTENT LEVEL-TOUCH STATE — per-instance, read back from this
+    // instance's own persisted `parameters` (written by BotManager when the
+    // touch happened), exactly like the timeframe-switch latch above. Never
+    // a module-level/global value: two Model002 instances in the same
+    // process each carry their own object, so Bot A's "Support: TOUCHED"
+    // can never appear on Bot B. This is LEVEL state and is deliberately
+    // independent of `patternCandidate` (PATTERN state) — a pattern can be
+    // INVALID while the level stays TOUCHED.
+    this.levelTouch = readLevelTouchState(this.params);
+
+    // True only while _reconstructPatternStateFromHistory() is replaying
+    // hydrated candles — that replay must stay entirely silent (it already
+    // never emits or trades), so level touches it re-derives update the
+    // in-memory latch without emitting a LEVEL_TOUCHED event.
+    this._hydrating = false;
+
     this.emitStrategyEvent('MODEL_STARTED', {
       symbol: this.symbol,
       environment: this.environment,
@@ -207,6 +227,15 @@ class Model002 extends BotModelBase {
     this.patternCandidate = null;
     if (trend !== 'BULLISH' && trend !== 'BEARISH') return;
 
+    this._hydrating = true;
+    try {
+      this._replayPatternStateFromHistory();
+    } finally {
+      this._hydrating = false;
+    }
+  }
+
+  _replayPatternStateFromHistory() {
     let candidate = null;
 
     for (let i = 0; i < this.candles.length; i += 1) {
@@ -475,6 +504,8 @@ class Model002 extends BotModelBase {
         candle1: this._summarizeCandle(attempt.candidate.candle1),
         candle2: this._summarizeCandle(attempt.candidate.candle2),
         points: attempt.candidate.points, boundaries: attempt.candidate.boundaries,
+        bodyReference: this._bodyReferenceFor(attempt.candidate),
+        patternVisual: this._patternVisualFor(attempt.candidate),
       }, candle);
       return;
     }
@@ -521,6 +552,14 @@ class Model002 extends BotModelBase {
 
     const newTouch = reversalEngine.findTouchedLevel(sameSideLevels, candle, sameSideDirection);
     if (newTouch) {
+      // PERSISTENT LEVEL-TOUCH STATE — recorded on the TOUCH itself, using
+      // this path's own already-computed direction/matchedLevel (no second
+      // Support/Resistance detector anywhere). Deliberately BEFORE the A/B,
+      // BodyP and candle-nature validations below: the level really was
+      // touched even when the pattern that touch tried to start is
+      // rejected, and that fact must survive the rejection.
+      this._recordLevelTouch(sameSideDirection, newTouch, candle);
+
       // ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH fires on the touch
       // itself, live only — hydration replay must stay entirely silent
       // (no emitStrategyEvent), exactly as it always has.
@@ -605,6 +644,12 @@ class Model002 extends BotModelBase {
   }
 
   _buildCandle1Candidate(candle, direction, matchedLevel) {
+    // OLD (opposite-side) engine touch — the single place every OLD-engine
+    // Candle 1 is constructed (fresh search, live last-touch-wins
+    // replacement and hydration replay all go through here), so the
+    // level-touch latch is recorded exactly once per touch with no separate
+    // detector.
+    this._recordLevelTouch(direction, matchedLevel, candle);
     return {
       engine: 'OLD', // opposite-side combinations only — see _tryStartFreshPattern
       direction, candle1: candle, matchedLevel, stage: 'WAITING_FOR_CANDLE2',
@@ -810,6 +855,99 @@ class Model002 extends BotModelBase {
     }
   }
 
+  /**
+   * Records that a configured Support/Resistance level was touched.
+   *
+   * LEVEL state only — it never touches `patternCandidate`, never changes
+   * detection, validation, boundaries, SL, sizing or execution, and it is
+   * never cleared here (not by a failed Candle 2, an invalidating Candle 3,
+   * a rejected trade or a losing trade). Persistence is owned by
+   * BotManager, which applies the emitted LEVEL_TOUCHED StrategyEvent to
+   * this instance's own `parameters` — the same additive pattern already
+   * used by ACTIVE_TIMEFRAME_SWITCHED.
+   *
+   * A BUY candidate is by definition a SUPPORT touch and a SELL candidate a
+   * RESISTANCE touch, so the side is read from the caller's existing
+   * direction rather than re-derived from OHLC (which could disagree with
+   * MODEL_002's own touch rules).
+   */
+  _recordLevelTouch(direction, matchedLevel, candle) {
+    const side = direction === 'BUY' ? 'SUPPORT' : 'RESISTANCE';
+    const key = side === 'SUPPORT' ? 'support' : 'resistance';
+    const price = matchedLevel && Number.isFinite(matchedLevel.price) ? matchedLevel.price : null;
+    const index = matchedLevel && Number.isFinite(matchedLevel.index) ? matchedLevel.index : null;
+    const at = candle && Number.isFinite(candle.timestamp) ? candle.timestamp : null;
+
+    if (!this.levelTouch) this.levelTouch = readLevelTouchState(null);
+    const previous = this.levelTouch[key];
+    const unchanged = previous.touched && previous.level === price && previous.index === index;
+
+    this.levelTouch = Object.assign({}, this.levelTouch, {
+      [key]: { touched: true, at, level: price, index },
+    });
+
+    // Hydration replay is silent by contract; and an unchanged latch needs
+    // no second event/write.
+    if (this._hydrating || unchanged) return;
+
+    this.emitStrategyEvent('LEVEL_TOUCHED', {
+      side, index, price, at, symbol: this.symbol, trend: this.params.trend,
+      message: `${side === 'SUPPORT' ? 'Support' : 'Resistance'} level touched — remembered for this bot until its levels are changed.`,
+    });
+  }
+
+  /**
+   * FEATURE 1 — PREVIOUS CANDLE BODY REFERENCE LINE (visual only).
+   *
+   * For the NEW A/B/C engine, `candidate.candle1` IS candle A (the candle
+   * immediately before the Support/Resistance touch candle B) and
+   * `candidate.candle2` IS B. This exposes the exact price the EXISTING
+   * A/B validation in reversalPatternEngine.validateAB() compares against,
+   * so the user can see on the chart whether B's BODY crossed A's BODY
+   * boundary:
+   *
+   *   BULLISH + SUPPORT    -> A_body_high = Math.max(A.open, A.close)
+   *   BEARISH + RESISTANCE -> A_body_low  = Math.min(A.open, A.close)
+   *
+   * BODY values only — A.high / A.low (wicks) are never used.
+   *
+   * The OLD (opposite-side) engine gets the same line for the same reason:
+   * its own EXISTING Candle 2 rule is candle2TouchesBodyHigh/Low(candle1,
+   * candle2), i.e. it too compares against Candle 1's body boundary. Same
+   * formula, same meaning, no new rule. Nothing here feeds back into
+   * detection, validation or execution — it is a read-only projection of
+   * state the engine already computed.
+   */
+  _bodyReferenceFor(candidate) {
+    if (!candidate) return null;
+    const a = candidate.candle1;
+    const b = candidate.candle2;
+    if (!a || !Number.isFinite(a.open) || !Number.isFinite(a.close)) return null;
+
+    const isBuy = candidate.direction === 'BUY';
+    return {
+      direction: candidate.direction,
+      engine: candidate.engine,
+      side: isBuy ? 'BODY_HIGH' : 'BODY_LOW',
+      price: isBuy ? Math.max(a.open, a.close) : Math.min(a.open, a.close),
+      candleTimestamp: a.timestamp,
+      fromTimestamp: a.timestamp,
+      toTimestamp: b ? b.timestamp : null,
+    };
+  }
+
+  /**
+   * The C1/C2/C3 visual label group for a pattern candidate (see
+   * utils/model002PatternVisual.js). Read-only: it reports roles the
+   * pattern engine already assigned, and BUY/SELL wording only when this
+   * class actually triggered the trade. Returns null for anything that is
+   * not an active A/B/C pattern, which is exactly what tells the chart to
+   * remove every label of the previous pattern.
+   */
+  _patternVisualFor(candidate, options) {
+    return buildPatternVisual(candidate, Object.assign({ instanceId: this.instanceId }, options || {}));
+  }
+
   _activeLevelFor(candidate) {
     return { side: candidate.direction === 'BUY' ? 'SUPPORT' : 'RESISTANCE', index: candidate.matchedLevel.index, price: candidate.matchedLevel.price };
   }
@@ -857,6 +995,8 @@ class Model002 extends BotModelBase {
       candle3: this._summarizeCandle(entryCandle),
       boundaries: candidate.boundaries,
       points: candidate.points,
+      bodyReference: this._bodyReferenceFor(candidate),
+      patternVisual: this._patternVisualFor(candidate, { candle3: entryCandle, trigger: direction }),
       reason: `${direction} pattern confirmed`,
     };
 
@@ -984,6 +1124,8 @@ class Model002 extends BotModelBase {
       candle3: this._summarizeCandle(candleC),
       boundaries: candidate.boundaries,
       points: candidate.points,
+      bodyReference: this._bodyReferenceFor(candidate),
+      patternVisual: this._patternVisualFor(candidate, { candle3: candleC, trigger: direction }),
       reason: `${direction} pattern confirmed`,
     };
 
@@ -1051,6 +1193,21 @@ class Model002 extends BotModelBase {
       candle1: result.candle1 || null,
       candle2: result.candle2 || null,
       candle3: result.candle3 || null,
+      // FEATURE 1 — visual-only helper line data (candle A's BODY high/low).
+      // Present only while a NEW-engine A/B pattern is actually active;
+      // absent (null) on every other decision, which is what tells the
+      // chart to remove the line. Never read back by the strategy.
+      bodyReference: result.bodyReference || this._bodyReferenceFor(this.patternCandidate) || null,
+      // C1/C2/C3 label group for the chart. `result.patternVisual` is set
+      // by the decision that produced it (a fresh A/B pattern, or the
+      // trade-triggering C); otherwise it is rebuilt from the candidate
+      // that is STILL active, so unrelated WAIT decisions (safety pause,
+      // position already open) do not make the labels flicker away. It is
+      // null whenever no A/B/C pattern is active — including immediately
+      // after an invalidation, since Model002 clears patternCandidate
+      // before emitting that decision — and null is what removes the
+      // labels. Purely presentational; never read back by the strategy.
+      patternVisual: result.patternVisual || this._patternVisualFor(this.patternCandidate, { candle3: result.candle3 }) || null,
       upperBoundary: result.boundaries ? result.boundaries.upper : null,
       lowerBoundary: result.boundaries ? result.boundaries.lower : null,
       upperP: points ? points.upperP : null,
@@ -1079,16 +1236,19 @@ class Model002 extends BotModelBase {
       // trend is the user-provided configuration (never BOS/EMA), touch/
       // level/candle/point values come straight from the real pattern
       // engine. Nothing here is fabricated.
-      checks: {
+      checks: Object.assign({
         trend: { status: this.params.trend },
-        support: {
-          status: (result.activeLevel && result.activeLevel.side === 'SUPPORT') ? 'TOUCHED' : 'NOT_TOUCHED',
-          level: (result.activeLevel && result.activeLevel.side === 'SUPPORT') ? result.activeLevel.price : null,
-        },
-        resistance: {
-          status: (result.activeLevel && result.activeLevel.side === 'RESISTANCE') ? 'TOUCHED' : 'NOT_TOUCHED',
-          level: (result.activeLevel && result.activeLevel.side === 'RESISTANCE') ? result.activeLevel.price : null,
-        },
+        // LEVEL STATE (persistent latch) — deliberately NOT derived from
+        // this decision's `activeLevel`. `activeLevel` is null whenever no
+        // pattern is active (e.g. reason `no_level_touch`), which is
+        // exactly what used to flip these rows back to NOT_TOUCHED after a
+        // failed pattern. The latch below only ever goes false -> true, and
+        // is cleared solely by the existing trend/levels edit lifecycle.
+        // PATTERN STATE stays a separate field (`patternState`) below.
+      }, toChecksLevelStatus(this.levelTouch), {
+        activeLevel: result.activeLevel !== undefined ? result.activeLevel : null,
+        bodyReference: result.bodyReference || this._bodyReferenceFor(this.patternCandidate) || null,
+        patternVisual: result.patternVisual || this._patternVisualFor(this.patternCandidate, { candle3: result.candle3 }) || null,
         candle1: result.candle1 || null,
         candle2: result.candle2 || null,
         candle3: result.candle3 || null,
@@ -1100,7 +1260,7 @@ class Model002 extends BotModelBase {
         stopLoss: result.stopLoss !== undefined ? result.stopLoss : null,
         riskLength: result.riskLength !== undefined ? result.riskLength : null,
         lot: result.lot !== undefined ? result.lot : null,
-      },
+      }),
     });
   }
 

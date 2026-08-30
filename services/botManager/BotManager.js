@@ -22,6 +22,7 @@ const {
   getActiveTimeframe, applySwitch, hasSwitched, computeAnalysisBaselineMs,
 } = require('../../utils/activeTimeframe');
 
+const { applyLevelTouch, clearLevelTouchState } = require('../../utils/levelTouchState');
 // PART 11: how many recent CLOSED candles to hydrate a newly-started
 // instance with. patternEngine.js requires >= 50 (50-period EMA is the
 // binding requirement); a small justified buffer is added on top so a
@@ -761,6 +762,10 @@ class BotManager {
 
     const patch = {};
     const paramPatch = {};
+    // Set only by the trend/support/resistance edit path below — the single
+    // existing configuration lifecycle that legitimately forgets a
+    // previously touched level (see utils/levelTouchState.js).
+    let clearLevelTouchLatches = false;
     const has = (k) => updates[k] !== undefined && updates[k] !== null && updates[k] !== '';
 
     if (has('capital')) {
@@ -843,6 +848,17 @@ class BotManager {
         // before this configuration was saved. Only set when a value
         // genuinely changed, never on a no-op re-save of the same values.
         paramPatch.levelsUpdatedAt = Date.now();
+
+        // The persistent Support/Resistance TOUCHED latch remembers a touch
+        // of the levels that were configured at the time. Once the user
+        // genuinely changes trend/support/resistance, that memory refers to
+        // a level that no longer exists, so it is cleared here — on the
+        // project's EXISTING configuration lifecycle (the same edit that
+        // re-baselines hydration via levelsUpdatedAt, and which already
+        // requires the bot to be paused/stopped). Nothing else anywhere
+        // resets it: not a new candle, not a failed pattern, not an
+        // invalidating Candle 3, not a losing trade.
+        clearLevelTouchLatches = true;
       }
     }
 
@@ -915,8 +931,11 @@ class BotManager {
       }
     }
 
-    if (Object.keys(paramPatch).length) {
+    if (Object.keys(paramPatch).length || clearLevelTouchLatches) {
       patch.parameters = Object.assign({}, dbInstance.parameters || {}, paramPatch);
+      if (clearLevelTouchLatches) {
+        patch.parameters = clearLevelTouchState(patch.parameters) || patch.parameters;
+      }
     }
 
     if (!Object.keys(patch).length) {
@@ -1128,6 +1147,28 @@ class BotManager {
         eventType: event.eventType, payload: event.payload, at: new Date(event.at),
       });
       dbInstance.lastSignalAt = new Date();
+
+      // PERSISTENT LEVEL-TOUCH STATE (persistence side) — identical
+      // additive pattern to the timeframe switch below: the model detected
+      // the touch and emitted it through the EXISTING StrategyEvent
+      // pipeline, and BotManager (the only owner of BotInstance
+      // persistence) folds it into the SAME `parameters` object that is
+      // about to be saved, so no extra write is introduced. applyLevelTouch
+      // returns null when the latch is already set to the same level, so a
+      // repeated touch cannot cause a redundant write. It is per-instance
+      // by construction — the state lives on this dbInstance only.
+      if (event.eventType === 'LEVEL_TOUCHED') {
+        const touched = applyLevelTouch(dbInstance.parameters || {}, {
+          side: event.payload && event.payload.side,
+          price: event.payload && event.payload.price,
+          index: event.payload && event.payload.index,
+          at: (event.payload && event.payload.at) || event.at,
+        });
+        if (touched) {
+          dbInstance.parameters = touched;
+          dbInstance.markModified('parameters');
+        }
+      }
 
       // ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH (persistence side).
       // The model detected the touch and emitted this through the existing

@@ -81,15 +81,54 @@ window.ModelThinkingRegistry = {
         return '<span class="' + color + '">' + (state || 'IDLE') + '</span>';
       };
 
+      // LEVEL STATE and PATTERN STATE are separate concepts and are shown
+      // as separate rows. Support/Resistance are persistent latches
+      // supplied by the backend (Model002 -> utils/levelTouchState.js):
+      // once a level has been touched it stays TOUCHED here even while the
+      // pattern below reads INVALID/IDLE. They are NOT derived from the
+      // latest decision's activeLevel.
       let out =
         row('Trend (user-provided)', trendSpan(checks.trend.status)) +
-        row('Support', touchSpan(checks.support.status, checks.support.level)) +
-        row('Resistance', touchSpan(checks.resistance.status, checks.resistance.level)) +
+        row('Support', touchSpan(checks.support && checks.support.status, checks.support && checks.support.level)) +
+        row('Resistance', touchSpan(checks.resistance && checks.resistance.status, checks.resistance && checks.resistance.level)) +
         row('Pattern State', patternStateSpan(checks.patternState));
 
-      if (checks.candle1) out += row('Candle 1', candleSpan(checks.candle1));
-      if (checks.candle2) out += row('Candle 2', candleSpan(checks.candle2));
-      if (checks.candle3) out += row('Candle 3 (latest)', candleSpan(checks.candle3));
+      // Direction of the ACTIVE pattern, exactly as the backend routed it
+      // (checks.patternVisual.direction). A BULLISH bot whose Resistance is
+      // touched runs an opposite-side SELL pattern, so this row is not a
+      // restatement of the trend — and it is the same field the chart's
+      // boundary captions use, so panel and chart can never disagree.
+      if (checks.patternVisual && checks.patternVisual.direction) {
+        const dir = checks.patternVisual.direction;
+        out += row('Direction', '<span class="' + (dir === 'BUY' ? 'text-emerald-400' : 'text-rose-400') + ' font-bold">' + dir + '</span>');
+      }
+
+      // Visual-only helper reference: candle A's BODY high (bullish) or
+      // BODY low (bearish) — the exact value the A/B validation compares
+      // against, and the price the chart's helper line is drawn at. Wick
+      // high/low is never used.
+      if (checks.bodyReference && checks.bodyReference.price != null) {
+        const br = checks.bodyReference;
+        const brLabel = br.side === 'BODY_LOW' ? 'A Body Low (ref)' : 'A Body High (ref)';
+        out += row(brLabel, '<span class="text-violet-300">' + Number(br.price).toFixed(2) + '</span>');
+      }
+
+      // Pattern candles. The label prefix is the backend's OWN role code
+      // (checks.patternVisual.labels[].code / .touch / .trigger) — the
+      // panel never invents or infers a role. Previously candleSpan() was
+      // called without its `label` argument, which is what rendered the
+      // literal text "undefined" in front of every OHLC line.
+      const roleLabels = {};
+      if (checks.patternVisual && Array.isArray(checks.patternVisual.labels)) {
+        checks.patternVisual.labels.forEach((l) => {
+          roleLabels[l.role] = l.code + (l.touch ? ' TOUCH' : '') + (l.trigger ? ' ' + l.trigger : '');
+        });
+      }
+      const roleFor = (role, fallback) => roleLabels[role] || fallback;
+
+      if (checks.candle1) out += row('Candle 1', candleSpan(checks.candle1, roleFor('CANDLE_1', 'C1')));
+      if (checks.candle2) out += row('Candle 2', candleSpan(checks.candle2, roleFor('CANDLE_2', 'C2')));
+      if (checks.candle3) out += row('Candle 3 (latest)', candleSpan(checks.candle3, roleFor('CANDLE_3', 'C3')));
 
       if (checks.points) {
         const p = checks.points;
