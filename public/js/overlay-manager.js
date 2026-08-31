@@ -45,6 +45,52 @@ class OverlayManager {
     }
   }
 
+  /**
+   * A single horizontal SEGMENT bounded between two timestamps (as opposed
+   * to setPriceLine's full-width line, which spans the entire chart).
+   * Used only by the MODEL_002 C1 body-reference line, which must be
+   * visually confined to C1->C2 rather than drawn across the whole chart.
+   * Implemented as its own tiny 2-point line series (same primitive as
+   * ema20Series/ema50Series above) rather than reusing createPriceLine,
+   * which has no notion of a time range. One fixed key
+   * ('bodyReferenceSegment') means re-syncing replaces rather than
+   * duplicates, exactly like setPriceLine's dedup above.
+   */
+  setLineSegment(key, fromTime, toTime, price, color, title) {
+    this.removeLineSegment(key);
+    const p = Number(price);
+    const from = Number(fromTime);
+    if (!Number.isFinite(p) || p <= 0 || !Number.isFinite(from)) return;
+    // toTime can legitimately be unknown yet (Candle 2 hasn't touched); a
+    // series needs two distinct ascending points, so extend by a minimal
+    // 1-unit stub that the next re-sync (once Candle 2 is known, or the
+    // pattern resolves) immediately replaces with the real endpoint.
+    let to = Number(toTime);
+    if (!Number.isFinite(to) || to <= from) to = from + 1;
+
+    this.lineSegments = this.lineSegments || {};
+    this.lineSegments[key] = this.chart.addLineSeries({
+      color,
+      lineWidth: 1,
+      lineStyle: 1, // Dotted
+      title,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    this.lineSegments[key].setData([
+      { time: from, value: p },
+      { time: to, value: p },
+    ]);
+  }
+
+  removeLineSegment(key) {
+    if (this.lineSegments && this.lineSegments[key]) {
+      this.chart.removeSeries(this.lineSegments[key]);
+      delete this.lineSegments[key];
+    }
+  }
+
   syncPositionOverlays(position) {
     if (!position || position.side === 'NONE') {
       this.removePriceLine('entry');

@@ -14,8 +14,9 @@
  * using the existing sameSidePatternEngine.js logic unchanged — see
  * Model002.js's routing.
  *
- *   A = candle immediately BEFORE the Support/Resistance-touch candle
- *   B = the touch candle itself (becomes Candle 2, NOT Candle 1 — A is
+ *   A = Candle 1 — the candle immediately BEFORE the Support/Resistance-
+ *       touch candle
+ *   B = Candle 2 — the level-touch candle itself (it is Candle 2, NOT
  *       Candle 1)
  *   Validated by BODY only:
  *     BUY:  bodyHigh(B) > bodyHigh(A)
@@ -23,15 +24,18 @@
  *   Boundaries (WICK, +-5 points, fixed the moment B validates):
  *     upper = B.high + POINT_BUFFER
  *     lower = B.low  - POINT_BUFFER
- *   C = the very next candle after B. The ONLY trigger candle:
- *     BUY:  C.high >= upper -> BUY immediately (wick touch, no close needed)
- *           C.low  <= lower -> INVALID, restart
- *     SELL: C.low  <= lower -> SELL immediately
- *           C.high >= upper -> INVALID, restart
- *     Neither boundary touched -> INVALID, restart (C is the ONLY trigger
- *     candle for this attempt; there is no further waiting — this is an
- *     interpretation of "Candle 3 immediately triggers BUY OR invalidates
- *     the pattern", since the spec defines only these two outcomes for C).
+ *   C = Candle 3, the first candle evaluated after B — and then Candle 4,
+ *   Candle 5, ... every later candle, against the SAME fixed boundaries.
+ *   The boundaries are computed ONCE from B and are never recomputed from
+ *   a later candle, no matter how many candles the pattern waits:
+ *     BUY:  candle.high >= upper -> BUY immediately (wick touch, no close needed)
+ *           candle.low  <= lower -> INVALID, restart
+ *     SELL: candle.low  <= lower -> SELL immediately
+ *           candle.high >= upper -> INVALID, restart
+ *     Neither boundary touched -> WAIT. The pattern stays active and the
+ *     next candle is evaluated against the same boundaries; "no trigger"
+ *     is explicitly NOT "invalid" (confirmed correction). The boundaries
+ *     are never recomputed from a later candle.
  *   Both boundaries touched within the same candle C: cannot be resolved
  *     from OHLC alone. Reuses the existing live tick/price stream
  *     (type:'price' updates already dispatched by BotManager.dispatchMarketData
@@ -41,10 +45,17 @@
  *     never sent ticks), the ambiguous case conservatively resolves to
  *     INVALID rather than guessing a trade — a documented limitation, not a
  *     silent guess.
- *   Stop loss — tracks ONLY B and C (the pattern resolves in exactly one
- *   candle after B, so there is never a third candle in the sequence):
- *     BUY:  min(B.low, C.low)   - 10
- *     SELL: max(B.high, C.high) + 10
+ *   Stop loss — a running extreme across the WHOLE evaluation window, not
+ *   just two candles. Because a pattern may WAIT through Candle 3, 4,
+ *   5, ..., the caller (Model002._confirmAndSubmitNew) passes the running
+ *   low/high accumulated from Candle 2 up to and including the triggering
+ *   candle, and these helpers apply the buffer to it:
+ *     BUY:  min(low  over B..trigger candle) - 10
+ *     SELL: max(high over B..trigger candle) + 10
+ *   The two-argument shape below is kept as-is (first argument carries the
+ *   running window extreme, second the triggering candle); the formula
+ *   itself is unchanged and is INDEPENDENT of the OLD engine's SL — the
+ *   two must never be merged.
  */
 
 const POINT_BUFFER = 5; // Candle 2 (B) boundary buffer, wick-based
@@ -109,12 +120,12 @@ function computeBoundaries(candleB) {
 // --- Candle 3 (C) trigger ------------------------------------------------
 
 /**
- * Evaluates C against the fixed boundaries.
+ * Evaluates one candle against the fixed boundaries.
  * `tieBreakSide` ('upper' | 'lower' | null) is the side the live tick
- * stream saw touched FIRST, if both boundaries fall within C's range and
- * tick evidence was actually available — see module docstring.
+ * stream saw touched FIRST, if both boundaries fall within the candle's
+ * range and tick evidence was actually available — see module docstring.
  *
- * Returns { outcome: 'BUY'|'SELL'|'INVALID', bothTouched: boolean, tieBreakUsed: boolean }
+ * Returns { outcome: 'BUY'|'SELL'|'INVALID'|'WAIT', bothTouched: boolean, tieBreakUsed: boolean }
  */
 function evaluateCandle3(candleC, boundaries, direction, tieBreakSide) {
   const upperTouched = candleC.high >= boundaries.upper;
@@ -127,22 +138,30 @@ function evaluateCandle3(candleC, boundaries, direction, tieBreakSide) {
     const outcome = winner === triggerSide ? direction : 'INVALID';
     return { outcome, bothTouched: true, tieBreakUsed: tieBreakSide === 'upper' || tieBreakSide === 'lower' };
   }
+  // CONFIRMED CORRECTION: "no trigger" is NOT "invalid". A candle that
+  // stays strictly between the two boundaries resolves to WAIT — the
+  // pattern stays active, the boundaries stay fixed at Candle 2's own
+  // high/low +-5, and the NEXT candle is evaluated against those same
+  // boundaries. Only a WRONG-boundary touch/cross invalidates.
+  if (!upperTouched && !lowerTouched) {
+    return { outcome: 'WAIT', bothTouched: false, tieBreakUsed: false };
+  }
   if (direction === 'BUY') {
     if (upperTouched) return { outcome: 'BUY', bothTouched: false, tieBreakUsed: false };
-    return { outcome: 'INVALID', bothTouched: false, tieBreakUsed: false }; // lowerTouched, or neither (C is the only trigger candle)
+    return { outcome: 'INVALID', bothTouched: false, tieBreakUsed: false }; // wrong boundary (lower) touched
   }
   if (lowerTouched) return { outcome: 'SELL', bothTouched: false, tieBreakUsed: false };
-  return { outcome: 'INVALID', bothTouched: false, tieBreakUsed: false };
+  return { outcome: 'INVALID', bothTouched: false, tieBreakUsed: false }; // wrong boundary (upper) touched
 }
 
-// --- Stop loss — tracks only B and C -------------------------------------
+// --- Stop loss — running extreme across B .. trigger candle --------------
 
-/** BUY: lowest wick LOW across B and C, minus 10 points. */
+/** BUY: lowest wick LOW across the evaluation window (B up to and including the triggering candle), minus 10 points. Caller passes the running window low as `candleB`. */
 function computeBuyStopLoss(candleB, candleC) {
   return Math.min(candleB.low, candleC.low) - SL_BUFFER;
 }
 
-/** SELL: highest wick HIGH across B and C, plus 10 points. */
+/** SELL: highest wick HIGH across the evaluation window (B up to and including the triggering candle), plus 10 points. Caller passes the running window high as `candleB`. */
 function computeSellStopLoss(candleB, candleC) {
   return Math.max(candleB.high, candleC.high) + SL_BUFFER;
 }

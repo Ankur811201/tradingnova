@@ -131,6 +131,13 @@ class RiskEngine {
 
       const notional = refPrice * command.quantity;
       meta.notional = notional;
+      // PHASE 1 DIAGNOSTIC (temporary): quantity/riskLimit weren't
+      // previously persisted in RiskEvent.metadata, making it impossible
+      // to see, after the fact, exactly what quantity produced a given
+      // notional. Additive only — does not change any approve/reject
+      // decision below.
+      meta.quantity = command.quantity;
+      meta.riskLimit = env.RISK_MAX_POSITION_SIZE_USD;
 
       if (notional > env.RISK_MAX_POSITION_SIZE_USD) {
         return reject(`Notional (${notional.toFixed(2)}) exceeds global max position size (${env.RISK_MAX_POSITION_SIZE_USD})`);

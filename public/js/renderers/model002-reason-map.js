@@ -38,6 +38,16 @@
     insufficient_history: 'Waiting for enough candle history',
     position_already_open: 'Position already open — no new entry',
 
+    // PHASE 2 — layer/success safety (independent of the 3-consecutive-
+    // losses pause above). Emitted by the onMarketData eligibility gate
+    // once the bot has permanently stopped trading.
+    bot_max_layer_stopped: 'Bot stopped — maximum layer (6) reached',
+    bot_success_stopped: 'Bot stopped — successful trade already reached (max 1 per bot)',
+    // Same two stops, but as emitted on the BOT_SAFETY_STOP StrategyEvent
+    // itself (Model002.js onPositionClosed) rather than the WAIT decision.
+    max_layer_reached: 'Bot stopped — maximum layer (6) reached',
+    successful_trade_reached: 'Bot stopped — successful trade already reached (max 1 per bot)',
+
     // Opposite-side patterns (not yet specified) — always WAIT
     direct_entry_pending_client_confirmation: 'Opposite-side pattern — pending client confirmation, not traded',
 
@@ -60,7 +70,10 @@
     // Candle 2 (B) confirmed, awaiting Candle 3 (the one and only trigger candle)
     candle2_confirmed_awaiting_candle3: 'Candle 2 confirmed — boundaries fixed, awaiting Candle 3',
     // Candle 3 (C) invalidation outcomes
-    invalidated_candle3_wrong_or_no_boundary_touch: 'Pattern invalidated — Candle 3 did not trigger correctly',
+    // Retired code — the model no longer emits it (a candle that touches
+    // neither boundary now WAITs). Kept so historical Decision History rows
+    // that already carry it still render as text, not as a raw code.
+    invalidated_candle3_wrong_or_no_boundary_touch: 'Pattern invalidated — wrong boundary touched',
     invalidated_both_boundaries_tick_order: 'Pattern invalidated — live price reached the wrong boundary first',
     invalidated_both_boundaries_no_tick_evidence: 'Pattern invalidated — both boundaries touched, order could not be determined',
 
@@ -74,6 +87,11 @@
 
     // Candle 2 valid, awaiting boundary break
     candle2_confirmed_awaiting_boundary_break: 'Candle 2 confirmed — boundaries fixed, awaiting breakout',
+    // Boundary evaluation after Candle 2 (A/B/C engine). "No trigger" is
+    // not "invalid": the pattern stays active and the next candle is
+    // evaluated against the same fixed boundaries.
+    awaiting_boundary_touch: 'Waiting — the evaluation candle did not touch either boundary',
+    invalidated_wrong_boundary_touched: 'Pattern invalidated — wrong boundary touched',
     // DISPLAY WORDING ONLY. The backend trigger rule is unchanged — see
     // sameSidePatternEngine.evaluateBoundaryBreak / reversalPatternEngine
     // .evaluateCandle3; nothing about when a trade fires depends on this map.

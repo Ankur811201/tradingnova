@@ -94,7 +94,10 @@ test('CAP REMOVAL: BUY quantity equals the risk-based lot as-is, even when posit
   assert.equal(ctx.commands.length, 1, 'exactly one TradeCommand — not rejected by the old cap');
   const cmd = ctx.commands[0];
   assert.equal(cmd.action, 'LONG');
-  assert.equal(cmd.quantity, 10, 'quantity must equal the plain risk-based lot');
+  // PHASE 1 FIX: quantity is the plain risk-based lot (10) converted to
+  // BTC via the confirmed project rule 1 lot = 0.001 BTC, i.e. 0.01 BTC —
+  // still "as-is" in the sense that nothing further reduces it.
+  assert.equal(cmd.quantity, 0.01, 'quantity must equal the plain risk-based lot, converted to BTC (10 lots = 0.01 BTC)');
   assert.notEqual(cmd.quantity, 100 / 60065, 'quantity must NOT be capped to (old capital*leverage)/entryPrice');
 
   const positionValue = cmd.quantity * 60065;
@@ -118,7 +121,7 @@ test('CAP REMOVAL: SELL mirror — quantity NOT reduced when positionValue >> ol
   assert.equal(ctx.commands.length, 1);
   const cmd = ctx.commands[0];
   assert.equal(cmd.action, 'SHORT');
-  assert.equal(cmd.quantity, 10);
+  assert.equal(cmd.quantity, 0.01, '10 lots = 0.01 BTC (1 lot = 0.001 BTC)');
   assert.ok(cmd.quantity * 64940 > 50 * 2, 'sanity: positionValue exceeds old cap');
 });
 

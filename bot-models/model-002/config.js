@@ -26,6 +26,15 @@ const REQUIRED_TIMEFRAMES = [];
 
 const CONSECUTIVE_LOSS_LIMIT = 3; // confirmed requirement §11
 
+// PHASE 2 — layer/success safety (confirmed requirements). A separate,
+// independent mechanism from CONSECUTIVE_LOSS_LIMIT above: that rule
+// pauses the bot after N consecutive losses regardless of layer; this one
+// tracks a layer/loss-count/success state machine per bot. Both can be
+// active at once — see bot-models/model-002/layerSafety.js.
+const MAX_LAYERS = 6;
+const MAX_LOSSES_PER_LAYER = 2;
+const MAX_SUCCESSFUL_TRADES_PER_BOT = 1;
+
 /**
  * Default parameters, instance-configurable (user supplies trend/levels/
  * timeframe when creating the bot — see routes/controllers for how
@@ -74,5 +83,8 @@ module.exports = {
   DEFAULT_HISTORY_SIZE,
   REQUIRED_TIMEFRAMES,
   CONSECUTIVE_LOSS_LIMIT,
+  MAX_LAYERS,
+  MAX_LOSSES_PER_LAYER,
+  MAX_SUCCESSFUL_TRADES_PER_BOT,
   DEFAULT_PARAMETERS,
 };

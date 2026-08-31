@@ -75,10 +75,26 @@ window.ModelThinkingRegistry = {
         : '<span class="text-gray-500">—</span>';
 
       const patternStateSpan = (state) => {
+        // P4-M5: AWAITING_CANDLE3 is the NEW engine's own active waiting
+        // stage (backend name, unchanged) — it gets the same amber
+        // active-pattern styling as the OLD engine's waiting stages instead
+        // of falling through to the grey IDLE default.
+        const activeWaitStates = ['WAITING_FOR_BOUNDARY_BREAK', 'WAITING_FOR_CANDLE2', 'AWAITING_CANDLE3'];
         const color = state === 'TRADE_CONFIRMED' ? 'text-emerald-400'
-          : state === 'WAITING_FOR_BOUNDARY_BREAK' || state === 'WAITING_FOR_CANDLE2' ? 'text-amber-400'
+          : activeWaitStates.indexOf(state) !== -1 ? 'text-amber-400'
           : 'text-gray-400';
         return '<span class="' + color + '">' + (state || 'IDLE') + '</span>';
+      };
+
+      // P4-H2 — PHASE 2 layer/success safety, straight from
+      // checks.layerSafety (LayerSafety.getState(), read-only). A bot that
+      // has permanently stopped must never read ACTIVE here.
+      const layerSafetySpan = (status) => {
+        const label = status === 'SUCCESS_STOPPED' ? 'SUCCESS_STOPPED'
+          : status === 'MAX_LAYER_STOPPED' ? 'MAX_LAYER_STOPPED'
+          : 'ACTIVE';
+        const color = label === 'ACTIVE' ? 'text-emerald-400' : 'text-rose-400';
+        return '<span class="' + color + ' font-bold">' + label + '</span>';
       };
 
       // LEVEL STATE and PATTERN STATE are separate concepts and are shown
@@ -92,6 +108,18 @@ window.ModelThinkingRegistry = {
         row('Support', touchSpan(checks.support && checks.support.status, checks.support && checks.support.level)) +
         row('Resistance', touchSpan(checks.resistance && checks.resistance.status, checks.resistance && checks.resistance.level)) +
         row('Pattern State', patternStateSpan(checks.patternState));
+
+      // P4-H2 — layer/success safety rows. Every value is read verbatim
+      // from checks.layerSafety; nothing is computed, and the state machine
+      // (bot-models/model-002/layerSafety.js) is untouched.
+      if (checks.layerSafety) {
+        const ls = checks.layerSafety;
+        out +=
+          row('Safety Status', layerSafetySpan(ls.safetyStatus)) +
+          row('Layer', '<span class="text-gray-200 font-mono">' + (ls.currentLayer != null ? ls.currentLayer : '—') + '</span>') +
+          row('Losses in Layer', '<span class="text-gray-200 font-mono">' + (ls.layerLossCount != null ? ls.layerLossCount : '—') + '</span>') +
+          row('Successful Trades', '<span class="text-gray-200 font-mono">' + (ls.successfulTradeCount != null ? ls.successfulTradeCount : '—') + '</span>');
+      }
 
       // Direction of the ACTIVE pattern, exactly as the backend routed it
       // (checks.patternVisual.direction). A BULLISH bot whose Resistance is
@@ -128,7 +156,20 @@ window.ModelThinkingRegistry = {
 
       if (checks.candle1) out += row('Candle 1', candleSpan(checks.candle1, roleFor('CANDLE_1', 'C1')));
       if (checks.candle2) out += row('Candle 2', candleSpan(checks.candle2, roleFor('CANDLE_2', 'C2')));
-      if (checks.candle3) out += row('Candle 3 (latest)', candleSpan(checks.candle3, roleFor('CANDLE_3', 'C3')));
+      // P4-M3: the evaluation candle's row title follows the backend's own
+      // evaluationIndex (Candle 3, Candle 4, Candle 5, ...) instead of the
+      // hard-coded "Candle 3 (latest)". The index comes from
+      // checks.evaluationIndex (or the C3 label the backend built from it);
+      // nothing here counts candles itself.
+      if (checks.candle3) {
+        const c3Label = (checks.patternVisual && Array.isArray(checks.patternVisual.labels))
+          ? checks.patternVisual.labels.filter((l) => l.role === 'CANDLE_3')[0]
+          : null;
+        const evalIndex = (c3Label && Number.isFinite(c3Label.evaluationIndex))
+          ? c3Label.evaluationIndex
+          : (Number.isFinite(checks.evaluationIndex) ? checks.evaluationIndex : 3);
+        out += row('Candle ' + evalIndex, candleSpan(checks.candle3, roleFor('CANDLE_3', 'C' + evalIndex)));
+      }
 
       if (checks.points) {
         const p = checks.points;
@@ -142,9 +183,21 @@ window.ModelThinkingRegistry = {
       }
 
       if (checks.boundaries) {
+        // P4-M2: captions and colours come from the SAME shared helpers the
+        // chart overlay uses (Model002LevelState.getBoundaryLabels /
+        // getBoundaryRoles), driven by the backend's own pattern direction.
+        // Previously both rows were hard-coded green/red, which inverted
+        // the meaning on every SELL pattern.
+        const boundaryDirection = (checks.patternVisual && checks.patternVisual.direction) || null;
+        const ls = (typeof window !== 'undefined' && window.Model002LevelState) ? window.Model002LevelState : null;
+        const bLabels = ls ? ls.getBoundaryLabels(boundaryDirection) : { upper: 'UPPER', lower: 'LOWER' };
+        const bRoles = ls ? ls.getBoundaryRoles(boundaryDirection) : { upper: 'NEUTRAL', lower: 'NEUTRAL' };
+        const boundaryColor = (role) => role === 'TRIGGER' ? 'text-emerald-400'
+          : role === 'INVALIDATION' ? 'text-rose-400'
+          : 'text-gray-300';
         out +=
-          row('Upper Boundary (fixed)', '<span class="text-emerald-400">' + Number(checks.boundaries.upper).toFixed(2) + '</span>') +
-          row('Lower Boundary (fixed)', '<span class="text-rose-400">' + Number(checks.boundaries.lower).toFixed(2) + '</span>');
+          row(bLabels.upper + ' (fixed)', '<span class="' + boundaryColor(bRoles.upper) + '">' + Number(checks.boundaries.upper).toFixed(2) + '</span>') +
+          row(bLabels.lower + ' (fixed)', '<span class="' + boundaryColor(bRoles.lower) + '">' + Number(checks.boundaries.lower).toFixed(2) + '</span>');
       }
 
       return out;

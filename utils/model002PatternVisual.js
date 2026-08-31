@@ -49,6 +49,36 @@
 const BADGES = { CANDLE_1: '\u2460', CANDLE_2: '\u2461', CANDLE_3: '\u2462' }; // ① ② ③
 const CODES = { CANDLE_1: 'C1', CANDLE_2: 'C2', CANDLE_3: 'C3' };
 
+// Circled digits ③..⑳ for evaluation candles 3..20. Beyond that the code
+// (C21, C22, ...) is still exact and only the badge falls back to '#'.
+const CIRCLED_DIGITS = [
+  '\u2462', '\u2463', '\u2464', '\u2465', '\u2466', '\u2467', '\u2468', '\u2469', // ③④⑤⑥⑦⑧⑨⑩
+  '\u246A', '\u246B', '\u246C', '\u246D', '\u246E', '\u246F', '\u2470', '\u2471', // ⑪⑫⑬⑭⑮⑯⑰⑱
+  '\u2472', '\u2473',                                                             // ⑲⑳
+];
+
+/**
+ * P4-H1 — EVALUATION CANDLE IDENTITY.
+ *
+ * The evaluation candle keeps the CANDLE_3 role (that is the backend's own
+ * slot name and nothing renames it), but its user-visible code/badge follow
+ * the REAL evaluationIndex the pattern engine already tracks: the first
+ * candle after Candle 2 is C3, and if it does not trigger the pattern WAITs
+ * and the next candle is C4, then C5, and so on. The label therefore never
+ * calls a later candle "C3". `evaluationIndex` is produced by
+ * Model002/_advanceNewEngineCandidate and the hydration replay — it is
+ * never computed, incremented or guessed here.
+ *
+ * An absent/invalid index falls back to C3/③, which is correct for every
+ * first evaluation candle and for the OLD engine (which does not track an
+ * index).
+ */
+function evaluationCode(evaluationIndex) {
+  const n = Number(evaluationIndex);
+  if (!Number.isFinite(n) || n < 3) return { code: CODES.CANDLE_3, badge: BADGES.CANDLE_3 };
+  return { code: `C${n}`, badge: CIRCLED_DIGITS[n - 3] || '#' };
+}
+
 function buildLabel(role, candle, extra) {
   if (!candle || !Number.isFinite(candle.timestamp)) return null;
   return Object.assign({
@@ -77,6 +107,10 @@ function buildLabel(role, candle, extra) {
  *   @param {object} [options.candle3]   the C / boundary-evaluation candle
  *   @param {string} [options.trigger]   'BUY' | 'SELL' — ONLY when the
  *     backend actually triggered the trade on that candle. Never inferred.
+ *   @param {number} [options.evaluationIndex]  3, 4, 5, ... — which
+ *     evaluation candle `candle3` actually is, straight from the pattern
+ *     candidate. Controls the label's code/badge only (C3/③, C4/④, ...);
+ *     nothing here derives or increments it.
  */
 function buildPatternVisual(candidate, options) {
   if (!candidate || !candidate.candle1) return null;
@@ -89,7 +123,17 @@ function buildPatternVisual(candidate, options) {
   const c1 = buildLabel('CANDLE_1', candidate.candle1, { touch: !isNew });
   if (!c1) return null;
   const c2 = buildLabel('CANDLE_2', candidate.candle2, { touch: isNew });
-  const c3 = buildLabel('CANDLE_3', opts.candle3, { trigger });
+  // The evaluation candle's code/badge come from the backend's own
+  // evaluationIndex (C3, C4, C5, ...) — see evaluationCode above.
+  const evalLabel = evaluationCode(opts.evaluationIndex);
+  const c3 = buildLabel('CANDLE_3', opts.candle3, {
+    trigger,
+    code: evalLabel.code,
+    badge: evalLabel.badge,
+    evaluationIndex: Number.isFinite(Number(opts.evaluationIndex)) && Number(opts.evaluationIndex) >= 3
+      ? Number(opts.evaluationIndex)
+      : (opts.candle3 ? 3 : null),
+  });
 
   return {
     patternId: `M002:${opts.instanceId}:${candidate.engine}:${direction}:${candidate.candle1.timestamp}`,

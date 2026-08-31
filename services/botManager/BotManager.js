@@ -357,6 +357,7 @@ class BotManager {
       await this._hydrateInstance(dbInstance, modelInstance);
       await this._recoverLevelCounts(dbInstance, modelInstance);
       await this._recoverSafetyState(dbInstance, modelInstance);
+      await this._recoverLayerSafetyState(dbInstance, modelInstance);
     } catch (err) {
       await logger.error('BOT', `History hydration failed for ${instanceId}: ${err.message}`);
       this._setReadiness(instanceId, 'ERROR', { have: 0, required: 0, error: err.message });
@@ -664,6 +665,55 @@ class BotManager {
     const paused = limit !== null ? consecutiveLosses >= limit : false;
 
     modelInstance.restoreSafetyState({ consecutiveLosses, paused, processedTradeIds });
+  }
+
+  /**
+   * PHASE 2 — generic (model-agnostic) restart-recovery for the layer/
+   * success safety tracker (see bot-models/model-002/layerSafety.js).
+   * A no-op for any model that doesn't define restoreLayerSafetyState —
+   * same convention as _recoverLevelCounts/_recoverSafetyState above.
+   *
+   * Unlike _recoverSafetyState's trailing-streak count (which only ever
+   * needs the last 50 trades), the layer/loss-count state machine is
+   * path-dependent on the ENTIRE trade sequence since the bot's first
+   * trade — a layer transition on trade #4 depends on trades #1-3 too.
+   * So this loads every Trade for this instanceId+environment, oldest
+   * first, and replays them through a real LayerSafety instance (the
+   * exact same class/logic Model002 uses live) — not a second,
+   * hand-rolled copy of the transition rules. That guarantees the
+   * recovered state can never drift from what live processing would have
+   * produced for the identical trade sequence.
+   *
+   * No unbounded-growth risk: MAX_SUCCESSFUL_TRADES_PER_BOT=1 means a bot
+   * permanently stops trading after its first win, and
+   * MAX_LAYERS*MAX_LOSSES_PER_LAYER=12 bounds the loss-only case — so a
+   * MODEL_002 bot's real trade history for this instance/environment is
+   * always small (at most ~13 trades, ever) once this safety system is in
+   * effect. No `.limit()` is applied — a real cap would be the wrong fix
+   * for the wrong problem (it would silently break replay determinism if
+   * a bot ever accumulated more history than the cap), and the trade
+   * count is bounded by the state machine itself, not by this query.
+   */
+  async _recoverLayerSafetyState(dbInstance, modelInstance) {
+    if (typeof modelInstance.restoreLayerSafetyState !== 'function') return;
+
+    const Trade = require('../../models/Trade');
+    const { LayerSafety } = require('../../bot-models/model-002/layerSafety');
+
+    const trades = await Trade.find({ instanceId: dbInstance.instanceId, environment: dbInstance.environment })
+      .sort({ closedAt: 1 })
+      .select('realizedPnl closedAt')
+      .lean();
+
+    const replay = new LayerSafety();
+    for (const trade of trades) {
+      replay.recordTradeOutcome(trade._id, trade.realizedPnl);
+    }
+
+    const state = replay.getState();
+    state.processedTradeIds = trades.map((t) => String(t._id));
+
+    modelInstance.restoreLayerSafetyState(state);
   }
 
   _setReadiness(instanceId, state, extra = {}) {

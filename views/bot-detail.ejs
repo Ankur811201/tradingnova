@@ -438,17 +438,44 @@
       <% var safetyLosses = (safetyPayload && safetyPayload.consecutiveLosses != null) ? safetyPayload.consecutiveLosses : 0; %>
       <% var safetyLimit = (safetyPayload && safetyPayload.safetyLimit != null) ? safetyPayload.safetyLimit : 3; %>
       <% var safetyStatus = (safetyPayload && safetyPayload.safetyStatus) ? safetyPayload.safetyStatus : 'NORMAL'; %>
+      <%
+        /* P4-H2 — PHASE 2 layer/success safety. Read-only from the same
+           decision payload (layerSafety = LayerSafety.getState()). A bot
+           that has permanently stopped (SUCCESS_STOPPED / MAX_LAYER_STOPPED)
+           must never render as ACTIVE. The state machine is untouched. */
+        var layerSafety = (safetyPayload && safetyPayload.layerSafety) ? safetyPayload.layerSafety : null;
+        var layerStatus = (layerSafety && layerSafety.safetyStatus) ? layerSafety.safetyStatus : 'NORMAL';
+        var layerStopped = layerStatus === 'SUCCESS_STOPPED' || layerStatus === 'MAX_LAYER_STOPPED';
+        var badgeText = layerStopped ? layerStatus : (safetyStatus === 'PAUSED' ? 'PAUSED' : 'ACTIVE');
+        var badgeClass = (layerStopped || safetyStatus === 'PAUSED')
+          ? 'bg-rose-950 text-rose-400 border border-rose-800'
+          : safetyStatus === 'WARNING'
+            ? 'bg-amber-950 text-amber-400 border border-amber-800'
+            : 'bg-emerald-950 text-emerald-400 border border-emerald-800';
+      %>
       <div class="mt-4 pt-4 border-t border-white/5 flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span class="text-[10px] text-gray-500 uppercase tracking-wide">Safety</span>
-          <span id="safety-status-badge" class="text-[11px] font-semibold px-2 py-0.5 rounded-full <%= safetyStatus === 'PAUSED' ? 'bg-rose-950 text-rose-400 border border-rose-800' : safetyStatus === 'WARNING' ? 'bg-amber-950 text-amber-400 border border-amber-800' : 'bg-emerald-950 text-emerald-400 border border-emerald-800' %>">
-            <%= safetyStatus === 'PAUSED' ? 'PAUSED' : 'ACTIVE' %>
+          <span id="safety-status-badge" class="text-[11px] font-semibold px-2 py-0.5 rounded-full <%= badgeClass %>">
+            <%= badgeText %>
           </span>
         </div>
         <div class="text-xs font-mono text-gray-300">
           Consecutive Losses <span id="safety-losses-value" class="font-bold"><%= safetyLosses %></span>/<span id="safety-limit-value"><%= safetyLimit %></span>
         </div>
       </div>
+      <div class="mt-2 flex items-center justify-between text-[11px] font-mono text-gray-400">
+        <span>Layer <span id="layer-safety-layer" class="text-gray-200 font-bold"><%= layerSafety && layerSafety.currentLayer != null ? layerSafety.currentLayer : 1 %></span>/6</span>
+        <span>Losses in layer <span id="layer-safety-losses" class="text-gray-200 font-bold"><%= layerSafety && layerSafety.layerLossCount != null ? layerSafety.layerLossCount : 0 %></span>/2</span>
+        <span>Wins <span id="layer-safety-wins" class="text-gray-200 font-bold"><%= layerSafety && layerSafety.successfulTradeCount != null ? layerSafety.successfulTradeCount : 0 %></span>/1</span>
+      </div>
+      <% if (layerStopped) { %>
+      <div id="layer-safety-stop-banner" class="mt-2 text-[11px] text-rose-400">
+        <%= layerStatus === 'SUCCESS_STOPPED'
+          ? 'BOT STOPPED — a successful trade has already been recorded (maximum 1 per bot). No further trades will be taken.'
+          : 'BOT STOPPED — maximum layer (6) reached. No further trades will be taken.' %>
+      </div>
+      <% } %>
       <% if (safetyStatus === 'PAUSED') { %>
       <div class="mt-2 text-[11px] text-rose-400">SAFETY PAUSED — Reason: 3 consecutive losses. New trades are blocked until an operator resumes the bot.</div>
       <% } %>

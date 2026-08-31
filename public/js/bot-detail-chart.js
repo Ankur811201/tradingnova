@@ -220,7 +220,13 @@
         var labels = window.Model002LevelState
           ? window.Model002LevelState.getBoundaryLabels(direction)
           : { upper: 'UPPER', lower: 'LOWER' };
-        var upperIsTrigger = direction !== 'SELL';
+        // P4-M2: trigger/invalidation sides come from the shared helper the
+        // Decision Engine panel also uses, so chart and panel can never
+        // disagree. Same mapping as before (BUY -> upper triggers).
+        var roles = window.Model002LevelState
+          ? window.Model002LevelState.getBoundaryRoles(direction)
+          : { upper: direction === 'SELL' ? 'INVALIDATION' : 'TRIGGER', lower: direction === 'SELL' ? 'TRIGGER' : 'INVALIDATION' };
+        var upperIsTrigger = roles.upper === 'TRIGGER';
         if (upper != null) om.setPriceLine('patternUpperBoundary', upper, upperIsTrigger ? '#22c55e' : '#f43f5e', labels.upper, 2);
         if (lower != null) om.setPriceLine('patternLowerBoundary', lower, upperIsTrigger ? '#f43f5e' : '#22c55e', labels.lower, 2);
       },
@@ -231,41 +237,56 @@
         om.removePriceLine('patternLowerBoundary');
       },
 
-      // FEATURE 1 — PREVIOUS CANDLE BODY REFERENCE LINE (visual only).
+      // FEATURE 1 — C1 BODY REFERENCE LINE (visual only), C1->C2 BOUNDED.
       //
-      // A single horizontal helper line at candle A's BODY high (bullish +
-      // Support) or BODY low (bearish + Resistance), so the user can see at
-      // a glance whether the touch candle B's body crossed it. The price is
-      // computed by the backend from the real A/B pattern
-      // (Model002._bodyReferenceFor) — never derived here from candle
-      // colours or frontend OHLC.
+      // A horizontal helper SEGMENT at candle A's (Candle 1's) BODY high
+      // (bullish + Support) or BODY low (bearish + Resistance), spanning
+      // only from Candle 1's timestamp through Candle 2's, so the user can
+      // see at a glance whether the touch candle B's body crossed it. The
+      // price AND both timestamps are computed by the backend from the
+      // real A/B pattern (Model002._bodyReferenceFor,
+      // fromTimestamp/toTimestamp) and only normalized (never derived from
+      // OHLC) by Model002LevelState.normalizeBodyReference — this function
+      // does not inspect candle colours or values itself.
       //
-      // Uses the SAME OverlayManager.setPriceLine key mechanism as every
-      // other line on this chart: one fixed key ('patternBodyReference')
-      // means re-syncing overwrites rather than duplicates, so a new A/B
-      // pattern can never leave the previous pattern's line behind and two
-      // lines can never coexist. No new chart, series, socket or candle
-      // stream is created.
+      // Uses OverlayManager.setLineSegment, the same bounded-segment
+      // primitive with its own fixed key ('patternBodyReference'): one key
+      // means re-syncing replaces rather than duplicates, so a new A/B
+      // pattern can never leave the previous pattern's segment behind and
+      // two segments can never coexist. No new chart, socket or candle
+      // stream is created — this reuses the existing candle time mapping
+      // (patternCandleTime, the same ms->seconds conversion the C1/C2/C3
+      // role markers already use) and the existing chart/overlay cleanup
+      // mechanism.
       setBodyReference: function (reference) {
         var om = chartManager.overlayManager;
-        if (!om || typeof om.setPriceLine !== 'function') return;
+        if (!om || typeof om.setLineSegment !== 'function') return;
         if (!reference || reference.price == null) {
           this.clearBodyReference();
           return;
         }
+        var fromTime = patternCandleTime({ timestamp: reference.fromTimestamp != null ? reference.fromTimestamp : reference.candleTimestamp });
+        // Candle 2's timestamp is not known yet while an OLD-engine pattern
+        // is still searching for it — extend the segment to the latest
+        // loaded candle so the line visibly reaches "now" until the real
+        // C2 endpoint arrives on a later decision and replaces it. Never a
+        // fabricated price, only a provisional right-hand time bound.
+        var toTime = reference.toTimestamp != null ? patternCandleTime({ timestamp: reference.toTimestamp }) : lastHistoricalTime;
+        if (fromTime == null) return;
         var isBodyHigh = reference.side !== 'BODY_LOW';
-        om.setPriceLine(
+        om.setLineSegment(
           'patternBodyReference',
+          fromTime,
+          toTime,
           reference.price,
           isBodyHigh ? '#a78bfa' : '#f0abfc',
-          isBodyHigh ? 'A BODY HIGH' : 'A BODY LOW',
-          1
+          isBodyHigh ? 'C1 BODY HIGH' : 'C1 BODY LOW'
         );
       },
       clearBodyReference: function () {
         var om = chartManager.overlayManager;
-        if (!om || typeof om.removePriceLine !== 'function') return;
-        om.removePriceLine('patternBodyReference');
+        if (!om || typeof om.removeLineSegment !== 'function') return;
+        om.removeLineSegment('patternBodyReference');
       },
     };
 
@@ -307,7 +328,7 @@
      * (① C1, ② C2 • TOUCH, ③ BUY) on a small circle — the
      * closest clean positioning this chart library supports.
      */
-    function buildPatternRoleMarkers(checks) {
+    function buildPatternRoleMarkers(checks, rejected) {
       var visual = checks && checks.patternVisual;
       if (!visual || !Array.isArray(visual.labels) || !visual.labels.length) return [];
 
@@ -325,11 +346,22 @@
         // TOUCH/trigger flags. Nothing is decided here.
         var text = (label.badge ? label.badge + ' ' : '') + (label.trigger || label.code);
         if (label.touch) text += ' \u2022 TOUCH';
+        var color = colors[label.role] || '#94a3b8';
+        // P4-M4 — RISK REJECTED (visual only). The pattern really did
+        // trigger, so the trigger label stays; it is restyled amber and
+        // annotated so it can never be mistaken for an executed trade. No
+        // execution marker is created here, no Trade exists, and no
+        // strategy/risk/safety state is touched — the flag comes from the
+        // existing risk:rejected event (see bot-detail-ws.js).
+        if (rejected && label.role === 'CANDLE_3' && label.trigger) {
+          text += ' \u2715 REJECTED';
+          color = '#f59e0b';
+        }
         return {
           id: 'model002-pattern:' + visual.patternId + ':' + label.role,
           time: time,
           position: position,
-          color: colors[label.role] || '#94a3b8',
+          color: color,
           shape: 'circle',
           text: text,
         };
@@ -337,6 +369,11 @@
     }
 
     window.NovaChartPatternMarkers = {
+      // The pattern group currently drawn, kept so a later risk:rejected
+      // event can restyle it without re-deriving anything. Cleared with the
+      // markers themselves.
+      _currentChecks: null,
+      _rejected: false,
       /**
        * Renders the labels of the pattern group in `checks`, or removes
        * every pattern label when there is no group (IDLE, or the pattern
@@ -347,14 +384,44 @@
        */
       setFromChecks: function (checks) {
         if (!chartManager || typeof chartManager.setPatternMarkers !== 'function') return;
-        var markers = buildPatternRoleMarkers(checks);
+        var visual = checks && checks.patternVisual;
+        var previous = this._currentChecks && this._currentChecks.patternVisual;
+        // A rejection belongs to ONE pattern attempt: the moment a
+        // different pattern group is drawn, the REJECTED annotation goes
+        // with the old one.
+        if (!visual || !previous || visual.patternId !== previous.patternId) {
+          this._rejected = false;
+        }
+        this._currentChecks = checks || null;
+        var markers = buildPatternRoleMarkers(checks, this._rejected);
         if (!markers.length) {
           this.clear();
           return;
         }
         chartManager.setPatternMarkers(markers);
       },
+      /**
+       * P4-M4 — the RiskEngine rejected the TradeCommand this pattern
+       * produced. Visual only: it re-draws the SAME group with the trigger
+       * label annotated "✕ REJECTED" in amber. It does nothing at all
+       * unless a triggered group is currently on the chart, so a rejection
+       * belonging to another pattern (or arriving with nothing drawn) can
+       * never invent a marker. Instance isolation is handled by the caller
+       * (bot-detail-ws.js filters on instanceId), and the group's own
+       * patternId already embeds the instanceId.
+       */
+      markRejected: function () {
+        if (!chartManager || typeof chartManager.setPatternMarkers !== 'function') return;
+        var visual = this._currentChecks && this._currentChecks.patternVisual;
+        if (!visual || visual.status !== 'TRIGGERED') return;
+        this._rejected = true;
+        var markers = buildPatternRoleMarkers(this._currentChecks, true);
+        if (!markers.length) return;
+        chartManager.setPatternMarkers(markers);
+      },
       clear: function () {
+        this._currentChecks = null;
+        this._rejected = false;
         if (!chartManager || typeof chartManager.clearPatternMarkers !== 'function') return;
         chartManager.clearPatternMarkers();
       },
@@ -534,6 +601,23 @@
             ? window.Model002LevelState.normalizeBodyReference(initialChecks)
             : null;
           if (initialBodyRef) window.NovaChartPatternOverlay.setBodyReference(initialBodyRef);
+          // P4-M1 — RELOAD BOUNDARIES. The same server-rendered decision
+          // already carries the fixed Candle-2 boundaries the backend
+          // computed; without this, a reload restored the C1/C2/evaluation
+          // markers and the body-reference line but left the Upper/Lower
+          // lines missing until the next live decision arrived. Guarded by
+          // the pattern group exactly like the live path in
+          // bot-detail-ws.js, so an invalidated/absent pattern draws
+          // nothing. No boundary is ever recomputed here — these are the
+          // backend's own numbers.
+          var initialGroup = initialChecks && initialChecks.patternVisual;
+          var initialBoundaries = initialChecks && initialChecks.boundaries;
+          if (initialGroup && initialBoundaries &&
+              initialBoundaries.upper != null && initialBoundaries.lower != null) {
+            window.NovaChartPatternOverlay.setBoundaries(
+              initialBoundaries.upper, initialBoundaries.lower, initialGroup.direction
+            );
+          }
           window.NovaPendingPatternChecks = null;
         }
       }

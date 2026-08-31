@@ -178,6 +178,28 @@ function evaluateBoundaryBreak(candle, boundaries, direction) {
 
 // --- Risk length -> lot mapping ------------------------------------------
 
+/**
+ * Confirmed project rule: 1 lot = 0.001 BTC. computeLotFromRiskLength below
+ * returns a lot COUNT (an integer 4-10, or null) — it is NOT a tradable
+ * quantity by itself. Every caller must convert lot count -> BTC quantity
+ * via computeQuantityFromLot before it reaches a TradeCommand, RiskEngine,
+ * or PaperEngine (all of which treat `quantity` as base-asset units, i.e.
+ * notional = referencePrice * quantity — see RiskEngine.js and
+ * PaperEngine.js's documented P&L formulas).
+ */
+const LOT_SIZE_BTC = 0.001;
+
+/**
+ * Converts a lot COUNT (from computeLotFromRiskLength) into a BTC quantity.
+ * Returns null unchanged (never fabricates a quantity for an invalid lot).
+ * Rounded to kill floating-point dust (e.g. 9 * 0.001 !== 0.009 in IEEE754)
+ * while keeping the exact 3-decimal-place value the lot table implies.
+ */
+function computeQuantityFromLot(lot) {
+  if (lot === null || lot === undefined || !Number.isFinite(lot)) return null;
+  return Number((lot * LOT_SIZE_BTC).toFixed(8));
+}
+
 /** BUY: riskLength = Entry - StopLoss. */
 function computeBuyRiskLength(entryPrice, stopLoss) {
   return entryPrice - stopLoss;
@@ -226,4 +248,6 @@ module.exports = {
   computeBuyRiskLength,
   computeSellRiskLength,
   computeLotFromRiskLength,
+  LOT_SIZE_BTC,
+  computeQuantityFromLot,
 };

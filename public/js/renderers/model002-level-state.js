@@ -74,7 +74,16 @@
     return out;
   }
 
-  /** The backend's visual-only A-body reference for the active pattern, or null. */
+  /**
+   * The backend's visual-only A-body reference for the active pattern, or
+   * null. `fromTimestamp`/`toTimestamp` (Candle 1's and Candle 2's own
+   * timestamps, as the backend already computed them in
+   * Model002._bodyReferenceFor) are passed through unchanged so the chart
+   * can render a segment bounded to C1->C2 instead of a full-width line.
+   * `toTimestamp` is legitimately null while an OLD-engine pattern is
+   * still searching for Candle 2 — that is not invented here, only
+   * forwarded.
+   */
   function normalizeBodyReference(checks) {
     var ref = checks && checks.bodyReference;
     if (!ref || typeof ref !== 'object') return null;
@@ -85,6 +94,8 @@
       side: ref.side === 'BODY_LOW' ? 'BODY_LOW' : 'BODY_HIGH',
       direction: ref.direction === 'SELL' ? 'SELL' : 'BUY',
       candleTimestamp: typeof ref.candleTimestamp === 'number' ? ref.candleTimestamp : null,
+      fromTimestamp: typeof ref.fromTimestamp === 'number' ? ref.fromTimestamp : null,
+      toTimestamp: typeof ref.toTimestamp === 'number' ? ref.toTimestamp : null,
     };
   }
 
@@ -115,8 +126,29 @@
     return { upper: 'UPPER', lower: 'LOWER' };
   }
 
+  /**
+   * P4-M2 — which boundary TRIGGERS and which INVALIDATES, for the given
+   * pattern direction. Companion to getBoundaryLabels above so the chart
+   * overlay and the Decision Engine panel colour the two boundaries from
+   * ONE definition instead of each hard-coding its own. Direction comes
+   * from the backend group (checks.patternVisual.direction) — never from
+   * the trend, never from OHLC.
+   *
+   *   BUY  -> upper triggers, lower invalidates
+   *   SELL -> lower triggers, upper invalidates
+   *
+   * An unknown/absent direction reports neither side as the trigger, which
+   * renders neutrally rather than guessing.
+   */
+  function getBoundaryRoles(direction) {
+    if (direction === 'BUY') return { upper: 'TRIGGER', lower: 'INVALIDATION' };
+    if (direction === 'SELL') return { upper: 'INVALIDATION', lower: 'TRIGGER' };
+    return { upper: 'NEUTRAL', lower: 'NEUTRAL' };
+  }
+
   return {
     getBoundaryLabels: getBoundaryLabels,
+    getBoundaryRoles: getBoundaryRoles,
     readPersisted: readPersisted,
     applyPersistedFloor: applyPersistedFloor,
     normalizeBodyReference: normalizeBodyReference,

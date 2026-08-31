@@ -190,37 +190,83 @@ test('18. a new A/B pattern reports the new A body high, replacing the old value
   assert.notEqual(first, second);
 });
 
-test('19. no duplicate helper lines: the overlay uses one fixed price-line key', () => {
+test('19. the body-reference line is a C1->C2 bounded segment (not a full-width price line), deduped to one series', () => {
   const overlaySrc = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'overlay-manager.js'), 'utf8');
   const sandbox = { window: {} };
   vm.createContext(sandbox);
   vm.runInContext(overlaySrc, sandbox, { filename: 'overlay-manager.js' });
 
-  const created = [];
-  const removed = [];
-  const series = {
-    createPriceLine(opts) { const line = { opts }; created.push(opts); return line; },
-    removePriceLine(line) { removed.push(line.opts.title); },
+  const createdSeries = [];
+  const removedSeries = [];
+  const chart = {
+    addLineSeries(opts) {
+      const s = { opts, data: null, setData(d) { s.data = d; } };
+      createdSeries.push(s);
+      return s;
+    },
+    removeSeries(s) { removedSeries.push(s); },
   };
-  const chart = { addLineSeries: () => ({ setData() {}, update() {} }) };
-  const om = new sandbox.window.OverlayManager(chart, series);
+  // The full-width price-line series (SL/TP/boundaries/etc.) is untouched
+  // by this feature — passed in but never used by setLineSegment.
+  const priceLineSeries = { createPriceLine() { return {}; }, removePriceLine() {} };
+  const om = new sandbox.window.OverlayManager(chart, priceLineSeries);
+  // The constructor itself creates the (unrelated, pre-existing) EMA line
+  // series above — baseline that count before exercising the new segment
+  // helper so this test only asserts on series THIS feature creates.
+  const baseline = createdSeries.length;
+  const segmentSeries = () => createdSeries.slice(baseline);
 
-  om.setPriceLine('patternBodyReference', 60040, '#a78bfa', 'A BODY HIGH', 1);
-  om.setPriceLine('patternBodyReference', 60140, '#a78bfa', 'A BODY HIGH', 1);
-  assert.equal(Object.keys(om.priceLines).filter((k) => k === 'patternBodyReference').length, 1);
-  assert.equal(created.length, 2);
-  assert.equal(removed.length, 1, 'the previous line is removed before the new one is drawn');
-  assert.equal(om.priceLines.patternBodyReference.opts.price, 60140);
+  om.setLineSegment('patternBodyReference', 1000, 1180, 60040, '#a78bfa', 'C1 BODY HIGH');
+  assert.equal(segmentSeries().length, 1);
+  // 1. Segment starts at C1 timestamp. 2. Segment ends at C2 timestamp.
+  // (compared field-by-field, not via deepEqual, because the data array is
+  // constructed inside the VM sandbox realm — a different Array/Object
+  // constructor than this test file's, which trips deepStrictEqual's
+  // prototype check even though the values are identical)
+  let data = segmentSeries()[0].data;
+  assert.equal(data.length, 2);
+  assert.equal(data[0].time, 1000); assert.equal(data[0].value, 60040);
+  assert.equal(data[1].time, 1180); assert.equal(data[1].value, 60040);
+  assert.equal(removedSeries.length, 0);
 
-  om.removePriceLine('patternBodyReference');
-  assert.equal(om.priceLines.patternBodyReference, undefined);
+  // Re-syncing to a NEW pattern replaces, never duplicates.
+  om.setLineSegment('patternBodyReference', 2000, 2180, 60140, '#a78bfa', 'C1 BODY HIGH');
+  assert.equal(segmentSeries().length, 2, 'a fresh series is drawn for the new pattern');
+  assert.equal(removedSeries.length, 1, 'the previous segment series is removed before the new one is drawn');
+  data = segmentSeries()[1].data;
+  assert.equal(data[0].time, 2000); assert.equal(data[0].value, 60140);
+  assert.equal(data[1].time, 2180); assert.equal(data[1].value, 60140);
+  assert.equal(Object.keys(om.lineSegments).filter((k) => k === 'patternBodyReference').length, 1);
+
+  // INVALID -> removed entirely, no series left behind.
+  om.removeLineSegment('patternBodyReference');
+  assert.equal(removedSeries.length, 2);
+  assert.equal(om.lineSegments.patternBodyReference, undefined);
+
+  // setPriceLine (SL/TP/boundaries) is a completely separate mechanism,
+  // never invoked by the segment helpers above.
+  assert.equal(segmentSeries().every((s) => s.opts.lineStyle === 1), true, 'segment series stays visually distinct (dotted)');
+});
+
+test('19b. an unresolved Candle 2 (toTimestamp unknown) still renders a valid, orderable segment', () => {
+  const overlaySrc = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'overlay-manager.js'), 'utf8');
+  const sandbox = { window: {} };
+  vm.createContext(sandbox);
+  vm.runInContext(overlaySrc, sandbox, { filename: 'overlay-manager.js' });
+  const chart = { addLineSeries: (opts) => ({ opts, setData(d) { this.data = d; } }), removeSeries() {} };
+  const om = new sandbox.window.OverlayManager(chart, { createPriceLine() { return {}; }, removePriceLine() {} });
+
+  om.setLineSegment('patternBodyReference', 1000, null, 60040, '#a78bfa', 'C1 BODY HIGH');
+  const data = om.lineSegments.patternBodyReference.data;
+  assert.equal(data[0].time, 1000);
+  assert.ok(data[1].time > data[0].time, 'the stub endpoint is still strictly after C1, never invented backwards or equal');
 });
 
 // =========================================================================
-// 20-21. Existing chart elements untouched
+// 20-21. Existing chart elements untouched; new segment wiring correct
 // =========================================================================
 
-test('20-21. the helper line reuses the existing chart/overlay/marker infrastructure only', () => {
+test('20-21. the helper line reuses the existing chart/overlay/marker infrastructure only, now C1->C2 bounded', () => {
   const chartSrc = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'bot-detail-chart.js'), 'utf8');
 
   // Existing Support/Resistance configuration lines: unchanged keys.
@@ -229,9 +275,19 @@ test('20-21. the helper line reuses the existing chart/overlay/marker infrastruc
   // Existing Candle 1/2/3 markers: unchanged.
   assert.match(chartSrc, /'model002-pattern:' \+ visual\.patternId \+ ':' \+ label\.role/);
   assert.match(chartSrc, /setPatternMarkers/);
-  // New line: one dedicated key on the SAME OverlayManager.
-  assert.equal((chartSrc.match(/setPriceLine\(\s*'patternBodyReference'/g) || []).length, 1, 'exactly one draw call site');
-  assert.equal((chartSrc.match(/removePriceLine\('patternBodyReference'\)/g) || []).length, 1, 'exactly one remove call site');
+  // The full-width price-line mechanism (SL/TP/boundaries) keeps its own,
+  // separate call sites — untouched by this change.
+  assert.doesNotMatch(chartSrc, /setPriceLine\(\s*'patternBodyReference'/, 'no longer a full-width price line');
+  assert.doesNotMatch(chartSrc, /removePriceLine\('patternBodyReference'\)/);
+  // New: one dedicated bounded-segment key on the SAME OverlayManager.
+  assert.equal((chartSrc.match(/setLineSegment\(\s*\n?\s*'patternBodyReference'/g) || []).length, 1, 'exactly one draw call site');
+  assert.equal((chartSrc.match(/removeLineSegment\('patternBodyReference'\)/g) || []).length, 1, 'exactly one remove call site');
+  // Segment endpoints reuse the existing candle time-mapping helper and the
+  // existing reference.fromTimestamp/toTimestamp fields the backend
+  // computed — never re-derived from OHLC.
+  assert.match(chartSrc, /patternCandleTime\(\{ ?timestamp: reference\.fromTimestamp/);
+  assert.match(chartSrc, /reference\.toTimestamp/);
+  assert.doesNotMatch(chartSrc, /reference\.(high|low|open|close)\b/, 'the browser never inspects OHLC to place the segment');
 
   // No second chart, socket, poller or candle stream was introduced.
   assert.equal((chartSrc.match(/new window\.ChartManager\(/g) || []).length, 1);
@@ -277,7 +333,7 @@ function loadClient({ initialDecision = null, levelTouch = null } = {}) {
       NovaBotSocket: socket,
       NovaChartPatternOverlay: {
         setBoundaries() {}, clearBoundaries() {},
-        setBodyReference(ref) { overlayCalls.push(['set', ref.price, ref.side]); },
+        setBodyReference(ref) { overlayCalls.push(['set', ref.price, ref.side, ref.fromTimestamp, ref.toTimestamp]); },
         clearBodyReference() { overlayCalls.push(['clear']); },
       },
       NovaChartPatternMarkers: { setFromChecks() {}, clear() {} },
@@ -299,19 +355,96 @@ function decisionPayload(checks) {
   return { instanceId: 'inst_1', decision: 'WAIT', reason: 'no_level_touch', checks };
 }
 
-test('client: an active pattern draws the line; the next pattern-less decision removes it', () => {
+test('client: an active pattern draws the C1->C2 bounded segment; the next pattern-less decision removes it', () => {
   const { socket, overlayCalls } = loadClient();
 
   socket.__fire('bot:decision', decisionPayload({
     trend: { status: 'BULLISH' }, support: { status: 'TOUCHED', level: 60000 }, resistance: { status: 'NOT_TOUCHED', level: null },
-    patternState: 'AWAITING_CANDLE3', bodyReference: { side: 'BODY_HIGH', price: 60040, direction: 'BUY', candleTimestamp: BASE },
+    patternState: 'AWAITING_CANDLE3',
+    bodyReference: { side: 'BODY_HIGH', price: 60040, direction: 'BUY', candleTimestamp: BASE, fromTimestamp: BASE, toTimestamp: BASE + MIN },
   }));
   socket.__fire('bot:decision', decisionPayload({
     trend: { status: 'BULLISH' }, support: { status: 'TOUCHED', level: 60000 }, resistance: { status: 'NOT_TOUCHED', level: null },
     patternState: 'IDLE', bodyReference: null,
   }));
 
-  assert.deepEqual(overlayCalls, [['set', 60040, 'BODY_HIGH'], ['clear']]);
+  // 1/2: the normalized reference carries C1's and C2's own timestamps
+  // straight through to the overlay call, unmodified. 6: INVALID/no-pattern clears it.
+  assert.deepEqual(overlayCalls, [['set', 60040, 'BODY_HIGH', BASE, BASE + MIN], ['clear']]);
+});
+
+test('client: SELL pattern draws BODY_LOW with its own C1->C2 span', () => {
+  const { socket, overlayCalls } = loadClient();
+  socket.__fire('bot:decision', decisionPayload({
+    trend: { status: 'BEARISH' }, support: { status: 'NOT_TOUCHED', level: null }, resistance: { status: 'TOUCHED', level: 65000 },
+    patternState: 'AWAITING_CANDLE3',
+    bodyReference: { side: 'BODY_LOW', price: 64960, direction: 'SELL', candleTimestamp: BASE, fromTimestamp: BASE, toTimestamp: BASE + MIN },
+  }));
+  // 4: SELL uses C1 body-low.
+  assert.deepEqual(overlayCalls, [['set', 64960, 'BODY_LOW', BASE, BASE + MIN]]);
+});
+
+test('client: 5. WAIT (C3/C4/...) re-syncs with the identical price and timestamps', () => {
+  const { socket, overlayCalls } = loadClient();
+  const ref = { side: 'BODY_HIGH', price: 60040, direction: 'BUY', candleTimestamp: BASE, fromTimestamp: BASE, toTimestamp: BASE + MIN };
+  socket.__fire('bot:decision', decisionPayload({
+    trend: { status: 'BULLISH' }, support: { status: 'TOUCHED', level: 60000 }, resistance: { status: 'NOT_TOUCHED', level: null },
+    patternState: 'AWAITING_CANDLE3', bodyReference: ref,
+  }));
+  // A later WAIT decision (C4) for the SAME still-active pattern reports the
+  // exact same candidate, so the exact same reference is re-sent — the
+  // backend never recomputes it while waiting (see Model002.js
+  // _advanceNewEngineCandidate) and the frontend never alters it either.
+  socket.__fire('bot:decision', decisionPayload({
+    trend: { status: 'BULLISH' }, support: { status: 'TOUCHED', level: 60000 }, resistance: { status: 'NOT_TOUCHED', level: null },
+    patternState: 'AWAITING_CANDLE3', bodyReference: ref,
+  }));
+
+  assert.deepEqual(overlayCalls, [
+    ['set', 60040, 'BODY_HIGH', BASE, BASE + MIN],
+    ['set', 60040, 'BODY_HIGH', BASE, BASE + MIN],
+  ]);
+});
+
+test('client: 7. a new pattern replaces the previous segment with its own price and span', () => {
+  const { socket, overlayCalls } = loadClient();
+  socket.__fire('bot:decision', decisionPayload({
+    trend: { status: 'BULLISH' }, support: { status: 'TOUCHED', level: 60000 }, resistance: { status: 'NOT_TOUCHED', level: null },
+    patternState: 'AWAITING_CANDLE3',
+    bodyReference: { side: 'BODY_HIGH', price: 60040, direction: 'BUY', candleTimestamp: BASE, fromTimestamp: BASE, toTimestamp: BASE + MIN },
+  }));
+  socket.__fire('bot:decision', decisionPayload({
+    trend: { status: 'BULLISH' }, support: { status: 'TOUCHED', level: 60000 }, resistance: { status: 'NOT_TOUCHED', level: null },
+    patternState: 'IDLE', bodyReference: null,
+  }));
+  socket.__fire('bot:decision', decisionPayload({
+    trend: { status: 'BULLISH' }, support: { status: 'TOUCHED', level: 60000 }, resistance: { status: 'NOT_TOUCHED', level: null },
+    patternState: 'AWAITING_CANDLE3',
+    bodyReference: { side: 'BODY_HIGH', price: 60140, direction: 'BUY', candleTimestamp: BASE + 3 * MIN, fromTimestamp: BASE + 3 * MIN, toTimestamp: BASE + 4 * MIN },
+  }));
+
+  assert.deepEqual(overlayCalls, [
+    ['set', 60040, 'BODY_HIGH', BASE, BASE + MIN],
+    ['clear'],
+    ['set', 60140, 'BODY_HIGH', BASE + 3 * MIN, BASE + 4 * MIN],
+  ]);
+});
+
+test('8. two bot instances never share a bodyReference — independently derived from each one\'s own patternCandidate', async () => {
+  const botA = await startBot();
+  const botB = await startBot({ trend: 'BEARISH' });
+
+  await feed(botA.model, candleA(10));
+  await feed(botA.model, candleBValid(11));
+  await feed(botB.model, candleABear(10));
+  await feed(botB.model, candleBBear(11));
+
+  const refA = lastDecision(botA.ctx).checks.bodyReference;
+  const refB = lastDecision(botB.ctx).checks.bodyReference;
+  assert.equal(refA.direction, 'BUY');
+  assert.equal(refB.direction, 'SELL');
+  assert.notEqual(refA.price, refB.price);
+  assert.notEqual(botA.model.instanceId, botB.model.instanceId);
 });
 
 test('client: the Decision Engine keeps showing Support: TOUCHED while the pattern reads IDLE', () => {
@@ -383,11 +516,16 @@ test('22/23/24/25/26. BUY still triggers with the same entry, SL, riskLength, lo
   assert.equal(p.stopLoss, Math.min(b.low, c.low) - 10);        // 59985
   assert.equal(p.riskLength, 90);
   assert.equal(p.lot, 9);
-  assert.equal(p.finalQuantity, 9, 'no capital x leverage cap reduces the quantity');
+  // PHASE 1 FIX: finalQuantity is the lot COUNT converted to BTC quantity
+  // (confirmed project rule: 1 lot = 0.001 BTC), not the raw lot count.
+  // The "no capital x leverage cap" behaviour (nothing further reduces
+  // this number) is still verified — it's just no longer byte-identical
+  // to the lot count itself.
+  assert.equal(p.finalQuantity, 0.009, 'no capital x leverage cap reduces the quantity (lot 9 -> 0.009 BTC)');
 
   assert.equal(ctx.commands.length, 1);
   assert.equal(ctx.commands[0].action, 'LONG');
-  assert.equal(ctx.commands[0].quantity, 9);
+  assert.equal(ctx.commands[0].quantity, 0.009);
   assert.equal(ctx.commands[0].stopLoss, 59985);
 });
 
@@ -423,7 +561,11 @@ test('28. the maximum-capital x leverage cap remains removed', () => {
   const risk = fs.readFileSync(path.join(__dirname, '..', 'services', 'riskEngine', 'RiskEngine.js'), 'utf8');
   assert.doesNotMatch(risk, /Capital allocation exceeded/);
   const model = fs.readFileSync(path.join(__dirname, '..', 'bot-models', 'model-002', 'Model002.js'), 'utf8');
-  assert.equal((model.match(/const finalQuantity = lot;/g) || []).length, 2);
+  // PHASE 1 FIX: quantity is now the lot count converted to BTC via
+  // computeQuantityFromLot (1 lot = 0.001 BTC) instead of the raw lot
+  // count. Still asserts BOTH engines (OLD + NEW) use the identical
+  // no-cap expression, byte-for-byte.
+  assert.equal((model.match(/const finalQuantity = computeQuantityFromLot\(lot\);/g) || []).length, 2);
 });
 
 test('29. the execution pipeline and the strategy engines were not re-implemented anywhere new', () => {

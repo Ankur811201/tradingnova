@@ -3,12 +3,28 @@
 const { bodySize, bodyHigh, bodyLow } = require('./indicators');
 
 /**
- * MODEL_002 — user-level touch zone + the client's confirmed counter-trend
- * confirmation formulas. Implements ONLY what is confirmed; the two
- * "direct-entry" formulas (BULLISH+SUPPORT, BEARISH+RESISTANCE) are
- * intentionally NOT implemented here — see Model002.js, which routes those
- * cases to an honest WAIT('direct_entry_pending_client_confirmation')
- * rather than inventing a rule.
+ * MODEL_002 — LEGACY / SUPERSEDED MODULE (documentation status only; the
+ * code below is unchanged and intentionally retained).
+ *
+ * This is the FIRST pattern generation: the user-level touch zone plus the
+ * counter-trend confirmation formulas. It is SUPERSEDED by the two engines
+ * that actually trade today:
+ *   NEW engine — reversalPatternEngine.js (BULLISH+SUPPORT=BUY,
+ *                BEARISH+RESISTANCE=SELL)
+ *   OLD engine — sameSidePatternEngine.js (BULLISH+RESISTANCE=SELL,
+ *                BEARISH+SUPPORT=BUY)
+ * Neither of those consults this module's counter-trend evaluators.
+ *
+ * STILL IN USE — do not delete: `touchesZone` below is imported by
+ * levelEngine.js, and evaluateCounterTrendBuy/Sell are still covered by
+ * tests/model002.customPattern.test.js.
+ *
+ * HISTORICAL NOTE (no longer true): an earlier comment here stated that
+ * the "direct-entry" combinations were unimplemented and that Model002.js
+ * routed them to WAIT('direct_entry_pending_client_confirmation'). All
+ * four trend/level combinations are implemented and tradable today via
+ * the two engines above; that reason code is no longer emitted by the
+ * backend (its UI reason-map entry is deliberately retained for now).
  */
 
 /** Zone-intersection touch test (kept from the prior implementation — it's a generic, correct geometric test, not strategy-specific). */

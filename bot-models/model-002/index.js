@@ -23,13 +23,19 @@ module.exports = {
   description:
     'Client-driven custom-pattern strategy: user supplies trend (BULLISH/BEARISH) and exactly 3 ' +
     'support + 3 resistance levels; no automatic trend/market analysis (no Daily BOS, no 1H ' +
-    'confirmation, no EMA). Implements the confirmed same-side entry (BULLISH+SUPPORT=BUY, ' +
-    'BEARISH+RESISTANCE=SELL): Candle 1 (level touch, last-touch-wins) -> Candle 2 (body-high/ ' +
-    'body-low touch, UpperP/LowerP/BodyP=2.5x body validation, correct candle nature) -> fixed ' +
-    'Candle2.high/low confirmation boundaries monitored across future candles until a strict ' +
-    'close-through triggers BUY/SELL or INVALID. The opposite-side cases (BULLISH+RESISTANCE, ' +
-    'BEARISH+SUPPORT) are pending client confirmation and never trade. ' +
-    'Auto-pauses after 3 consecutive losses.',
+    'confirmation, no EMA). Two active, separate engines. NEW engine (same-side: ' +
+    'BULLISH+SUPPORT=BUY, BEARISH+RESISTANCE=SELL): the level-touch candle is Candle 2 and the ' +
+    'candle before it is Candle 1, validated by BODY only (BUY: C2 body-high > C1 body-high; ' +
+    'SELL: C2 body-low < C1 body-low) plus the existing BodyP/candle-nature checks -> boundaries ' +
+    'fixed at Candle2.high+5 / Candle2.low-5 -> Candle 3 and every later candle evaluated against ' +
+    'those same fixed boundaries; a wick touch of the trigger boundary fires immediately with no ' +
+    'close required, a wrong-boundary touch is INVALID, and touching neither is WAIT. OLD engine ' +
+    '(opposite-side: BULLISH+RESISTANCE=SELL, BEARISH+SUPPORT=BUY) is unchanged and does trade: ' +
+    'Candle 1 (level touch, replaced by any newer touch until Candle 2 is found) -> Candle 2 ' +
+    '(body-high/body-low touch, UpperP/LowerP/BodyP=2.5x body validation, correct candle nature) ' +
+    '-> fixed Candle2.high/low boundaries monitored across future candles until a strict ' +
+    'close-through triggers BUY/SELL or INVALID. Level selection is first-match-wins in both ' +
+    'engines. Auto-pauses after 3 consecutive losses; layer/success safety limits apply per bot.',
   author: 'Nova Trade',
   supportedSymbols: [], // empty = no model-level restriction; RiskEngine's allowed-symbol list still applies
   defaultParameters: DEFAULT_PARAMETERS,

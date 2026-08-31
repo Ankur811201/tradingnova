@@ -406,6 +406,18 @@ document.addEventListener('DOMContentLoaded', () => {
   socket.on('risk:rejected', (data) => {
     if (!data || data.instanceId !== instanceId) return;
     appendTradeStoryStep('Risk Rejected', data.reason || `${data.action || ''} ${data.symbol || ''}`.trim(), 'reject');
+    // P4-M4 — visual only: annotate the pattern that produced this
+    // rejected command so a rejected trigger can never look like an
+    // executed trade. Creates no execution marker and no trade; the chart
+    // layer ignores the call unless a TRIGGERED group is currently drawn
+    // for this instance.
+    if (window.NovaChartPatternMarkers && typeof window.NovaChartPatternMarkers.markRejected === 'function') {
+      try {
+        window.NovaChartPatternMarkers.markRejected();
+      } catch (err) {
+        console.error('[CHART] Risk-rejected pattern annotation failed:', err);
+      }
+    }
   });
 
   socket.on('trade:rejected', (data) => {
@@ -593,6 +605,19 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
+    // P4-H2 — PHASE 2 layer/success safety, live. The decision payload
+    // already carries layerSafety (LayerSafety.getState(), read-only), so a
+    // bot that stops mid-session updates without a reload. Display only:
+    // nothing here feeds back into the safety state machine, and no state
+    // is computed in the browser.
+    if (modelId === 'MODEL_002') {
+      try {
+        renderLayerSafety(data.layerSafety || (data.checks && data.checks.layerSafety) || null);
+      } catch (err) {
+        console.error('[DECISION] Layer safety render failed:', err);
+      }
+    }
+
     // Final Decision (WAIT / BUY / SELL)
     const decisionEl =
       document.getElementById('thinking-decision');
@@ -640,6 +665,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Prepend a live row to the Decision History tab so it doesn't require a
   // page reload to see a just-produced decision (Phase G).
+  /**
+   * P4-H2 — renders the PHASE 2 layer/success safety state into the badge
+   * and the Layer / Losses-in-layer / Wins row of the Safety card. Every
+   * value is read verbatim from the backend's layerSafety payload; this
+   * function never derives, counts or advances anything, and the
+   * LayerSafety state machine is untouched. A stopped bot shows
+   * SUCCESS_STOPPED / MAX_LAYER_STOPPED, never ACTIVE.
+   */
+  function renderLayerSafety(layerSafety) {
+    if (!layerSafety) return;
+
+    const setText = (id, value) => {
+      const el = document.getElementById(id);
+      if (el && value != null) el.textContent = String(value);
+    };
+    setText('layer-safety-layer', layerSafety.currentLayer);
+    setText('layer-safety-losses', layerSafety.layerLossCount);
+    setText('layer-safety-wins', layerSafety.successfulTradeCount);
+
+    const status = layerSafety.safetyStatus;
+    const stopped = status === 'SUCCESS_STOPPED' || status === 'MAX_LAYER_STOPPED';
+    const badge = document.getElementById('safety-status-badge');
+    if (badge && stopped) {
+      badge.textContent = status;
+      badge.className =
+        'text-[11px] font-semibold px-2 py-0.5 rounded-full bg-rose-950 text-rose-400 border border-rose-800';
+    }
+  }
+
   function prependDecisionHistoryRow(data) {
     const container = document.getElementById('signal-history-container');
     if (!container) return;

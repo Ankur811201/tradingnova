@@ -178,11 +178,19 @@ test('the Decision History reason formatting is gated to MODEL_002 only — MODE
 
 // --- Description accuracy (bot-models/model-002/index.js) ----------------
 
-test('bot-models/model-002/index.js describes the CURRENT same-side strategy, not the old counter-trend formula', () => {
+// PHASE 3 DOC CLEANUP: this test previously asserted that the description
+// must NOT mention BULLISH+RESISTANCE=SELL / BEARISH+SUPPORT=BUY, which was
+// correct only while those opposite-side combinations were unimplemented and
+// never traded. They are now handled by the active OLD engine
+// (sameSidePatternEngine.js) and DO trade, so a description that omitted them
+// was itself the stale documentation. The assertions below now require all
+// four active combinations to be described, while still forbidding the
+// superseded counter-trend 1.5x-body rule.
+test('bot-models/model-002/index.js describes the CURRENT routing for both active engines', () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'bot-models', 'model-002', 'index.js'), 'utf8');
-  assert.match(content, /BULLISH\+SUPPORT=BUY/);
-  assert.match(content, /BEARISH\+RESISTANCE=SELL/);
-  assert.equal(/BEARISH\+SUPPORT=BUY/.test(content), false, 'must not describe the old counter-trend BUY combination');
-  assert.equal(/BULLISH\+RESISTANCE=SELL/.test(content), false, 'must not describe the old counter-trend SELL combination');
+  assert.match(content, /BULLISH\+SUPPORT=BUY/, 'must describe the NEW-engine BUY combination');
+  assert.match(content, /BEARISH\+RESISTANCE=SELL/, 'must describe the NEW-engine SELL combination');
+  assert.match(content, /BULLISH\+RESISTANCE=SELL/, 'must describe the OLD-engine SELL combination');
+  assert.match(content, /BEARISH\+SUPPORT=BUY/, 'must describe the OLD-engine BUY combination');
   assert.equal(/1\.5x body confirmation/i.test(content), false, 'must not describe the removed 1.5x-body-average rule');
 });

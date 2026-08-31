@@ -116,9 +116,9 @@ test('evaluateCandle3 (BUY): C.low <= lower -> INVALID, never SELL', () => {
   const result = re.evaluateCandle3({ high: 90, low: 85, close: 87 }, { upper: 105, lower: 85 }, 'BUY', null);
   assert.equal(result.outcome, 'INVALID');
 });
-test('evaluateCandle3 (BUY): neither boundary touched -> INVALID (Candle 3 is the ONLY trigger candle)', () => {
+test('evaluateCandle3 (BUY): neither boundary touched -> WAIT, never INVALID ("no trigger" is not "invalid")', () => {
   const result = re.evaluateCandle3({ high: 95, low: 90, close: 92 }, { upper: 105, lower: 85 }, 'BUY', null);
-  assert.equal(result.outcome, 'INVALID');
+  assert.equal(result.outcome, 'WAIT');
 });
 test('evaluateCandle3 (SELL): C.low <= lower -> SELL', () => {
   const result = re.evaluateCandle3({ high: 96, low: 85, close: 90 }, { upper: 105, lower: 85 }, 'SELL', null);
@@ -245,7 +245,7 @@ test('9/10. Candle3 only touches lower -> INVALID, never SELL', async () => {
   assert.equal(model.patternCandidate, null);
   const decision = lastDecision(ctx);
   assert.notEqual(decision.payload.decision, 'SELL');
-  assert.equal(decision.payload.reason, 'invalidated_candle3_wrong_or_no_boundary_touch');
+  assert.equal(decision.payload.reason, 'invalidated_wrong_boundary_touched');
 });
 
 test('11/12. After invalidation, pattern restarts and does NOT reuse old Candle1/Candle2', async () => {
@@ -275,7 +275,7 @@ test('13. No re-check of Support during active A/B/C — Candle3 is processed st
   const c3 = candleAt(21, 60000, 60005, 59980, 60000);
   await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c3.timestamp, data: c3 }, null);
   // Must be treated as the C/invalidation event, never as a fresh B/Candle2 replacing the active setup mid-flight.
-  assert.equal(lastDecision(ctx).payload.reason, 'invalidated_candle3_wrong_or_no_boundary_touch');
+  assert.equal(lastDecision(ctx).payload.reason, 'invalidated_wrong_boundary_touched');
   assert.equal(ctx.commands.length, 0);
 });
 
@@ -466,7 +466,8 @@ test('33. Existing lot-size mapping remains unchanged (riskLength 80 -> lot 10)'
   const c3 = candleAt(21, 60050, 60070, 60045, 60060); // entry=60065, SL=59985, riskLength=80
   await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c3.timestamp, data: c3 }, null);
   assert.equal(ctx.commands.length, 1);
-  assert.equal(ctx.commands[0].quantity, 10);
+  // PHASE 1 FIX: lot 10 -> 0.01 BTC (1 lot = 0.001 BTC).
+  assert.equal(ctx.commands[0].quantity, 0.01);
 });
 
 test('34. Existing risk-length > 360 restriction remains unchanged under the new engine', async () => {
@@ -520,7 +521,7 @@ test('37. Maximum capital x leverage cap remains removed under the new engine to
   const c3 = candleAt(21, 60050, 60070, 60045, 60060);
   await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c3.timestamp, data: c3 }, null);
   assert.equal(ctx.commands.length, 1);
-  assert.equal(ctx.commands[0].quantity, 10, 'quantity must be the plain risk-based lot, not capped by capitalAllocation*leverage');
+  assert.equal(ctx.commands[0].quantity, 0.01, 'quantity must be the plain risk-based lot converted to BTC (10 lots = 0.01 BTC), not capped by capitalAllocation*leverage');
 });
 
 // =========================================================================

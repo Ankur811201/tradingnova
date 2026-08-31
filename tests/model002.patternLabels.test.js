@@ -108,7 +108,10 @@ async function bootChart({ instanceId = 'inst_1', initialDecision = null } = {})
     removePriceLine() {},
     setData() {}, update() {},
   };
-  const chart = { addLineSeries: () => ({ setData() {}, update() {} }) };
+  const chart = {
+    addLineSeries: (opts) => ({ opts, data: null, setData(d) { this.data = d; }, update() {} }),
+    removeSeries() {},
+  };
 
   const sandbox = {
     console: { log() {}, warn() {}, error() {} },
@@ -317,21 +320,30 @@ test('13-15. the body line uses open/close of A — body high for Support, body 
   assert.notEqual(bearRef.price, ab.high);
 });
 
-test('13b. the line is drawn on the chart at exactly that price, and removed with the pattern', async () => {
+test('13b. the line is drawn on the chart as a C1->C2 bounded segment at exactly that price, and removed with the pattern', async () => {
   const chart = await bootChart();
   const om = chart.sandbox.window.NovaBotChartManager.overlayManager;
 
-  chart.sandbox.window.NovaChartPatternOverlay.setBodyReference({ price: 60040, side: 'BODY_HIGH' });
-  assert.equal(om.priceLines.patternBodyReference.opts.price, 60040);
-  assert.equal(om.priceLines.patternBodyReference.opts.title, 'A BODY HIGH');
+  chart.sandbox.window.NovaChartPatternOverlay.setBodyReference({
+    price: 60040, side: 'BODY_HIGH', fromTimestamp: BASE, toTimestamp: BASE + MIN,
+  });
+  let seg = om.lineSegments.patternBodyReference;
+  assert.equal(seg.opts.title, 'C1 BODY HIGH');
+  assert.equal(seg.data[0].time, Math.floor(BASE / 1000), 'segment starts at C1');
+  assert.equal(seg.data[0].value, 60040);
+  assert.equal(seg.data[1].time, Math.floor((BASE + MIN) / 1000), 'segment ends at C2');
+  assert.equal(seg.data[1].value, 60040);
 
-  chart.sandbox.window.NovaChartPatternOverlay.setBodyReference({ price: 64960, side: 'BODY_LOW' });
-  assert.equal(om.priceLines.patternBodyReference.opts.price, 64960);
-  assert.equal(om.priceLines.patternBodyReference.opts.title, 'A BODY LOW');
-  assert.equal(Object.keys(om.priceLines).filter((k) => k === 'patternBodyReference').length, 1);
+  chart.sandbox.window.NovaChartPatternOverlay.setBodyReference({
+    price: 64960, side: 'BODY_LOW', fromTimestamp: BASE + 10 * MIN, toTimestamp: BASE + 11 * MIN,
+  });
+  seg = om.lineSegments.patternBodyReference;
+  assert.equal(seg.opts.title, 'C1 BODY LOW');
+  assert.equal(seg.data[0].value, 64960);
+  assert.equal(Object.keys(om.lineSegments).filter((k) => k === 'patternBodyReference').length, 1, 'the previous segment is replaced, not duplicated');
 
   chart.sandbox.window.NovaChartPatternOverlay.clearBodyReference();
-  assert.equal(om.priceLines.patternBodyReference, undefined);
+  assert.equal(om.lineSegments.patternBodyReference, undefined);
 });
 
 // =========================================================================
