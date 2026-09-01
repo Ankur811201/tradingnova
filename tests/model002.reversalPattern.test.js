@@ -418,13 +418,19 @@ test('30. Both boundaries touched, no live tick evidence reached this instance -
   assert.equal(lastDecision(ctx).payload.reason, 'invalidated_both_boundaries_no_tick_evidence');
 });
 
-test('price ticks are ignored once a first boundary touch is already recorded for the active candidate', async () => {
-  const { model } = await buyFixture();
+test('live price touching the trigger boundary executes immediately without waiting for Candle 3 close', async () => {
+  const { ctx, model } = await buyFixture();
   await model.onHydrate(buyA());
   await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: VALID_B_BUY.timestamp, data: VALID_B_BUY }, null);
+
+  // Candle 3 is still forming. The first live price reaches the fixed upper
+  // boundary (60065), so BUY must be submitted immediately. No Candle 3
+  // close event is sent in this test.
   await model.onMarketData({ type: 'price', symbol: 'BTCUSD', data: { price: 60065 }, timestamp: VALID_B_BUY.timestamp + 10000 }, null);
-  await model.onMarketData({ type: 'price', symbol: 'BTCUSD', data: { price: 59990 }, timestamp: VALID_B_BUY.timestamp + 20000 }, null); // must NOT overwrite
-  assert.equal(model.patternCandidate.firstLiveBoundaryTouch, 'upper');
+
+  assert.equal(ctx.commands.length, 1);
+  assert.equal(ctx.commands[0].action, 'LONG');
+  assert.equal(ctx.commands[0].entryPrice, 60065);
 });
 
 test('price ticks for a different symbol are ignored', async () => {

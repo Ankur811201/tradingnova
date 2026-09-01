@@ -5,6 +5,7 @@ const BotInstance = require('../../models/BotInstance');
 const BotModelMetadata = require('../../models/BotModelMetadata');
 const { TIMEFRAMES_MS } = require('../../bot-models/model-001/config');
 const logger = require('../../utils/logger');
+const { getMarketDataProvider } = require('./index');
 // ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH: shared definition of a running
 // instance's ACTIVE analysis timeframe (identical to parameters.timeframe
 // for any instance that never switched).
@@ -249,7 +250,71 @@ class CandlePersistenceService {
   }
 
   async _closeCandle(symbol, timeframe, state) {
-    await Candle.updateOne({ symbol, timeframe, timestamp: state.timestamp }, { $set: { closed: true } });
+    // The live candle is built from ticker snapshots for low-latency updates.
+    // Before publishing the CLOSED event, reconcile that completed candle
+    // against Delta's official OHLC candle so the final wick used by the
+    // chart and strategy matches the exchange-generated 1m/other-TF bar.
+    let finalState = state;
+    try {
+      const provider = getMarketDataProvider();
+      if (provider && typeof provider.getClosedCandle === 'function') {
+        const official = await provider.getClosedCandle(symbol, timeframe, state.timestamp);
+        if (official) {
+          finalState = {
+            timestamp: official.timestamp,
+            open: official.open,
+            high: official.high,
+            low: official.low,
+            close: official.close,
+          };
+          await Candle.updateOne(
+            { symbol, timeframe, timestamp: state.timestamp },
+            {
+              $set: {
+                open: official.open,
+                high: official.high,
+                low: official.low,
+                close: official.close,
+                volume: official.volume != null ? official.volume : null,
+                closed: true,
+              },
+            }
+          );
+          await logger.info(
+            'CANDLE',
+            `[CANDLE] ${symbol} ${timeframe} reconciled with Delta OHLC timestamp=${official.timestamp}`
+          );
+        } else {
+          await logger.warn(
+            'CANDLE',
+            `[CANDLE] ${symbol} ${timeframe} Delta OHLC candle not found for timestamp=${state.timestamp}; using locally built candle`
+          );
+        }
+      }
+    } catch (err) {
+      // Reconciliation must never block candle closure or strategy dispatch.
+      // The locally built candle remains the safe fallback when Delta's
+      // historical endpoint is temporarily unavailable at the boundary.
+      await logger.warn(
+        'CANDLE',
+        `[CANDLE] ${symbol} ${timeframe} Delta OHLC reconciliation failed: ${err.message}; using locally built candle`
+      );
+    }
+
+    // Keep the in-memory state identical to the canonical persisted/broadcast
+    // state so the next lifecycle step cannot revert the reconciled OHLC.
+    state.open = finalState.open;
+    state.high = finalState.high;
+    state.low = finalState.low;
+    state.close = finalState.close;
+
+    if (finalState === state) {
+      await Candle.updateOne(
+        { symbol, timeframe, timestamp: state.timestamp },
+        { $set: { closed: true } }
+      );
+    }
+
     await logger.info('CANDLE', `[CANDLE] ${symbol} ${timeframe} closed`);
     return this._toCanonicalEvent(symbol, timeframe, state, true);
   }

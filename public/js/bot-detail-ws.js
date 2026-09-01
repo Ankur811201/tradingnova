@@ -439,13 +439,16 @@ document.addEventListener('DOMContentLoaded', () => {
       applyTradeToPerformance(data.trade);
     }
 
-    // Chart position overlays — Part 9 does not add markers/lines yet
-    // (see "DO NOT ADD CHART ARROWS YET"); left as a hook only.
-    if (chartBridge && typeof chartBridge.syncPositionLayers === 'function') {
+    // Sync the actual position overlays on the shared Lightweight Charts instance.
+    // This is the authoritative bot:execution event, so the SL/TP/entry lines
+    // appear when a position opens and are removed when it closes.
+    if (window.NovaBotChartManager &&
+        window.NovaBotChartManager.overlayManager &&
+        typeof window.NovaBotChartManager.overlayManager.syncPositionOverlays === 'function') {
       try {
-        chartBridge.syncPositionLayers(data.position);
+        window.NovaBotChartManager.overlayManager.syncPositionOverlays(data.position || null);
       } catch (err) {
-        console.error('[CHART] Position overlay failed:', err);
+        console.error('[CHART] Position overlay sync failed:', err);
       }
     }
 

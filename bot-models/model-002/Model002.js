@@ -539,12 +539,13 @@ class Model002 extends BotModelBase {
     if (this.paused || this.stopped) return;
     if (!marketUpdate || marketUpdate.symbol !== this.symbol) return;
 
-    // Existing type:'price' tick stream (already dispatched by
-    // BotManager.dispatchMarketData to every live instance on the symbol —
-    // no new connection/listener) — reused ONLY to break the "Candle 3
-    // touches both boundaries" tie (spec §10). No other side effects.
+    // Live price ticks are authoritative for the NEW-engine boundary
+    // trigger. Candle 3 (and any later evaluation candle) must trigger as
+    // soon as the live price touches the correct fixed boundary — NEVER
+    // wait for that candle to close. The existing tick stream is reused; no
+    // new market-data connection/listener is created.
     if (marketUpdate.type === 'price') {
-      this._trackLiveBoundaryTouch(marketUpdate);
+      await this._handleLiveNewBoundaryTouch(marketUpdate, positionContext);
       return;
     }
 
@@ -743,7 +744,8 @@ class Model002 extends BotModelBase {
       return { candidate: {
         engine: 'NEW', direction: sameSideDirection, candle1: prevCandle, candle2: candle,
         matchedLevel: newTouch, stage: 'AWAITING_CANDLE3', boundaries, points,
-        firstLiveBoundaryTouch: null, // live tick tie-break — see _trackLiveBoundaryTouch
+        firstLiveBoundaryTouch: null, // retained for historical replay/tie-break compatibility
+        liveTriggerCandle: null,
       } };
     }
 
@@ -1252,6 +1254,82 @@ class Model002 extends BotModelBase {
     }
 
     await this._confirmAndSubmitNew(candidate, candleC);
+  }
+
+  /**
+   * Immediate live boundary trigger for the NEW same-side engine.
+   *
+   * Once Candle 2 has validated, every subsequent live price tick is part
+   * of the current evaluation candle until that candle closes. A touch of
+   * the trigger boundary submits the trade immediately; a touch of the
+   * wrong boundary invalidates the candidate immediately. No candle close
+   * is required. The live high/low accumulated here is also included in
+   * the running B..trigger SL window.
+   */
+  async _handleLiveNewBoundaryTouch(marketUpdate, positionContext) {
+    const candidate = this.patternCandidate;
+    if (!candidate || candidate.engine !== 'NEW' || candidate.stage !== 'AWAITING_CANDLE3') return;
+
+    if (positionContext) return; // no pyramiding / duplicate entry
+    if (this.safety.paused || this.layerSafety.safetyStatus !== 'NORMAL') return;
+
+    const price = marketUpdate.data && marketUpdate.data.price;
+    const timestamp = Number(marketUpdate.timestamp);
+    if (!Number.isFinite(price) || !Number.isFinite(timestamp)) return;
+    if (timestamp <= candidate.candle2.timestamp) return;
+
+    // Build/update a lightweight forming trigger candle from the live tick
+    // stream. This candle is NOT persisted here; CandlePersistenceService
+    // remains the source of canonical closed candles. It exists only so the
+    // immediate trade gets the correct trigger timestamp and running wick.
+    if (!candidate.liveTriggerCandle) {
+      candidate.liveTriggerCandle = {
+        timestamp, open: price, high: price, low: price, close: price,
+      };
+    } else {
+      candidate.liveTriggerCandle.high = Math.max(candidate.liveTriggerCandle.high, price);
+      candidate.liveTriggerCandle.low = Math.min(candidate.liveTriggerCandle.low, price);
+      candidate.liveTriggerCandle.close = price;
+    }
+
+    candidate.lowestLowSinceCandle2 = Math.min(
+      Number.isFinite(candidate.lowestLowSinceCandle2) ? candidate.lowestLowSinceCandle2 : candidate.candle2.low,
+      candidate.liveTriggerCandle.low
+    );
+    candidate.highestHighSinceCandle2 = Math.max(
+      Number.isFinite(candidate.highestHighSinceCandle2) ? candidate.highestHighSinceCandle2 : candidate.candle2.high,
+      candidate.liveTriggerCandle.high
+    );
+
+    const direction = candidate.direction;
+    const triggerTouched = direction === 'BUY'
+      ? price >= candidate.boundaries.upper
+      : price <= candidate.boundaries.lower;
+    const invalidTouched = direction === 'BUY'
+      ? price <= candidate.boundaries.lower
+      : price >= candidate.boundaries.upper;
+
+    if (invalidTouched && !triggerTouched) {
+      this.patternCandidate = null;
+      this._emitDecision('WAIT', {
+        reason: direction === 'BUY' ? 'invalidated_live_touch_lower_boundary' : 'invalidated_live_touch_upper_boundary',
+        direction,
+        activeLevel: this._activeLevelFor(candidate),
+        candle1: this._summarizeCandle(candidate.candle1),
+        candle2: this._summarizeCandle(candidate.candle2),
+        candle3: this._summarizeCandle(candidate.liveTriggerCandle),
+        points: candidate.points,
+        boundaries: candidate.boundaries,
+      }, candidate.liveTriggerCandle);
+      return;
+    }
+
+    if (!triggerTouched) return;
+
+    // The first received tick that reaches the correct boundary is the
+    // trigger. Entry remains exactly the fixed boundary; _confirmAndSubmitNew
+    // keeps the existing SL/risk/lot/execution pipeline unchanged.
+    await this._confirmAndSubmitNew(candidate, candidate.liveTriggerCandle);
   }
 
   /**

@@ -132,6 +132,29 @@ class DeltaMarketDataProvider extends MarketDataProvider {
     return { symbol: symbol, price: fresh.price, timestamp: fresh.timestamp, provider: this.useWebSocket ? 'delta_ws' : 'delta_rest' };
   }
 
+  /**
+   * Fetches one completed candle from Delta's official OHLC endpoint.
+   * This is used only when a locally reconstructed candle closes, so the
+   * final OHLC/wick can be reconciled with Delta's exchange-generated candle.
+   * The live ticker/polling path remains unchanged.
+   */
+  async getClosedCandle(symbol, timeframe, targetTimestamp) {
+    const tfMs = TIMEFRAMES_MS[timeframe];
+    if (!tfMs) throw new Error(`Unsupported timeframe: ${timeframe}`);
+
+    const target = Number(targetTimestamp);
+    if (!Number.isFinite(target) || target <= 0) {
+      throw new Error('getClosedCandle requires a valid targetTimestamp');
+    }
+
+    const candles = await this.getCandles(symbol, timeframe, {
+      lookbackSeconds: Math.max(180, Math.ceil((tfMs * 3) / 1000)),
+      limit: 5,
+    });
+
+    return candles.find((c) => c.timestamp === target) || null;
+  }
+
   async getCandles(symbol, timeframe, options) {
     options = options || {};
     const resolution = mapTimeframe(timeframe); // pure check first - throws UnsupportedTimeframeError, no network call wasted
