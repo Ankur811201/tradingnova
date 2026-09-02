@@ -117,18 +117,40 @@ for (const symbol of env.RISK_ALLOWED_SYMBOLS) {
 
 
       // =====================================================
-      // 4. Dispatch CLOSED canonical candles to BotManager (MODEL_001, etc)
+      // 4. Dispatch the live price tick to BotManager first.
       //
-      //    Only closed=true events are forwarded here — a still-forming
-      //    candle is for the chart/MongoDB only (already handled inside
-      //    candlePersistenceService.processTick above) and must never reach
-      //    a bot model's strategy evaluation.
+      //    MODEL_002 uses type:'price' while a NEW-engine candidate is
+      //    awaiting Candle 3. This is the authoritative live boundary
+      //    trigger path: a correct boundary touch must be evaluated on the
+      //    live tick and must NOT wait for Candle 3 to close.
       //
-      //    Raw price ticks are intentionally no longer dispatched to
-      //    BotManager in production. The type:'price' input on
-      //    BotManager.dispatchMarketData / Model001 still exists and is
-      //    left in place for tests and backward compatibility only — see
-      //    bot-models/model-001/candleAggregator.js.
+      //    The same existing Delta price tick is reused; no new market-data
+      //    connection/listener is created. MODEL_001 also already supports
+      //    this input through its existing candle aggregator.
+      // =====================================================
+
+      try {
+        await botManager.dispatchMarketData({
+          type: 'price',
+          symbol,
+          timestamp,
+          data: { price },
+        });
+      } catch (err) {
+        await logger.error(
+          'BOT',
+          `dispatchMarketData (price) failed for ${symbol}: ${err.message}`
+        );
+      }
+
+
+      // =====================================================
+      // 5. Dispatch CLOSED canonical candles to BotManager.
+      //
+      //    Closed candles remain the canonical candle-analysis path. The
+      //    live price path above is separate and exists specifically for
+      //    real-time boundary handling. A forming candle is never sent as
+      //    a candle update.
       // =====================================================
 
       for (const event of candleEvents) {
@@ -167,7 +189,7 @@ for (const symbol of env.RISK_ALLOWED_SYMBOLS) {
 
 
       // =====================================================
-      // 5. Single Bot Engine — live tick + decision engine (legacy,
+      // 6. Single Bot Engine — live tick + decision engine (legacy,
       //    unchanged in Part 6 — still driven by raw ticks)
       // =====================================================
 
