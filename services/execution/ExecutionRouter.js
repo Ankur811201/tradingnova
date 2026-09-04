@@ -46,6 +46,7 @@ class ExecutionRouter {
         leverage: instance.leverage,
         stopLoss: command.stopLoss,
         takeProfit: command.takeProfit,
+        autoTargets: command.autoTargets,
         source: 'BOT',
         modelId: command.modelId,
         instanceId: command.instanceId,

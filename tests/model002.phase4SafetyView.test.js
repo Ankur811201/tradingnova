@@ -34,7 +34,6 @@ function args(layerSafety, extraPayload = {}) {
     initialDecision: {
       payload: Object.assign({
         decision: 'WAIT', reason: 'no_level_touch',
-        consecutiveLosses: 0, safetyLimit: 3, safetyStatus: 'NORMAL',
         layerSafety,
       }, extraPayload),
     },
@@ -61,27 +60,22 @@ test('P4-H2 view (b): SUCCESS_STOPPED never renders ACTIVE and explains itself',
 });
 
 test('P4-H2 view (c): MAX_LAYER_STOPPED never renders ACTIVE and names the layer limit', () => {
-  const html = render(args({ currentLayer: 6, layerLossCount: 2, successfulTradeCount: 0, safetyStatus: 'MAX_LAYER_STOPPED' }));
+  const html = render(args({ currentLayer: 3, layerLossCount: 2, successfulTradeCount: 0, safetyStatus: 'MAX_LAYER_STOPPED' }));
   const badge = html.split('id="safety-status-badge"')[1].split('</span>')[0];
   assert.match(badge, /MAX_LAYER_STOPPED/);
   assert.doesNotMatch(badge, /ACTIVE/);
-  assert.match(html, /BOT STOPPED — maximum layer \(6\) reached/);
-  assert.match(html, /id="layer-safety-layer"[^>]*>6</);
+  assert.match(html, /BOT STOPPED — maximum layer \(3\) reached/);
+  assert.match(html, /id="layer-safety-layer"[^>]*>3</);
 });
 
-test('P4-H2 view (d): a layer stop outranks the consecutive-loss badge, and PAUSED still works alone', () => {
+test('P4-H2 view (d): MAX_LAYER_STOPPED remains the only layer-loss stop', () => {
   const stopped = render(args(
-    { currentLayer: 6, layerLossCount: 2, successfulTradeCount: 0, safetyStatus: 'MAX_LAYER_STOPPED' },
-    { safetyStatus: 'PAUSED', consecutiveLosses: 3 }
+    { currentLayer: 3, layerLossCount: 2, successfulTradeCount: 0, safetyStatus: 'MAX_LAYER_STOPPED' }
   ));
-  assert.match(stopped.split('id="safety-status-badge"')[1].split('</span>')[0], /MAX_LAYER_STOPPED/);
-
-  const pausedOnly = render(args(
-    { currentLayer: 1, layerLossCount: 0, successfulTradeCount: 0, safetyStatus: 'NORMAL' },
-    { safetyStatus: 'PAUSED', consecutiveLosses: 3 }
-  ));
-  assert.match(pausedOnly.split('id="safety-status-badge"')[1].split('</span>')[0], /PAUSED/);
-  assert.match(pausedOnly, /SAFETY PAUSED/);
+  const badge = stopped.split('id="safety-status-badge"')[1].split('</span>')[0];
+  assert.match(badge, /MAX_LAYER_STOPPED/);
+  assert.doesNotMatch(badge, /ACTIVE/);
+  assert.match(stopped, /BOT STOPPED — maximum layer \(3\) reached/);
 });
 
 test('P4-H2 view (e): a bot with no decision yet renders honest defaults, not fabricated state', () => {

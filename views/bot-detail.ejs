@@ -149,12 +149,20 @@
                 <span class="w-px h-3 bg-white/10"></span>
                 <span>Spread <span id="market-spread">--</span></span>
               </div>
+              <button id="chart-fullscreen-btn"
+                      type="button"
+                      class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-white/10 bg-white/[0.03] text-gray-400 hover:text-white hover:bg-white/[0.07] hover:border-white/20 transition text-[11px] font-semibold"
+                      aria-label="Open chart full screen"
+                      title="Full screen chart">
+                <i data-lucide="maximize-2" class="w-3.5 h-3.5"></i>
+                <span class="hidden sm:inline" id="chart-fullscreen-label">Full screen</span>
+              </button>
               <div id="chart-connection-status" class="flex items-center gap-1.5 text-emerald-400">
                 <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Dynamic Stream Active
               </div>
             </div>
           </div>
-          <div class="w-full flex-1 min-h-[460px] relative">
+          <div id="bot-chart-panel" class="w-full flex-1 min-h-[460px] relative">
             <div id="bot-chart-container" class="w-full h-full"></div>
             <div id="bot-chart-state" class="absolute inset-0 flex items-center justify-center text-xs text-gray-500 font-mono pointer-events-none">
               Loading market candles...
@@ -428,30 +436,16 @@
       </div>
 
       <% if (bot.modelId === 'MODEL_002') { %>
-      <!-- MODEL_002 SAFETY — real consecutive-loss state, sourced from the
-           same DECISION payload already loaded server-side as
-           initialDecision (see window.BOT_INITIAL_DECISION below) and kept
-           live via the existing bot:decision socket handler in
-           bot-detail-ws.js. Before any decision has ever been produced,
-           0/3 NORMAL is the real, honest starting state — not fabricated. -->
+      <!-- MODEL_002 SAFETY — layer-based safety is the single source of truth. -->
       <% var safetyPayload = (typeof initialDecision !== 'undefined' && initialDecision) ? initialDecision.payload : {}; %>
-      <% var safetyLosses = (safetyPayload && safetyPayload.consecutiveLosses != null) ? safetyPayload.consecutiveLosses : 0; %>
-      <% var safetyLimit = (safetyPayload && safetyPayload.safetyLimit != null) ? safetyPayload.safetyLimit : 3; %>
-      <% var safetyStatus = (safetyPayload && safetyPayload.safetyStatus) ? safetyPayload.safetyStatus : 'NORMAL'; %>
       <%
-        /* P4-H2 — PHASE 2 layer/success safety. Read-only from the same
-           decision payload (layerSafety = LayerSafety.getState()). A bot
-           that has permanently stopped (SUCCESS_STOPPED / MAX_LAYER_STOPPED)
-           must never render as ACTIVE. The state machine is untouched. */
         var layerSafety = (safetyPayload && safetyPayload.layerSafety) ? safetyPayload.layerSafety : null;
         var layerStatus = (layerSafety && layerSafety.safetyStatus) ? layerSafety.safetyStatus : 'NORMAL';
         var layerStopped = layerStatus === 'SUCCESS_STOPPED' || layerStatus === 'MAX_LAYER_STOPPED';
-        var badgeText = layerStopped ? layerStatus : (safetyStatus === 'PAUSED' ? 'PAUSED' : 'ACTIVE');
-        var badgeClass = (layerStopped || safetyStatus === 'PAUSED')
+        var badgeText = layerStopped ? layerStatus : 'ACTIVE';
+        var badgeClass = layerStopped
           ? 'bg-rose-950 text-rose-400 border border-rose-800'
-          : safetyStatus === 'WARNING'
-            ? 'bg-amber-950 text-amber-400 border border-amber-800'
-            : 'bg-emerald-950 text-emerald-400 border border-emerald-800';
+          : 'bg-emerald-950 text-emerald-400 border border-emerald-800';
       %>
       <div class="mt-4 pt-4 border-t border-white/5 flex items-center justify-between">
         <div class="flex items-center gap-2">
@@ -460,12 +454,9 @@
             <%= badgeText %>
           </span>
         </div>
-        <div class="text-xs font-mono text-gray-300">
-          Consecutive Losses <span id="safety-losses-value" class="font-bold"><%= safetyLosses %></span>/<span id="safety-limit-value"><%= safetyLimit %></span>
-        </div>
       </div>
       <div class="mt-2 flex items-center justify-between text-[11px] font-mono text-gray-400">
-        <span>Layer <span id="layer-safety-layer" class="text-gray-200 font-bold"><%= layerSafety && layerSafety.currentLayer != null ? layerSafety.currentLayer : 1 %></span>/6</span>
+        <span>Layer <span id="layer-safety-layer" class="text-gray-200 font-bold"><%= layerSafety && layerSafety.currentLayer != null ? layerSafety.currentLayer : 1 %></span>/3</span>
         <span>Losses in layer <span id="layer-safety-losses" class="text-gray-200 font-bold"><%= layerSafety && layerSafety.layerLossCount != null ? layerSafety.layerLossCount : 0 %></span>/2</span>
         <span>Wins <span id="layer-safety-wins" class="text-gray-200 font-bold"><%= layerSafety && layerSafety.successfulTradeCount != null ? layerSafety.successfulTradeCount : 0 %></span>/1</span>
       </div>
@@ -473,11 +464,8 @@
       <div id="layer-safety-stop-banner" class="mt-2 text-[11px] text-rose-400">
         <%= layerStatus === 'SUCCESS_STOPPED'
           ? 'BOT STOPPED — a successful trade has already been recorded (maximum 1 per bot). No further trades will be taken.'
-          : 'BOT STOPPED — maximum layer (6) reached. No further trades will be taken.' %>
+          : 'BOT STOPPED — maximum layer (3) reached. No further trades will be taken.' %>
       </div>
-      <% } %>
-      <% if (safetyStatus === 'PAUSED') { %>
-      <div class="mt-2 text-[11px] text-rose-400">SAFETY PAUSED — Reason: 3 consecutive losses. New trades are blocked until an operator resumes the bot.</div>
       <% } %>
       <% } %>
 
@@ -1348,6 +1336,52 @@
 <script src="/js/bot-socket.js"></script>
 <script src="/js/next-candle-countdown.js"></script>
 <script src="/js/chart-price-label.js"></script>
+<script>
+  // Chart full-screen control. Uses the browser Fullscreen API and keeps the
+  // same chart instance/data; ChartManager's ResizeObserver handles the
+  // resize automatically when the panel enters/leaves full screen.
+  (function initChartFullscreen() {
+    function setup() {
+      var button = document.getElementById('chart-fullscreen-btn');
+      var panel = document.getElementById('bot-chart-panel');
+      var label = document.getElementById('chart-fullscreen-label');
+      if (!button || !panel) return;
+
+      function refresh() {
+        var active = document.fullscreenElement === panel;
+        button.setAttribute('aria-label', active ? 'Exit chart full screen' : 'Open chart full screen');
+        button.setAttribute('title', active ? 'Back to normal' : 'Full screen chart');
+        if (label) label.textContent = active ? 'Exit full screen' : 'Full screen';
+        var icon = button.querySelector('[data-lucide]');
+        if (icon) icon.setAttribute('data-lucide', active ? 'minimize-2' : 'maximize-2');
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
+      }
+
+      button.addEventListener('click', async function () {
+        try {
+          if (document.fullscreenElement === panel) {
+            await document.exitFullscreen();
+          } else if (panel.requestFullscreen) {
+            await panel.requestFullscreen();
+          }
+        } catch (err) {
+          console.warn('[CHART] Full-screen request failed:', err);
+        }
+      });
+
+      document.addEventListener('fullscreenchange', refresh);
+      refresh();
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', setup);
+    } else {
+      setup();
+    }
+  })();
+</script>
 <script src="/js/bot-detail-chart.js"></script>
 <script src="/js/renderers/model002-reason-map.js"></script>
 <script src="/js/renderers/model002-level-state.js"></script>

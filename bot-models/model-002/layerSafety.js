@@ -7,14 +7,10 @@ const { MAX_LAYERS, MAX_LOSSES_PER_LAYER, MAX_SUCCESSFUL_TRADES_PER_BOT } = requ
  * requirements):
  *
  *   1. Maximum 2 losing trades per layer (MAX_LOSSES_PER_LAYER).
- *   2. Maximum 6 layers (MAX_LAYERS) — layer 7 must never be created.
+ *   2. Maximum 3 layers (MAX_LAYERS) — layer 7 must never be created.
  *   3. Maximum 1 successful/winning trade per bot (MAX_SUCCESSFUL_TRADES_PER_BOT).
  *
- * This is entirely independent of ConsecutiveLossSafety (safetyState.js,
- * the pre-existing 3-consecutive-losses-pauses-the-bot rule) — both can be
- * active on the same bot at once and neither reads the other's state.
- *
- * Only an ACTUALLY EXECUTED AND CLOSED trade advances this state machine.
+ *  * Only an ACTUALLY EXECUTED AND CLOSED trade advances this state machine.
  * A RiskEngine rejection is never seen here at all (see Model002.js —
  * this class is only ever driven by onPositionClosed, which only fires
  * for a real closed Position/Trade — a rejected TradeCommand never
@@ -23,8 +19,7 @@ const { MAX_LAYERS, MAX_LOSSES_PER_LAYER, MAX_SUCCESSFUL_TRADES_PER_BOT } = requ
  * defines "loss" (closed trade, negative realizedPnl) and "success"
  * (closed trade, positive realizedPnl); a flat close matches neither
  * definition, so it does not advance the layer and does not consume the
- * one-time success allowance. This mirrors the existing
- * ConsecutiveLossSafety convention for the same realizedPnl === 0 case.
+ * one-time success allowance. BREAK_EVEN has no effect on layer/success safety.
  *
  * Whether a success would reset an in-progress layer/loss-count is
  * explicitly UNDEFINED by the confirmed requirements — and deliberately
@@ -85,7 +80,7 @@ class LayerSafety {
       transition = 'LOSS_RECORDED';
       if (this.layerLossCount >= MAX_LOSSES_PER_LAYER) {
         if (this.currentLayer >= MAX_LAYERS) {
-          // Layer 6's 2nd loss — STOP. Layer 7 must never be created.
+          // Layer 3's 2nd loss — STOP. Layer 4 must never be created.
           this.safetyStatus = 'MAX_LAYER_STOPPED';
           transition = 'MAX_LAYER_STOPPED';
         } else {

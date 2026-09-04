@@ -50,7 +50,7 @@ test('every reason code actually emitted by Model002.js/sameSidePatternEngine.js
   // mapping here, this test fails loudly rather than silently showing a
   // raw code in production.
   const realReasonCodes = [
-    'three_consecutive_losses', 'insufficient_history', 'position_already_open',
+    'insufficient_history', 'position_already_open',
     'direct_entry_pending_client_confirmation', 'no_level_touch',
     'candle1_support_touch_awaiting_candle2', 'candle1_resistance_touch_awaiting_candle2',
     'awaiting_candle2_body_touch', 'candle2_did_not_touch_body_high', 'candle2_did_not_touch_body_low',

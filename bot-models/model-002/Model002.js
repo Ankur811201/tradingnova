@@ -15,13 +15,12 @@ const {
   computeBuyRiskLength, computeSellRiskLength, computeLotFromRiskLength, computeQuantityFromLot, LOT_SIZE_BTC,
   computeCandle2Points, isBodyPMaximum, isCorrectCandleNature,
 } = require('./sameSidePatternEngine');
-// NEW spec (A/B/C wick-trigger reversal pattern) — same-side combinations
-// (BULLISH+SUPPORT -> BUY, BEARISH+RESISTANCE -> SELL) ONLY. The opposite-
-// side combinations (BULLISH+RESISTANCE, BEARISH+SUPPORT, with R1/S1
-// calibration) are out of scope for this spec and keep using
-// sameSidePatternEngine.js unchanged — see _tryStartFreshPattern below.
+// NEW spec (A/B/C wick-trigger reversal pattern) — all current NEW routes:
+// BULLISH+SUPPORT -> BUY, BEARISH+SUPPORT -> BUY, and
+// BEARISH+RESISTANCE -> SELL. BEARISH+SUPPORT shares the exact NEW BUY
+// algorithm; only the first S1 confirmation is calibration-only.
+// BULLISH+RESISTANCE -> SELL remains on the OLD engine.
 const reversalEngine = require('./reversalPatternEngine');
-const { ConsecutiveLossSafety } = require('./safetyState');
 const { LayerSafety } = require('./layerSafety');
 const {
   isOppositeMarketTouch, getActiveTimeframe, hasSwitched, shouldSwitch,
@@ -34,11 +33,12 @@ const { buildPatternVisual } = require('../../utils/model002PatternVisual');
 
 const RULE_ID_BUY = 'MODEL_002_SAME_SIDE_BUY';
 
-// Confirmed requirement: a bot becomes ready for level monitoring after
-// exactly 3 NEW eligible closed candles — a fixed rule, not a per-bot
-// configurable value (unlike historySize, which stays a `parameters` key
-// governing the pattern engine's rolling buffer window).
-const MIN_CANDLES_FOR_READINESS = 3;
+// Confirmed requirement: a bot becomes ready for pattern finding as soon as
+// the first eligible closed candle is available. The first candle is enough
+// to start monitoring; A/B validation still naturally requires a prior candle
+// when a level-touch candidate is encountered. This readiness threshold is
+// independent of historySize, which remains the rolling buffer window.
+const MIN_CANDLES_FOR_READINESS = 1;
 const RULE_ID_SELL = 'MODEL_002_SAME_SIDE_SELL';
 
 const LEVERAGE_MIN = 1;
@@ -47,20 +47,22 @@ const LEVERAGE_MAX = 200;
 /**
  * MODEL_002 — client-driven custom-pattern trading model.
  *
- * CURRENT CONFIRMED ROUTING — TWO ACTIVE ENGINES, both fully implemented
- * and both able to trade. They are deliberately kept SEPARATE: they are
- * never merged, and their stop-loss formulas stay independent.
+ * CURRENT CONFIRMED ROUTING — ONE active NEW A/B/C engine is used for
+ * all four trend/level combinations. BUY + BEARISH is the exact mirror of
+ * BUY + BULLISH, and SELL + BULLISH is the exact mirror of SELL + BEARISH.
+ * The first S1 setup under BEARISH and first R1 setup under BULLISH are
+ * one-time stop-hunt calibration setups; they never trade. After that,
+ * S1/S2/S3 and R1/R2/R3 use the same normal NEW pattern.
  *
  *   BULLISH + SUPPORT    -> NEW engine, BUY   (reversalPatternEngine.js)
+ *   BEARISH + SUPPORT    -> NEW engine, BUY   (reversalPatternEngine.js)
+ *   BULLISH + RESISTANCE -> NEW engine, SELL  (reversalPatternEngine.js)
  *   BEARISH + RESISTANCE -> NEW engine, SELL  (reversalPatternEngine.js)
- *   BULLISH + RESISTANCE -> OLD engine, SELL  (sameSidePatternEngine.js)
- *   BEARISH + SUPPORT    -> OLD engine, BUY   (sameSidePatternEngine.js)
  *
- * "same-side" = the touched level agrees with the trend (NEW engine);
- * "opposite-side" = it does not (OLD engine). Routing lives in
- * _tryStartFreshPattern below. A third, SUPERSEDED generation
- * (patternEngine.js, counter-trend) still exists in the folder but is not
- * on either active trading path.
+ * The OLD sameSidePatternEngine.js remains in the codebase for legacy
+ * formula/unit coverage but is no longer selected by the active Model002
+ * routing. A third, superseded patternEngine.js generation also remains
+ * legacy-only.
  *
  * LEVEL SELECTION — FIRST-MATCH-WINS (confirmed, do not change). When a
  * single candle touches more than one configured level, both active
@@ -83,7 +85,7 @@ const LEVERAGE_MAX = 200;
  *   touches neither boundary is WAIT, never INVALID. Full rules in
  *   reversalPatternEngine.js.
  *
- *   OLD engine — unchanged, two stages:
+ *   Legacy OLD engine — retained for compatibility/unit coverage only:
  *   WAITING_FOR_CANDLE2      — Candle 1 found, searching for a candle that
  *                              touches its body-high (BUY) / body-low
  *                              (SELL). NOT required to be the immediate
@@ -100,12 +102,12 @@ const LEVERAGE_MAX = 200;
  *                              {upper: Candle2.high, lower: Candle2.low}
  *                              and monitored across as many future candles
  *                              as needed (confirmed: not only Candle 3) —
- *                              a strict close-through triggers BUY/SELL or
- *                              INVALID; touching a boundary or closing
- *                              exactly at it is WAIT. Candle-1 replacement
- *                              is NOT re-applied at this stage (the
- *                              requirement only describes it for the
- *                              Candle1->Candle2 search).
+ *                              the RUNNING CANDLE WICK triggers BUY/SELL
+ *                              immediately when the correct boundary is
+ *                              reached. Candle close is NOT required. The
+ *                              existing invalidation behavior remains intact.
+ *                              Candle-1 replacement is NOT re-applied at
+ *                              this stage.
  *
  * On BUY/SELL confirmation the candidate is cleared after the
  * TradeCommand is submitted. On INVALID it is cleared immediately — the
@@ -166,15 +168,8 @@ class Model002 extends BotModelBase {
     this.r1Calibrated = false;
     this.s1Calibrated = false;
 
-    // Confirmed — 3 consecutive losses pauses the bot. Real state, driven
-    // exclusively by onPositionClosed() below (authoritative Trade
-    // records), never by candle-close inference.
-    this.safety = new ConsecutiveLossSafety(this.params.consecutiveLossLimit);
-
-    // PHASE 2 — layer/success safety (confirmed requirements: max 2 losses
-    // per layer, max 6 layers, max 1 successful trade per bot). Entirely
-    // independent of this.safety above — see layerSafety.js class doc.
-    // Also driven exclusively by onPositionClosed() below.
+    // MODEL_002 safety is layer-based only: 2 losses per layer, 3 layers
+    // maximum, and 1 profitable trade stops the bot.
     this.layerSafety = new LayerSafety();
 
     this.paused = false;
@@ -318,6 +313,9 @@ class Model002 extends BotModelBase {
           });
           continue;
         }
+        if (candidate.isCalibrationPattern && (replayResult.outcome === 'BUY' || replayResult.outcome === 'SELL')) {
+          this._applyCalibration(candidate);
+        }
         candidate = null;
         continue;
       }
@@ -406,9 +404,8 @@ class Model002 extends BotModelBase {
     // _appendAndTrim (buffer cap) and BotManager's hydration fetch cap).
     // this.candles is already scoped to only post-creation (and, after a
     // levels/trend change, post-levelsUpdatedAt) candles by BotManager's
-    // hydration filter — so "3 candles in the buffer" already means
-    // exactly "3 NEW eligible closed candles", with no separate timestamp
-    // tracking needed here.
+    // hydration filter — so the first eligible candle is enough to begin
+    // pattern finding, with no separate timestamp tracking needed here.
     const required = MIN_CANDLES_FOR_READINESS;
     return { ready: have >= required, have, required };
   }
@@ -434,82 +431,41 @@ class Model002 extends BotModelBase {
    * every close). This is the real WIN/LOSS/BREAK_EVEN source of truth —
    * no candle-close comparison is used anywhere in this class anymore.
    *
-   * Deduplication: ConsecutiveLossSafety.recordTradeOutcome keys on
-   * trade._id and will never double-count the same closed trade, even if
-   * this hook is somehow invoked twice for it.
+   * Deduplication: LayerSafety.recordTradeOutcome keys on trade._id and
+   * will never double-count the same closed trade, even if this hook is
+   * somehow invoked twice for it.
    */
   async onPositionClosed(trade) {
-    const { outcome, state, duplicate } = this.safety.recordTradeOutcome(trade._id, trade.realizedPnl);
-
-    if (duplicate) {
-      this.emitStrategyEvent('SAFETY_DUPLICATE_TRADE_IGNORED', { tradeId: String(trade._id) });
-      return;
-    }
-
-    this.emitStrategyEvent('SAFETY_STATE_UPDATED', {
-      tradeId: String(trade._id),
-      realizedPnl: trade.realizedPnl,
-      closeReason: trade.reason,
-      outcome,
-      consecutiveLosses: state.consecutiveLosses,
-      paused: state.paused,
-      limit: state.limit,
-    });
-
-    if (state.paused) {
-      this.emitStrategyEvent('BOT_SAFETY_PAUSED', {
-        reason: 'three_consecutive_losses',
-        consecutiveLosses: state.consecutiveLosses,
-        limit: state.limit,
-      });
-    }
-
-    // PHASE 2 — layer/success safety. Separate call, separate dedup set,
-    // driven by the same authoritative trade._id/realizedPnl — see
-    // layerSafety.js. Deliberately NOT short-circuited by the
-    // ConsecutiveLossSafety `duplicate` check above: the two trackers are
-    // independent and each does its own dedup against the same tradeId.
+    // Only an actually executed and closed trade changes MODEL_002 safety.
+    // Risk rejections never reach this hook.
     const layerResult = this.layerSafety.recordTradeOutcome(trade._id, trade.realizedPnl);
     if (layerResult.duplicate) {
       this.emitStrategyEvent('LAYER_SAFETY_DUPLICATE_TRADE_IGNORED', { tradeId: String(trade._id) });
-    } else if (layerResult.transition) {
-      this.emitStrategyEvent('LAYER_SAFETY_STATE_UPDATED', {
-        tradeId: String(trade._id),
-        realizedPnl: trade.realizedPnl,
-        outcome: layerResult.outcome,
-        transition: layerResult.transition,
+      return;
+    }
+
+    this.emitStrategyEvent('LAYER_SAFETY_STATE_UPDATED', {
+      tradeId: String(trade._id),
+      realizedPnl: trade.realizedPnl,
+      closeReason: trade.reason,
+      outcome: layerResult.outcome,
+      transition: layerResult.transition,
+      currentLayer: layerResult.state.currentLayer,
+      layerLossCount: layerResult.state.layerLossCount,
+      successfulTradeCount: layerResult.state.successfulTradeCount,
+      safetyStatus: layerResult.state.safetyStatus,
+    });
+
+    if (layerResult.transition === 'MAX_LAYER_STOPPED') {
+      this.emitStrategyEvent('BOT_SAFETY_STOP', {
+        reason: 'max_layer_reached',
         currentLayer: layerResult.state.currentLayer,
         layerLossCount: layerResult.state.layerLossCount,
-        successfulTradeCount: layerResult.state.successfulTradeCount,
-        safetyStatus: layerResult.state.safetyStatus,
       });
-      if (layerResult.transition === 'MAX_LAYER_STOPPED') {
-        this.emitStrategyEvent('BOT_SAFETY_STOP', {
-          reason: 'max_layer_reached',
-          currentLayer: layerResult.state.currentLayer,
-          layerLossCount: layerResult.state.layerLossCount,
-        });
-      } else if (layerResult.transition === 'SUCCESS_STOPPED') {
-        this.emitStrategyEvent('BOT_SAFETY_STOP', {
-          reason: 'successful_trade_reached',
-          successfulTradeCount: layerResult.state.successfulTradeCount,
-        });
-      }
-    }
-  }
-
-  /** Read by BotManager._recoverSafetyState to decide `paused` when reconstructing state from Trade history after a restart. */
-  getSafetyLossLimit() {
-    return this.params.consecutiveLossLimit;
-  }
-
-  /** Called by BotManager._recoverSafetyState right after hydration, before live dispatch begins. Restart must never silently reset an in-progress or already-paused streak. */
-  restoreSafetyState(state) {
-    this.safety.restoreState(state);
-    if (state && state.paused) {
-      this.emitStrategyEvent('SAFETY_STATE_RESTORED', {
-        consecutiveLosses: state.consecutiveLosses, paused: state.paused,
-        note: 'Restart preserved an existing safety pause — bot remains paused until explicit operator action.',
+    } else if (layerResult.transition === 'SUCCESS_STOPPED') {
+      this.emitStrategyEvent('BOT_SAFETY_STOP', {
+        reason: 'successful_trade_reached',
+        successfulTradeCount: layerResult.state.successfulTradeCount,
       });
     }
   }
@@ -517,8 +473,7 @@ class Model002 extends BotModelBase {
   /**
    * PHASE 2. Called by BotManager._recoverLayerSafetyState right after
    * hydration, before live dispatch begins — same restart-recovery
-   * contract as restoreSafetyState above, for the independent layer/
-   * success tracker.
+   * contract for the layer/success tracker.
    */
   restoreLayerSafetyState(state) {
     this.layerSafety.restoreState(state);
@@ -539,13 +494,13 @@ class Model002 extends BotModelBase {
     if (this.paused || this.stopped) return;
     if (!marketUpdate || marketUpdate.symbol !== this.symbol) return;
 
-    // Live price ticks are authoritative for the NEW-engine boundary
-    // trigger. Candle 3 (and any later evaluation candle) must trigger as
-    // soon as the live price touches the correct fixed boundary — NEVER
-    // wait for that candle to close. The existing tick stream is reused; no
-    // new market-data connection/listener is created.
+    // Live price ticks are authoritative for MODEL_002 boundary entries.
+    // ALL four patterns trigger from the running candle wick as soon as the
+    // correct fixed boundary is touched — NEVER wait for candle close. The
+    // existing tick stream is reused; no new market-data connection/listener
+    // is created.
     if (marketUpdate.type === 'price') {
-      await this._handleLiveNewBoundaryTouch(marketUpdate, positionContext);
+      await this._handleLiveBoundaryTouch(marketUpdate, positionContext);
       return;
     }
 
@@ -563,14 +518,8 @@ class Model002 extends BotModelBase {
 
     this.candles = this._appendAndTrim(this.candles, candle, this.params.historySize);
 
-    if (this.safety.paused) {
-      this._emitDecision('WAIT', { reason: 'three_consecutive_losses', safety: this.safety.getState() }, candle);
-      return;
-    }
-
     // PHASE 2 — layer/success safety eligibility gate. Runs BEFORE any
-    // pattern evaluation (same placement as the safety.paused gate above,
-    // per the existing architecture) so a stopped bot never even attempts
+    // pattern evaluation (before pattern evaluation) so a stopped bot never even attempts
     // to build a candidate, let alone reach RiskEngine. Functionally
     // equivalent to (and strictly earlier than) gating right before
     // TradeCommand submission — no TradeCommand is ever constructed once
@@ -645,7 +594,7 @@ class Model002 extends BotModelBase {
       return;
     }
 
-    // OLD engine (opposite-side) — identical WAIT emit to the pre-existing behavior.
+    // NEW engine — level-touch candle is already Candle 2, so no Candle-2 search stage.
     this._emitDecision('WAIT', {
       reason: attempt.candidate.direction === 'BUY' ? 'candle1_support_touch_awaiting_candle2' : 'candle1_resistance_touch_awaiting_candle2',
       direction: attempt.candidate.direction,
@@ -660,108 +609,95 @@ class Model002 extends BotModelBase {
    * hydration replay (_reconstructPatternStateFromHistory) — a single
    * source of truth so live and replay can never disagree.
    *
-   * Same-side combination for the current trend (BULLISH->Support,
-   * BEARISH->Resistance) is checked FIRST using the NEW A/B/C engine —
-   * `prevCandle` (the candle immediately before `candle`) is REQUIRED for
-   * its body-high/body-low (A vs B) validation, per spec §2/§3/§12. If
-   * that's not touched, the opposite-side combination is checked using the
-   * unchanged OLD engine (candle1_touch -> WAITING_FOR_CANDLE2), exactly
-   * as before this spec revision.
+   * All four active combinations use the NEW A/B/C engine:
+   * BULLISH+SUPPORT -> BUY, BEARISH+SUPPORT -> BUY,
+   * BULLISH+RESISTANCE -> SELL, BEARISH+RESISTANCE -> SELL.
+   * The first S1 (BEARISH+SUPPORT) and first R1 (BULLISH+RESISTANCE)
+   * confirmations are calibration-only. `prevCandle` (the candle immediately
+   * before `candle`) is REQUIRED for every NEW BUY/SELL A/B validation.
    *
    * Returns:
    *   null                    — nothing touched at all.
-   *   { candidate }           — a valid new pattern candidate (either engine).
-   *   { rejected: {...} }     — a same-side (NEW engine) touch was found but
-   *                             failed A/B/BodyP/nature validation; caller
-   *                             decides whether/how to report it (silent
-   *                             during replay).
+   *   { candidate }           — a valid NEW pattern candidate.
+   *   { rejected: {...} }     — a touched level failed A/B/BodyP/nature
+   *                             validation; caller decides how to report it.
    */
   _tryStartFreshPattern(candle, prevCandle, live = false) {
     const trend = this.params.trend;
     if (trend !== 'BULLISH' && trend !== 'BEARISH') return null;
 
-    const sameSideLevels = trend === 'BULLISH' ? this.params.support : this.params.resistance;
-    const sameSideDirection = trend === 'BULLISH' ? 'BUY' : 'SELL';
-    const oppositeSideLevels = trend === 'BULLISH' ? this.params.resistance : this.params.support;
-    const oppositeSideDirection = trend === 'BULLISH' ? 'SELL' : 'BUY';
+    // NEW A/B/C engine is used by all four combinations. Keep one implementation
+    // here so mirrored BUY and SELL routes cannot drift apart.
+    const buildNewAttempt = (levels, direction, isCalibration) => {
+      const touch = reversalEngine.findTouchedLevel(levels, candle, direction);
+      if (!touch) return null;
 
-    const newTouch = reversalEngine.findTouchedLevel(sameSideLevels, candle, sameSideDirection);
-    if (newTouch) {
-      // PERSISTENT LEVEL-TOUCH STATE — recorded on the TOUCH itself, using
-      // this path's own already-computed direction/matchedLevel (no second
-      // Support/Resistance detector anywhere). Deliberately BEFORE the A/B,
-      // BodyP and candle-nature validations below: the level really was
-      // touched even when the pattern that touch tried to start is
-      // rejected, and that fact must survive the rejection.
-      this._recordLevelTouch(sameSideDirection, newTouch, candle);
-
-      // ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH fires on the touch
-      // itself, live only — hydration replay must stay entirely silent
-      // (no emitStrategyEvent), exactly as it always has.
-      if (live) this._maybeSwitchToOppositeMarketTimeframe(candle, sameSideDirection, newTouch);
+      this._recordLevelTouch(direction, touch, candle);
+      if (live) this._maybeSwitchToOppositeMarketTimeframe(candle, direction, touch);
 
       if (!prevCandle) {
         return { rejected: {
-          reason: 'no_prior_candle_for_ab_validation', direction: sameSideDirection,
-          activeLevel: this._activeLevelFor({ direction: sameSideDirection, matchedLevel: newTouch }),
+          reason: 'no_prior_candle_for_ab_validation', direction,
+          activeLevel: this._activeLevelFor({ direction, matchedLevel: touch }),
         } };
       }
 
-      const ab = reversalEngine.validateAB(prevCandle, candle, sameSideDirection);
+      const ab = reversalEngine.validateAB(prevCandle, candle, direction);
       if (!ab.valid) {
         return { rejected: {
-          reason: sameSideDirection === 'BUY' ? 'ab_body_high_not_greater' : 'ab_body_low_not_less',
-          direction: sameSideDirection,
-          activeLevel: this._activeLevelFor({ direction: sameSideDirection, matchedLevel: newTouch }),
+          reason: direction === 'BUY' ? 'ab_body_high_not_greater' : 'ab_body_low_not_less',
+          direction,
+          activeLevel: this._activeLevelFor({ direction, matchedLevel: touch }),
           candle1: this._summarizeCandle(prevCandle), candle2: this._summarizeCandle(candle),
         } };
       }
 
-      // Preserved existing Candle-2 validation (BodyP-maximum-of-three,
-      // correct candle nature) — applied to B now that it's Candle 2,
-      // per spec §5 ("do not silently remove these existing validations
-      // unless they directly contradict the new explicit rules"). The old
-      // touch-based candle2TouchesBodyHigh/Low check IS superseded (the
-      // new body-high/low comparison directly contradicts it), so it is
-      // NOT applied here.
-      const points = computeCandle2Points(candle, sameSideDirection);
+      const points = computeCandle2Points(candle, direction);
       if (!isBodyPMaximum(points)) {
         return { rejected: {
-          reason: 'bodyP_not_maximum', direction: sameSideDirection,
-          activeLevel: this._activeLevelFor({ direction: sameSideDirection, matchedLevel: newTouch }),
+          reason: 'bodyP_not_maximum', direction,
+          activeLevel: this._activeLevelFor({ direction, matchedLevel: touch }),
           candle1: this._summarizeCandle(prevCandle), candle2: this._summarizeCandle(candle), points,
         } };
       }
-      if (!isCorrectCandleNature(candle, sameSideDirection)) {
+      if (!isCorrectCandleNature(candle, direction)) {
         return { rejected: {
-          reason: sameSideDirection === 'BUY' ? 'candle2_not_bullish' : 'candle2_not_bearish', direction: sameSideDirection,
-          activeLevel: this._activeLevelFor({ direction: sameSideDirection, matchedLevel: newTouch }),
+          reason: direction === 'BUY' ? 'candle2_not_bullish' : 'candle2_not_bearish', direction,
+          activeLevel: this._activeLevelFor({ direction, matchedLevel: touch }),
           candle1: this._summarizeCandle(prevCandle), candle2: this._summarizeCandle(candle), points,
         } };
       }
 
-      const boundaries = reversalEngine.computeBoundaries(candle);
       return { candidate: {
-        engine: 'NEW', direction: sameSideDirection, candle1: prevCandle, candle2: candle,
-        matchedLevel: newTouch, stage: 'AWAITING_CANDLE3', boundaries, points,
-        firstLiveBoundaryTouch: null, // retained for historical replay/tie-break compatibility
+        engine: 'NEW', direction, candle1: prevCandle, candle2: candle,
+        matchedLevel: touch, stage: 'AWAITING_CANDLE3',
+        boundaries: reversalEngine.computeBoundaries(candle), points,
+        // R1/S1 first confirmed setup is calibration-only; all later
+        // R1/S1 and every R2/R3/S2/S3 setup is a normal NEW pattern.
+        isCalibrationPattern: Boolean(isCalibration || this._computeIsCalibrationPattern(direction, touch)),
+        firstLiveBoundaryTouch: null,
         liveTriggerCandle: null,
       } };
-    }
+    };
 
-    // Opposite-side combination — OLD engine, entirely unchanged.
-    const oldTouch = findTouchedLevel(oppositeSideLevels, candle);
-    if (oldTouch) {
-      if (live) this._maybeSwitchToOppositeMarketTimeframe(candle, oppositeSideDirection, oldTouch);
-      return { candidate: this._buildCandle1Candidate(candle, oppositeSideDirection, oldTouch) };
-    }
+    // Every active MODEL_002 trend/level combination now uses the same NEW
+    // A/B/C algorithm. The two BUY combinations are exact mirrors, and the
+    // two SELL combinations are exact mirrors. Only the first S1 (BEARISH)
+    // and first R1 (BULLISH) confirmed setup are calibration-only.
+    const primaryLevels = this.params.support;
+    const primaryDirection = 'BUY';
+    const buyAttempt = buildNewAttempt(primaryLevels, primaryDirection, false);
+    if (buyAttempt) return buyAttempt;
+
+    const sellAttempt = buildNewAttempt(this.params.resistance, 'SELL', false);
+    if (sellAttempt) return sellAttempt;
 
     return null;
   }
 
   /** Constructs the Candle 1 candidate object — the single source of truth for Candle 1 state, reused by both the live touch path and hydration recovery. Never emits anything; callers decide what (if anything) to emit. */
   /**
-   * One-time R1/S1 calibration (opposite-side patterns only): the FIRST
+   * One-time R1/S1 calibration: the FIRST
    * confirmed pattern at index-1 (R1 for BULLISH+RESISTANCE=SELL, S1 for
    * BEARISH+SUPPORT=BUY) is never traded — it calibrates that level to
    * Candle1.high/low instead. Computed fresh every time a Candle 1
@@ -780,14 +716,11 @@ class Model002 extends BotModelBase {
   }
 
   _buildCandle1Candidate(candle, direction, matchedLevel) {
-    // OLD (opposite-side) engine touch — the single place every OLD-engine
-    // Candle 1 is constructed (fresh search, live Candle-1 replacement
-    // replacement and hydration replay all go through here), so the
-    // level-touch latch is recorded exactly once per touch with no separate
-    // detector.
+    // Legacy OLD-engine Candle 1 construction retained for legacy helpers
+    // and tests. Active Model002 routing uses the NEW engine above.
     this._recordLevelTouch(direction, matchedLevel, candle);
     return {
-      engine: 'OLD', // opposite-side combinations only — see _tryStartFreshPattern
+      engine: 'OLD', // legacy path; active routing uses NEW
       direction, candle1: candle, matchedLevel, stage: 'WAITING_FOR_CANDLE2',
       isCalibrationPattern: this._computeIsCalibrationPattern(direction, matchedLevel),
     };
@@ -1055,7 +988,7 @@ class Model002 extends BotModelBase {
    *
    * BODY values only — A.high / A.low (wicks) are never used.
    *
-   * The OLD (opposite-side) engine gets the same line for the same reason:
+   * Legacy OLD-engine candidates get the same line for the same reason:
    * its own EXISTING Candle 2 rule is candle2TouchesBodyHigh/Low(candle1,
    * candle2), i.e. it too compares against Candle 1's body boundary. Same
    * formula, same meaning, no new rule. Nothing here feeds back into
@@ -1185,7 +1118,7 @@ class Model002 extends BotModelBase {
   }
 
   // =========================================================================
-  // NEW ENGINE (A/B/C wick-trigger spec) — same-side combinations only.
+  // NEW ENGINE (A/B/C wick-trigger spec) — all four active combinations.
   // =========================================================================
 
   /**
@@ -1253,35 +1186,55 @@ class Model002 extends BotModelBase {
       return;
     }
 
+    // The first S1 BUY (BEARISH trend) and first R1 SELL (BULLISH trend)
+    // are one-time stop-hunt calibration setups. They use the exact same
+    // NEW pattern/trigger as every later setup, but the first successful
+    // resolution calibrates the level and deliberately does not trade.
+    if (candidate.isCalibrationPattern && (boundaryResult.outcome === 'BUY' || boundaryResult.outcome === 'SELL')) {
+      this._applyCalibration(candidate);
+      const calibrationReason = candidate.direction === 'SELL'
+        ? 'r1_calibration_confirmed_no_trade'
+        : 's1_calibration_confirmed_no_trade';
+      this._emitDecision('WAIT', {
+        reason: calibrationReason, direction: candidate.direction,
+        activeLevel: this._activeLevelFor(candidate),
+        candle1: this._summarizeCandle(candidate.candle1),
+        candle2: this._summarizeCandle(candidate.candle2),
+        candle3: this._summarizeCandle(candleC),
+        points: candidate.points, boundaries: candidate.boundaries,
+      }, candleC);
+      this.patternCandidate = null;
+      return;
+    }
+
     await this._confirmAndSubmitNew(candidate, candleC);
   }
 
   /**
-   * Immediate live boundary trigger for the NEW same-side engine.
+   * Immediate live boundary trigger for MODEL_002 boundary patterns.
    *
    * Once Candle 2 has validated, every subsequent live price tick is part
    * of the current evaluation candle until that candle closes. A touch of
-   * the trigger boundary submits the trade immediately; a touch of the
-   * wrong boundary invalidates the candidate immediately. No candle close
-   * is required. The live high/low accumulated here is also included in
-   * the running B..trigger SL window.
+   * the correct boundary submits the trade immediately; a candle close is
+   * not required. This applies to both engines so all four MODEL_002
+   * combinations share the same running-candle entry trigger.
    */
-  async _handleLiveNewBoundaryTouch(marketUpdate, positionContext) {
+  async _handleLiveBoundaryTouch(marketUpdate, positionContext) {
     const candidate = this.patternCandidate;
-    if (!candidate || candidate.engine !== 'NEW' || candidate.stage !== 'AWAITING_CANDLE3') return;
+    if (!candidate) return;
+    if (candidate.stage !== 'AWAITING_CANDLE3' && candidate.stage !== 'WAITING_FOR_BOUNDARY_BREAK') return;
 
     if (positionContext) return; // no pyramiding / duplicate entry
-    if (this.safety.paused || this.layerSafety.safetyStatus !== 'NORMAL') return;
+    if (this.layerSafety.safetyStatus !== 'NORMAL') return;
 
     const price = marketUpdate.data && marketUpdate.data.price;
     const timestamp = Number(marketUpdate.timestamp);
     if (!Number.isFinite(price) || !Number.isFinite(timestamp)) return;
-    if (timestamp <= candidate.candle2.timestamp) return;
+    if (!candidate.candle2 || timestamp <= candidate.candle2.timestamp) return;
 
     // Build/update a lightweight forming trigger candle from the live tick
     // stream. This candle is NOT persisted here; CandlePersistenceService
-    // remains the source of canonical closed candles. It exists only so the
-    // immediate trade gets the correct trigger timestamp and running wick.
+    // remains the source of canonical closed candles.
     if (!candidate.liveTriggerCandle) {
       candidate.liveTriggerCandle = {
         timestamp, open: price, high: price, low: price, close: price,
@@ -1292,14 +1245,18 @@ class Model002 extends BotModelBase {
       candidate.liveTriggerCandle.close = price;
     }
 
-    candidate.lowestLowSinceCandle2 = Math.min(
-      Number.isFinite(candidate.lowestLowSinceCandle2) ? candidate.lowestLowSinceCandle2 : candidate.candle2.low,
-      candidate.liveTriggerCandle.low
-    );
-    candidate.highestHighSinceCandle2 = Math.max(
-      Number.isFinite(candidate.highestHighSinceCandle2) ? candidate.highestHighSinceCandle2 : candidate.candle2.high,
-      candidate.liveTriggerCandle.high
-    );
+    // Only NEW uses the running B..trigger SL window. OLD keeps its existing
+    // fixed Candle-1 stop-loss formula, so do not mutate its SL state here.
+    if (candidate.engine === 'NEW') {
+      candidate.lowestLowSinceCandle2 = Math.min(
+        Number.isFinite(candidate.lowestLowSinceCandle2) ? candidate.lowestLowSinceCandle2 : candidate.candle2.low,
+        candidate.liveTriggerCandle.low
+      );
+      candidate.highestHighSinceCandle2 = Math.max(
+        Number.isFinite(candidate.highestHighSinceCandle2) ? candidate.highestHighSinceCandle2 : candidate.candle2.high,
+        candidate.liveTriggerCandle.high
+      );
+    }
 
     const direction = candidate.direction;
     const triggerTouched = direction === 'BUY'
@@ -1327,9 +1284,31 @@ class Model002 extends BotModelBase {
     if (!triggerTouched) return;
 
     // The first received tick that reaches the correct boundary is the
-    // trigger. Entry remains exactly the fixed boundary; _confirmAndSubmitNew
-    // keeps the existing SL/risk/lot/execution pipeline unchanged.
-    await this._confirmAndSubmitNew(candidate, candidate.liveTriggerCandle);
+    // trigger. The first S1 BUY / R1 SELL setup is calibration-only, so
+    // consume that NEW trigger exactly like the candle path: calibrate once
+    // and never submit a TradeCommand. Every later setup uses the ordinary
+    // NEW confirmation path.
+    if (candidate.engine === 'NEW') {
+      if (candidate.isCalibrationPattern) {
+        this._applyCalibration(candidate);
+        const calibrationReason = direction === 'SELL'
+          ? 'r1_calibration_confirmed_no_trade'
+          : 's1_calibration_confirmed_no_trade';
+        this._emitDecision('WAIT', {
+          reason: calibrationReason, direction,
+          activeLevel: this._activeLevelFor(candidate),
+          candle1: this._summarizeCandle(candidate.candle1),
+          candle2: this._summarizeCandle(candidate.candle2),
+          candle3: this._summarizeCandle(candidate.liveTriggerCandle),
+          points: candidate.points, boundaries: candidate.boundaries,
+        }, candidate.liveTriggerCandle);
+        this.patternCandidate = null;
+        return;
+      }
+      await this._confirmAndSubmitNew(candidate, candidate.liveTriggerCandle);
+    } else {
+      await this._confirmAndSubmit(candidate, { outcome: direction }, candidate.liveTriggerCandle);
+    }
   }
 
   /**
@@ -1357,7 +1336,7 @@ class Model002 extends BotModelBase {
    * riskLength onward (>360 check, lot mapping, lot COUNT -> BTC quantity
    * conversion via computeQuantityFromLot at 1 lot = 0.001 BTC, no
    * capital x leverage cap, TradeCommand build/submit) is identical in
-   * spirit to _confirmAndSubmit (OLD engine) — duplicated rather than
+   * spirit to the legacy _confirmAndSubmit path — duplicated rather than
    * shared to avoid touching that already-tested path. The lot count is
    * NEVER used as a quantity directly (PHASE 1, approved).
    */
@@ -1462,7 +1441,8 @@ class Model002 extends BotModelBase {
       action: result.direction === 'BUY' ? 'LONG' : 'SHORT',
       quantity: result.finalQuantity,
       stopLoss: result.stopLoss,
-      takeProfit: null, // no TP formula specified for the same-side pattern — never invented
+      takeProfit: null, // MODEL_002 has no TP formula — never invented
+      autoTargets: false, // disable PaperEngine's generic R-multiple targets; MODEL_002 is SL-only
       reason: result.reason,
       metadata: {
         ruleId: result.ruleId,
@@ -1535,14 +1515,9 @@ class Model002 extends BotModelBase {
       leverage: this.leverage,
       maximumAllowedNotional: this.capitalAllocation * this.leverage,
       maxCapitalCapped: result.maxCapitalCapped !== undefined ? result.maxCapitalCapped : null,
-      consecutiveLosses: this.safety.getState().consecutiveLosses,
-      safetyLimit: this.safety.getState().limit,
-      safetyStatus: this.safety.getState().paused ? 'PAUSED' : (this.safety.getState().consecutiveLosses > 0 ? 'WARNING' : 'NORMAL'),
-      // PHASE 2 — layer/success safety state, nested (not flattened into
-      // the existing `safetyStatus` key above) to avoid colliding with the
-      // pre-existing 3-consecutive-loss telemetry field of the same name;
-      // the two trackers are independent (see layerSafety.js).
+      // MODEL_002 safety: layer/success state is the single source of truth.
       layerSafety: this.layerSafety.getState(),
+      safetyStatus: this.layerSafety.getState().safetyStatus,
       // Shaped for public/js/renderers/model-thinking-registry.js's MODEL_002
       // renderer (Bot Detail "Decision Engine" panel). Every value here is
       // taken directly from what this decision actually computed above —

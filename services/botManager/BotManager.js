@@ -686,7 +686,7 @@ class BotManager {
    *
    * No unbounded-growth risk: MAX_SUCCESSFUL_TRADES_PER_BOT=1 means a bot
    * permanently stops trading after its first win, and
-   * MAX_LAYERS*MAX_LOSSES_PER_LAYER=12 bounds the loss-only case — so a
+   * MAX_LAYERS*MAX_LOSSES_PER_LAYER=6 bounds the loss-only case — so a
    * MODEL_002 bot's real trade history for this instance/environment is
    * always small (at most ~13 trades, ever) once this safety system is in
    * effect. No `.limit()` is applied — a real cap would be the wrong fix

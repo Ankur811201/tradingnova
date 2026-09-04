@@ -54,12 +54,12 @@ class PaperEngine {
 
   /**
    * Opens a paper position (LONG or SHORT) via a simulated market order.
-   * @param {object} params { userId, symbol, side: 'LONG'|'SHORT', quantity, leverage, stopLoss, takeProfit, source, modelId, instanceId, commandId }
+   * @param {object} params { userId, symbol, side: 'LONG'|'SHORT', quantity, leverage, stopLoss, takeProfit, autoTargets, source, modelId, instanceId, commandId }
    */
   async openPosition(params) {
     const {
       userId, symbol, side, quantity, leverage = 1,
-      stopLoss = null, takeProfit = null,
+      stopLoss = null, takeProfit = null, autoTargets = true,
       source = 'MANUAL', modelId = null, instanceId = null, commandId = null,
     } = params;
 
@@ -85,13 +85,13 @@ class PaperEngine {
     const margin = computeMargin(notional, leverage);
     const fee = computeFee(notional, env.PAPER_TAKER_FEE_RATE);
 
-    // Multi-target exits (confirmed rules): 4 R-multiple targets, 25% each,
-    // derived from entryPrice/stopLoss alone — requires no change to
-    // whichever model produced this command. Positions opened without a
-    // stopLoss get no targets (existing single-takeProfit behavior, if any,
-    // is unaffected).
-    const targets = computeMultiTargets(side, entryPrice, stopLoss, quantity) || [];
-    const effectiveTakeProfit = targets.length ? null : takeProfit; // replaced by targets, per confirmed rule
+    // Multi-target exits are opt-in per command. MODEL_002 explicitly
+    // disables automatic R-multiple targets because its strategy defines
+    // no take-profit; it must remain open until its stop-loss or an
+    // explicitly authorized close path. Other callers retain the existing
+    // multi-target behavior by default.
+    const targets = autoTargets ? (computeMultiTargets(side, entryPrice, stopLoss, quantity) || []) : [];
+    const effectiveTakeProfit = autoTargets && targets.length ? null : takeProfit;
 
     const account = await this.ensureAccount(userId);
     const requiredFunds = margin + fee;

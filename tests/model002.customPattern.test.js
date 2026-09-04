@@ -24,7 +24,6 @@ const Model002 = require('../bot-models/model-002/Model002');
 const { resolveTouchedLevel } = require('../bot-models/model-002/levelEngine');
 const { evaluateCounterTrendBuy, evaluateCounterTrendSell } = require('../bot-models/model-002/patternEngine');
 const riskSizing = require('../bot-models/model-002/riskSizing');
-const { ConsecutiveLossSafety } = require('../bot-models/model-002/safetyState');
 const { validateAndMergeParameters } = require('../bot-models/model-002/validators');
 
 const MIN = 60000;
@@ -163,208 +162,34 @@ test('accepts leverage exactly 200x, uses it exactly (no silent conversion)', as
   assert.equal(model.leverage, 200);
 });
 
-// =========================================================================
-// PART 2 — Real WIN/LOSS/BREAK_EVEN detection
-// =========================================================================
+// ========================================================================
+// MODEL_002 layer safety is covered exhaustively in model002.layerSafety.test.js
+// ========================================================================
 
-test('ConsecutiveLossSafety: a profitable closed trade -> WIN, resets streak', () => {
-  const safety = new ConsecutiveLossSafety(3);
-  safety.recordTradeOutcome('t1', -50);
-  const { outcome, state } = safety.recordTradeOutcome('t2', 100);
-  assert.equal(outcome, 'WIN');
-  assert.equal(state.consecutiveLosses, 0);
-});
-
-test('ConsecutiveLossSafety: a losing closed trade -> LOSS, increments streak', () => {
-  const safety = new ConsecutiveLossSafety(3);
-  const { outcome, state } = safety.recordTradeOutcome('t1', -50);
-  assert.equal(outcome, 'LOSS');
-  assert.equal(state.consecutiveLosses, 1);
-});
-
-test('ConsecutiveLossSafety: zero realizedPnl -> BREAK_EVEN, resets streak, not counted as a loss', () => {
-  const safety = new ConsecutiveLossSafety(3);
-  safety.recordTradeOutcome('t1', -50);
-  const { outcome, state } = safety.recordTradeOutcome('t2', 0);
-  assert.equal(outcome, 'BREAK_EVEN');
-  assert.equal(state.consecutiveLosses, 0, 'BREAK_EVEN resets the streak (confirmed recommended behavior — see final report)');
-});
-
-test('ConsecutiveLossSafety: same tradeId processed twice counts only once', () => {
-  const safety = new ConsecutiveLossSafety(3);
-  const first = safety.recordTradeOutcome('t1', -50);
-  const second = safety.recordTradeOutcome('t1', -50);
-  assert.equal(first.duplicate, false);
-  assert.equal(second.duplicate, true);
-  assert.equal(safety.getState().consecutiveLosses, 1, 'duplicate delivery of the same trade must not double-count');
-});
-
-test('Model002.onPositionClosed: routes a real Trade record through to the safety counter (not a candle heuristic)', async () => {
-  const { ctx, model } = await startedModel();
-  await model.onPositionClosed({ _id: 'trade1', realizedPnl: -25, reason: 'STOP_LOSS' });
-  assert.equal(model.safety.getState().consecutiveLosses, 1);
-  assert.ok(ctx.events.some((e) => e.eventType === 'SAFETY_STATE_UPDATED' && e.payload.outcome === 'LOSS'));
-});
-
-test('a rejected TradeCommand never reaches onPositionClosed and never counts', async () => {
-  const { model } = await startedModel();
-  // SIGNAL_REJECTED events are emitted by _evaluateEntry independent of onPositionClosed —
-  // asserting here that the safety counter is untouched by anything other than a real close.
-  assert.equal(model.safety.getState().consecutiveLosses, 0);
-});
-
-test('a WAIT decision never touches the safety counter', async () => {
-  const { ctx, model } = await startedModel();
-  await model.onHydrate(flat(20, 62000, BASE));
-  const candle = { timestamp: BASE + 20 * MIN, open: 62000, high: 62010, low: 61990, close: 62005, volume: null };
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: candle.timestamp, data: candle }, null);
-  assert.equal(model.safety.getState().consecutiveLosses, 0);
-});
-
-// =========================================================================
-// PART 3 — Three consecutive losses, reset, persistence
+// BotManager wiring — layer safety recovery must remain model-agnostic.
 // =========================================================================
 
-test('first loss -> 1/3, second -> 2/3, third -> 3/3 + PAUSE', async () => {
-  const { ctx, model } = await startedModel();
-  await model.onPositionClosed({ _id: 't1', realizedPnl: -10, reason: 'STOP_LOSS' });
-  assert.deepEqual([model.safety.getState().consecutiveLosses, model.safety.getState().paused], [1, false]);
-  await model.onPositionClosed({ _id: 't2', realizedPnl: -10, reason: 'STOP_LOSS' });
-  assert.deepEqual([model.safety.getState().consecutiveLosses, model.safety.getState().paused], [2, false]);
-  await model.onPositionClosed({ _id: 't3', realizedPnl: -10, reason: 'STOP_LOSS' });
-  assert.deepEqual([model.safety.getState().consecutiveLosses, model.safety.getState().paused], [3, true]);
-  assert.ok(ctx.events.some((e) => e.eventType === 'BOT_SAFETY_PAUSED'));
-});
-
-test('WIN resets an in-progress streak of 2 back to 0', async () => {
-  const { model } = await startedModel();
-  await model.onPositionClosed({ _id: 't1', realizedPnl: -10, reason: 'STOP_LOSS' });
-  await model.onPositionClosed({ _id: 't2', realizedPnl: -10, reason: 'STOP_LOSS' });
-  await model.onPositionClosed({ _id: 't3', realizedPnl: 30, reason: 'TAKE_PROFIT' });
-  assert.equal(model.safety.getState().consecutiveLosses, 0);
-});
-
-test('restart preserves an in-progress streak of 2 (via restoreSafetyState, as BotManager would call it)', async () => {
-  const { model } = await startedModel();
-  model.restoreSafetyState({ consecutiveLosses: 2, paused: false });
-  assert.equal(model.safety.getState().consecutiveLosses, 2);
-  await model.onPositionClosed({ _id: 't3', realizedPnl: -5, reason: 'STOP_LOSS' });
-  assert.equal(model.safety.getState().consecutiveLosses, 3);
-  assert.equal(model.safety.getState().paused, true);
-});
-
-test('restart preserves an already-paused 3/3 state and does NOT silently resume running', async () => {
-  const { model } = await startedModel();
-  model.restoreSafetyState({ consecutiveLosses: 3, paused: true });
-  assert.equal(model.safety.getState().paused, true);
-});
-
-test('after restart-restored pause, a 4th trade attempt is blocked before any entry evaluation', async () => {
-  const { ctx, model } = await startedModel();
-  model.restoreSafetyState({ consecutiveLosses: 3, paused: true });
-  await model.onHydrate(flat(17, 61000, BASE));
-  const refL1 = { timestamp: BASE + 17 * MIN, open: 61000, high: 61010, low: 60990, close: 60950, volume: null };
-  const touch = { timestamp: BASE + 18 * MIN, open: 60950, high: 60960, low: 60000, close: 60100, volume: null };
-  const conf = { timestamp: BASE + 19 * MIN, open: 60100, high: 61200, low: 60050, close: 61100, volume: null };
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: refL1.timestamp, data: refL1 }, null);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: touch.timestamp, data: touch }, null);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: conf.timestamp, data: conf }, null);
-
-  assert.equal(ctx.commands.length, 0, 'no new trade command may be submitted while safety-paused, even with a fully valid setup');
-  const lastDecision = ctx.events.filter((e) => e.eventType === 'DECISION').pop();
-  assert.equal(lastDecision.payload.reason, 'three_consecutive_losses');
-  assert.equal(lastDecision.payload.safetyStatus, 'PAUSED');
-});
-
-test('Model002.getSafetyLossLimit exposes the configured limit for BotManager restart-reconstruction', async () => {
-  const { model } = await startedModel();
-  assert.equal(model.getSafetyLossLimit(), 3);
-});
-
-// =========================================================================
-// BotManager wiring — shape/contract checks (no live MongoDB in this
-// environment; see final report). Confirms the additive hook exists and
-// is guarded exactly like the pre-existing restoreLevelCounts pattern, so
-// MODEL_001 (which defines neither) is provably unaffected.
-// =========================================================================
-
-test('BotManager defines the new additive _recoverSafetyState method, guarded by a typeof check (model-agnostic, same pattern as _recoverLevelCounts)', () => {
+test('BotManager defines the layer-safety recovery hook and keeps it model-agnostic', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const content = fs.readFileSync(path.join(__dirname, '..', 'services', 'botManager', 'BotManager.js'), 'utf8');
-  assert.match(content, /_recoverSafetyState/);
-  assert.match(content, /typeof modelInstance\.restoreSafetyState !== 'function'/);
-  assert.match(content, /onPositionClosed/);
+  assert.match(content, /_recoverLayerSafetyState/);
+  assert.match(content, /typeof modelInstance\.restoreLayerSafetyState !== 'function'/);
   assert.match(content, /typeof live\.modelInstance\.onPositionClosed === 'function'/);
 });
 
-test('BotManager scopes both safety/closed-trade Trade queries by instanceId AND environment (not instanceId alone)', () => {
+test('BotManager layer-safety Trade query is scoped by instanceId AND environment', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const content = fs.readFileSync(path.join(__dirname, '..', 'services', 'botManager', 'BotManager.js'), 'utf8');
-  assert.match(
-    content,
-    /Trade\.find\(\{ instanceId: dbInstance\.instanceId, environment: dbInstance\.environment \}\)/,
-    '_recoverSafetyState\'s history-reconstruction query must be scoped by environment'
-  );
-  assert.match(
-    content,
-    /Trade\.findOne\(\{\s*\n\s*position: pending\.positionId,\s*\n\s*instanceId,\s*\n\s*environment: dbInstance\.environment,\s*\n\s*symbol: pending\.symbol,\s*\n\s*\}\)/,
-    'the deferred closed-trade lookup in dispatchMarketData must be scoped by position AND instanceId AND environment'
-  );
+  assert.match(content, /Trade\.find\(\{ instanceId: dbInstance\.instanceId, environment: dbInstance\.environment \}\)/);
 });
 
-test('BotManager seeds processedTradeIds with ALL recently-loaded trades (not only the ones inside the current loss streak)', () => {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const content = fs.readFileSync(path.join(__dirname, '..', 'services', 'botManager', 'BotManager.js'), 'utf8');
-  assert.match(content, /const processedTradeIds = recentTrades\.map\(\(trade\) => String\(trade\._id\)\);/);
-  assert.match(content, /restoreSafetyState\(\{ consecutiveLosses, paused, processedTradeIds \}\)/);
-});
-
-test('BotManager defers/retries the closed-trade lookup instead of relying on a single immediate query (Position-close vs Trade-create race)', () => {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const content = fs.readFileSync(path.join(__dirname, '..', 'services', 'botManager', 'BotManager.js'), 'utf8');
-  assert.match(content, /pendingClosedTradeLookup/);
-  assert.match(content, /CLOSED_TRADE_LOOKUP_MAX_ATTEMPTS/);
-  assert.match(content, /CLOSED_TRADE_LOOKUP_MAX_WAIT_MS/);
-  // Must not give up after a single query — a retry-on-next-tick path must exist.
-  assert.match(content, /still unresolved and within bounds — retried again on the next tick/);
-});
-
-test('ConsecutiveLossSafety.restoreState seeds the dedup set — a trade already counted during reconstruction cannot be double-counted after restart', () => {
-  const safety = new ConsecutiveLossSafety(3);
-  // Simulate BotManager._recoverSafetyState reconstructing "2 consecutive losses"
-  // from trades t1 (older) and t2 (newer, most recent).
-  safety.restoreState({ consecutiveLosses: 2, paused: false, processedTradeIds: ['t1', 't2'] });
-  assert.equal(safety.getState().consecutiveLosses, 2);
-
-  // A redelivery of the SAME trade t2 (e.g. a replayed/duplicate onPositionClosed
-  // call after restart) must be recognized as a duplicate, not counted again.
-  const redelivered = safety.recordTradeOutcome('t2', -10);
-  assert.equal(redelivered.duplicate, true);
-  assert.equal(safety.getState().consecutiveLosses, 2, 'redelivering an already-reconstructed trade must not bump the count');
-
-  // A genuinely NEW loss (t3) still counts normally.
-  const genuinelyNew = safety.recordTradeOutcome('t3', -10);
-  assert.equal(genuinelyNew.duplicate, false);
-  assert.equal(safety.getState().consecutiveLosses, 3);
-  assert.equal(safety.getState().paused, true);
-});
-
-test('restoreState without processedTradeIds (older/partial state) still restores consecutiveLosses/paused correctly — backward compatible', () => {
-  const safety = new ConsecutiveLossSafety(3);
-  safety.restoreState({ consecutiveLosses: 2, paused: false });
-  assert.equal(safety.getState().consecutiveLosses, 2);
-  assert.equal(safety.processedTradeIds.size, 0);
-});
-
-test('Model002.restoreSafetyState forwards processedTradeIds through to the underlying safety state (end-to-end restart-safe dedup)', async () => {
+test('MODEL_002 no longer exposes the legacy consecutive-loss safety hook', async () => {
   const { model } = await startedModel();
-  model.restoreSafetyState({ consecutiveLosses: 2, paused: false, processedTradeIds: ['t1', 't2'] });
-  const redelivered = await model.onPositionClosed({ _id: 't2', realizedPnl: -10, reason: 'STOP_LOSS' });
-  assert.equal(model.safety.getState().consecutiveLosses, 2, 'the already-reconstructed trade t2 must not be recounted after restoreSafetyState');
+  assert.equal(model.safety, undefined);
+  assert.equal(typeof model.getSafetyLossLimit, 'undefined');
+  assert.equal(typeof model.restoreSafetyState, 'undefined');
 });
 
 test('MODEL_001 never defines onPositionClosed/restoreSafetyState/getSafetyLossLimit — the new BotManager hooks are no-ops for it', () => {
@@ -440,22 +265,6 @@ test('MODEL_002 source files never require model-001 files', () => {
 // =========================================================================
 // Focused fixes: full-window dedup seeding + deferred closed-trade lookup
 // =========================================================================
-
-test('ConsecutiveLossSafety.restoreState: seeding with the FULL loaded trade window (not just the loss-streak trades) protects an older, pre-streak trade from being double-counted too', () => {
-  const safety = new ConsecutiveLossSafety(3);
-  // Simulate _recoverSafetyState's real behavior: consecutiveLosses=1 (only
-  // the newest trade, t3, is a loss — t1/t2 are older and were WINs), but
-  // ALL of t1/t2/t3 were loaded and must all be seeded into the dedup set.
-  safety.restoreState({ consecutiveLosses: 1, paused: false, processedTradeIds: ['t1', 't2', 't3'] });
-  assert.equal(safety.getState().consecutiveLosses, 1, 'the consecutive-loss calculation itself is unchanged');
-
-  // A redelivery of t1 — an OLDER trade outside the current streak, but
-  // still within the loaded lookback window — must be recognized as a
-  // duplicate, not counted as a fresh outcome.
-  const redelivered = safety.recordTradeOutcome('t1', -10);
-  assert.equal(redelivered.duplicate, true);
-  assert.equal(safety.getState().consecutiveLosses, 1, 'redelivering an older, already-loaded trade must not change the streak');
-});
 
 // --- Fix 2: Position-close vs Trade-create race (deferred/retried lookup) ---
 

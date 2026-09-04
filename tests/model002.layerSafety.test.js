@@ -5,7 +5,7 @@
  *
  * Confirmed requirements:
  *   1. Maximum 2 losing trades per layer.
- *   2. Maximum 6 layers.
+ *   2. Maximum 3 layers.
  *   3. Maximum 1 successful/winning trade per bot.
  *
  * A RiskEngine rejection is NOT a trade, is not a loss, is not a success,
@@ -56,41 +56,62 @@ test('PHASE2-3/4/5. second loss in a layer (below MAX_LAYERS) advances to the ne
   assert.equal(s.safetyStatus, 'NORMAL');
 });
 
-test('PHASE2-6/7/8. Layer 6 is reachable; its 2nd loss stops the bot; Layer 7 is never created', () => {
+test('PHASE2-6/7/8. Layer 3 is reachable; its 2nd loss stops the bot; Layer 4 is never created', () => {
   const s = new LayerSafety();
   let tradeN = 0;
   const loss = () => s.recordTradeOutcome(`t${++tradeN}`, -10);
 
-  // Layers 1-5: 2 losses each -> advances 5 times -> currentLayer becomes 6.
-  for (let layer = 1; layer <= 5; layer += 1) {
+  // Layers 1-2: 2 losses each -> advances 2 times -> currentLayer becomes 3.
+  for (let layer = 1; layer <= 2; layer += 1) {
     loss();
     const r = loss();
     assert.equal(r.transition, 'LAYER_ADVANCED');
   }
-  assert.equal(s.currentLayer, 6);
+  assert.equal(s.currentLayer, 3);
   assert.equal(s.layerLossCount, 0);
   assert.equal(s.safetyStatus, 'NORMAL');
 
-  // Layer 6: 1st loss - still NORMAL.
+  // Layer 3: 1st loss - still NORMAL.
   const l1 = loss();
   assert.equal(l1.transition, 'LOSS_RECORDED');
-  assert.equal(s.currentLayer, 6, 'still Layer 6 — Layer 7 must never be created');
+  assert.equal(s.currentLayer, 3, 'still Layer 3 — Layer 4 must never be created');
   assert.equal(s.safetyStatus, 'NORMAL');
 
-  // Layer 6: 2nd loss - MAX_LAYER_STOPPED, currentLayer stays 6 forever.
+  // Layer 3: 2nd loss - MAX_LAYER_STOPPED, currentLayer stays 3 forever.
   const l2 = loss();
   assert.equal(l2.transition, 'MAX_LAYER_STOPPED');
-  assert.equal(s.currentLayer, 6, 'Layer 7 must never be created');
+  assert.equal(s.currentLayer, 3, 'Layer 4 must never be created');
   assert.equal(s.safetyStatus, 'MAX_LAYER_STOPPED');
 
-  // A further loss after the stop must not push past Layer 6 or change status.
+  // A further loss after the stop must not push past Layer 3 or change status.
   const l3 = loss();
   assert.equal(l3.transition, null, 'state is frozen once stopped');
-  assert.equal(s.currentLayer, 6);
+  assert.equal(s.currentLayer, 3);
   assert.equal(s.safetyStatus, 'MAX_LAYER_STOPPED');
 
-  assert.equal(MAX_LAYERS, 6);
+  assert.equal(MAX_LAYERS, 3);
   assert.equal(MAX_LOSSES_PER_LAYER, 2);
+});
+
+
+
+test('PHASE2-LAYER-TRANSITION. after two losses the next layer is armed; no third loss is counted in the old layer', () => {
+  const s = new LayerSafety();
+  s.recordTradeOutcome('l1', -10);
+  s.recordTradeOutcome('l2', -10);
+  assert.deepEqual(s.getState(), { currentLayer: 2, layerLossCount: 0, successfulTradeCount: 0, safetyStatus: 'NORMAL' });
+  s.recordTradeOutcome('l3', -10);
+  assert.equal(s.currentLayer, 2);
+  assert.equal(s.layerLossCount, 1);
+});
+
+test('PHASE2-FINAL. exactly six loss outcomes can exhaust three layers; the sixth loss fully stops the bot', () => {
+  const s = new LayerSafety();
+  for (let i = 1; i <= 6; i += 1) s.recordTradeOutcome(`x${i}`, -10);
+  assert.deepEqual(s.getState(), { currentLayer: 3, layerLossCount: 2, successfulTradeCount: 0, safetyStatus: 'MAX_LAYER_STOPPED' });
+  const blocked = s.recordTradeOutcome('x7', -10);
+  assert.equal(blocked.transition, null);
+  assert.deepEqual(s.getState(), { currentLayer: 3, layerLossCount: 2, successfulTradeCount: 0, safetyStatus: 'MAX_LAYER_STOPPED' });
 });
 
 test('PHASE2-9. a winning closed trade sets successfulTradeCount = 1 and stops the bot', () => {

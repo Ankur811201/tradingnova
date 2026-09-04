@@ -60,7 +60,7 @@ function validateAndMergeParameters(customParams = {}) {
 
   const numericParams = [
     'touchTolerancePct', 'slBufferPct', 'slMinDistancePct', 'slMaxDistancePct',
-    'riskPercent', 'quantityDecimalPrecision', 'riskRewardRatio', 'consecutiveLossLimit',
+    'riskPercent', 'quantityDecimalPrecision', 'riskRewardRatio',
   ];
   for (const key of numericParams) {
     if (typeof params[key] !== 'number' || !Number.isFinite(params[key])) {

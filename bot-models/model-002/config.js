@@ -24,14 +24,9 @@ const DEFAULT_HISTORY_SIZE = 20; // small buffer: the active pattern only ever n
 // No higher-timeframe dependency — see comment above.
 const REQUIRED_TIMEFRAMES = [];
 
-const CONSECUTIVE_LOSS_LIMIT = 3; // confirmed requirement §11
-
-// PHASE 2 — layer/success safety (confirmed requirements). A separate,
-// independent mechanism from CONSECUTIVE_LOSS_LIMIT above: that rule
-// pauses the bot after N consecutive losses regardless of layer; this one
-// tracks a layer/loss-count/success state machine per bot. Both can be
-// active at once — see bot-models/model-002/layerSafety.js.
-const MAX_LAYERS = 6;
+// MODEL_002 safety: 3 layers, 2 losses per layer, 1 profitable trade.
+// There is no separate consecutive-loss pause for MODEL_002.
+const MAX_LAYERS = 3;
 const MAX_LOSSES_PER_LAYER = 2;
 const MAX_SUCCESSFUL_TRADES_PER_BOT = 1;
 
@@ -73,8 +68,6 @@ const DEFAULT_PARAMETERS = {
   // Preserved TP formula (confirmed §13 — RR source itself is pending per §19C, but the RR *mechanism* already exists and is preserved).
   riskRewardRatio: 2,
 
-  // Confirmed §11.
-  consecutiveLossLimit: CONSECUTIVE_LOSS_LIMIT,
 };
 
 module.exports = {
@@ -82,7 +75,6 @@ module.exports = {
   DEFAULT_TIMEFRAME,
   DEFAULT_HISTORY_SIZE,
   REQUIRED_TIMEFRAMES,
-  CONSECUTIVE_LOSS_LIMIT,
   MAX_LAYERS,
   MAX_LOSSES_PER_LAYER,
   MAX_SUCCESSFUL_TRADES_PER_BOT,

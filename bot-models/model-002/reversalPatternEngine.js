@@ -3,16 +3,15 @@
 /**
  * MODEL_002 — reversal pattern engine (A/B/C wick-trigger spec).
  *
- * Implements the NEW same-side pattern rule for:
+ * Implements the NEW A/B/C pattern rule for all four active MODEL_002 routes:
  *   BULLISH + SUPPORT    -> BUY
- *   BEARISH + RESISTANCE -> SELL (exact mirror)
+ *   BEARISH + SUPPORT    -> BUY (same BUY algorithm; first S1 confirmation is calibration-only)
+ *   BULLISH + RESISTANCE -> SELL (mirror of BUY + BEARISH; first R1 confirmation is calibration-only)
+ *   BEARISH + RESISTANCE -> SELL
  *
- * This REPLACES the touch/Candle2-search/close-through logic in
- * sameSidePatternEngine.js for these two combinations only. The opposite-
- * side combinations (BULLISH+RESISTANCE, BEARISH+SUPPORT, with their R1/S1
- * one-time calibration) are explicitly out of scope for this spec and keep
- * using the existing sameSidePatternEngine.js logic unchanged — see
- * Model002.js's routing.
+ * This module is the single source of truth for the NEW A/B/C algorithm, so
+ * mirrored BUY and SELL trend cases must stay identical after their one-time
+ * S1/R1 calibration exceptions.
  *
  *   A = Candle 1 — the candle immediately BEFORE the Support/Resistance-
  *       touch candle

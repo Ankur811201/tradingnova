@@ -1,22 +1,19 @@
 'use strict';
 
 /**
- * MODEL_002 — same-side pattern engine.
+ * MODEL_002 — OLD/opposite-side pattern engine implementation.
  *
- * Implements the fully confirmed same-side patterns:
- *   BULLISH + SUPPORT    -> BUY
- *   BEARISH + RESISTANCE -> SELL
- *
- * The two opposite-side combinations (BULLISH+RESISTANCE, BEARISH+SUPPORT)
- * are explicitly NOT implemented here — Model002.js routes them to an
- * honest WAIT, per the current requirement.
+ * This engine is used by Model002.js for:
+ *   BULLISH + RESISTANCE -> SELL
+ *   BEARISH + SUPPORT    -> BUY
  *
  * The Candle 2 boundary confirmation formula (computeBoundaries /
- * evaluateBoundaryBreak) is now confirmed: fixed at Candle2.high/low the
- * moment Candle 2 validates, monitored across as many future candles as
- * needed (not only the immediate next one), triggering on a strict
- * close-through — touching a boundary or closing exactly at it is never
- * enough on its own.
+ * evaluateBoundaryBreak) is fixed at Candle2.high/low the moment Candle 2
+ * validates and is monitored across as many future candles as needed.
+ * ALL four MODEL_002 patterns now use the running candle wick for entry:
+ *   BUY  -> high >= upper
+ *   SELL -> low <= lower
+ * Candle close is not required for the entry trigger.
  */
 
 const POINT_BUFFER = 5; // confirmed fixed 5-point SL buffer
@@ -152,26 +149,28 @@ function computeBoundaries(candle2) {
 }
 
 /**
- * Evaluates one future candle against the fixed boundaries. Confirmed
- * rules (strict close-through, touching alone is never enough, exactly-at
- * the boundary is WAIT not a trigger):
+ * Evaluates one future candle against the fixed boundaries.
  *
- * BUY:  close >  boundaries.upper -> 'BUY'
- *       close <  boundaries.lower -> 'INVALID'
- *       otherwise (including close === upper or === lower, or any touch
- *       without closing through)                -> 'WAIT'
+ * Confirmed MODEL_002 rule: ALL four patterns use the running candle wick
+ * for boundary entry. A BUY triggers as soon as the candle high reaches the
+ * upper boundary; a SELL triggers as soon as the candle low reaches the
+ * lower boundary. Candle close is NOT required for the trade trigger.
  *
- * SELL (mirror): close < boundaries.lower -> 'SELL'
- *                close > boundaries.upper -> 'INVALID'
- *                otherwise                -> 'WAIT'
+ * BUY:  high >= boundaries.upper -> 'BUY'
+ *       close < boundaries.lower -> 'INVALID'
+ *       otherwise -> 'WAIT'
+ *
+ * SELL: low <= boundaries.lower -> 'SELL'
+ *       close > boundaries.upper -> 'INVALID'
+ *       otherwise -> 'WAIT'
  */
 function evaluateBoundaryBreak(candle, boundaries, direction) {
   if (direction === 'BUY') {
-    if (candle.close > boundaries.upper) return { outcome: 'BUY' };
+    if (candle.high >= boundaries.upper) return { outcome: 'BUY' };
     if (candle.close < boundaries.lower) return { outcome: 'INVALID' };
     return { outcome: 'WAIT' };
   }
-  if (candle.close < boundaries.lower) return { outcome: 'SELL' };
+  if (candle.low <= boundaries.lower) return { outcome: 'SELL' };
   if (candle.close > boundaries.upper) return { outcome: 'INVALID' };
   return { outcome: 'WAIT' };
 }

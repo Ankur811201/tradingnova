@@ -9,9 +9,9 @@
  *   BEARISH + RESISTANCE -> SELL
  *
  * Both the pure engine (reversalPatternEngine.js) and full Model002
- * integration are exercised. Opposite-side combinations (BULLISH+RESISTANCE,
- * BEARISH+SUPPORT, R1/S1 calibration) are unaffected by this spec — see
- * tests/model002.sameSidePattern.test.js for their continued coverage.
+ * integration are exercised. BULLISH+RESISTANCE remains on the OLD engine; BEARISH+SUPPORT now reuses
+ * this same NEW BUY engine, with only the first S1 confirmation being
+ * calibration-only. Both are covered by the integration tests.
  */
 
 const { test } = require('node:test');
@@ -400,12 +400,12 @@ test('28/29/31. Candle3 touches BOTH boundaries: live tick reaching lower FIRST 
   await model.onHydrate(buyA());
   await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: VALID_B_BUY.timestamp, data: VALID_B_BUY }, null);
   await model.onMarketData({ type: 'price', symbol: 'BTCUSD', data: { price: 59990 }, timestamp: VALID_B_BUY.timestamp + 30000 }, null);
-  const c3 = candleAt(21, 60020, 60070, 59980, 60020);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c3.timestamp, data: c3 }, null);
+  // With running-candle triggering enabled, the lower touch is already an
+  // immediate INVALID; the later closed candle is not re-used.
+  assert.equal(model.patternCandidate, null);
   assert.equal(ctx.commands.length, 0);
   const decision = lastDecision(ctx);
-  assert.notEqual(decision.payload.decision, 'SELL');
-  assert.equal(decision.payload.reason, 'invalidated_both_boundaries_tick_order');
+  assert.equal(decision.payload.reason, 'invalidated_live_touch_lower_boundary');
 });
 
 test('30. Both boundaries touched, no live tick evidence reached this instance -> honest conservative INVALID (documented limitation, not a guess)', async () => {
@@ -430,7 +430,8 @@ test('live price touching the trigger boundary executes immediately without wait
 
   assert.equal(ctx.commands.length, 1);
   assert.equal(ctx.commands[0].action, 'LONG');
-  assert.equal(ctx.commands[0].entryPrice, 60065);
+  assert.equal(ctx.commands[0].metadata.finalQuantity, 0.01);
+  assert.equal(ctx.commands[0].metadata.riskLength, 80);
 });
 
 test('price ticks for a different symbol are ignored', async () => {
@@ -492,16 +493,22 @@ test('34. Existing risk-length > 360 restriction remains unchanged under the new
   assert.equal(lastDecision(ctx).payload.reason, 'risk_length_exceeds_maximum');
 });
 
-test('35. Existing timeframe-switch logic remains unchanged — fires on opposite-market touches, never on same-side (NEW engine) touches', async () => {
-  // Opposite-market touch (BULLISH + Resistance) — routed to the OLD engine, switch must still fire exactly as before.
-  const { ctx: ctxOpp, model: modelOpp } = await startedModel({ trend: 'BULLISH', support: [1, 2, 3], resistance: [61000, 998000, 997000], timeframe: '3m' });
-  await modelOpp.onHydrate(flat(20, 60900, BASE));
-  const oppTouch = candleAt(20, 60950, 61010, 60940, 60960); // touches resistance 61000
-  await modelOpp.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '3m', timestamp: oppTouch.timestamp, data: oppTouch }, null);
-  assert.equal(modelOpp.patternCandidate.engine, 'OLD');
+test('35. BULLISH + RESISTANCE SELL mirrors BEARISH + SUPPORT BUY and still switches timeframe on the resistance touch', async () => {
+  const { ctx: ctxOpp, model: modelOpp } = await startedModel({
+    trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [65000, 66000, 67000], timeframe: '3m'
+  });
+  await modelOpp.onHydrate(flat(20, 64000, BASE));
+  // A is immediately before B. B touches R1 and satisfies SELL A/B checks.
+  const a = candleAt(20, 65020, 65030, 65010, 65015);
+  const b = candleAt(21, 65010, 65015, 64995, 65000);
+  await modelOpp.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '3m', timestamp: a.timestamp, data: a }, null);
+  await modelOpp.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '3m', timestamp: b.timestamp, data: b }, null);
+  assert.equal(modelOpp.patternCandidate.engine, 'NEW');
+  assert.equal(modelOpp.patternCandidate.direction, 'SELL');
+  assert.equal(modelOpp.patternCandidate.stage, 'AWAITING_CANDLE3');
   assert.ok(ctxOpp.events.some((e) => e.eventType === 'ACTIVE_TIMEFRAME_SWITCHED'));
 
-  // Same-side touch (BULLISH + Support, NEW engine) is NOT an opposite-market signal — must NOT switch.
+  // Same-side BUY remains NEW and does not switch timeframe.
   const { ctx: ctxSame, model: modelSame } = await buyFixture();
   await modelSame.onHydrate(buyA());
   await modelSame.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: VALID_B_BUY.timestamp, data: VALID_B_BUY }, null);
@@ -534,18 +541,27 @@ test('37. Maximum capital x leverage cap remains removed under the new engine to
 // Opposite-side combinations remain entirely on the OLD engine, unaffected.
 // =========================================================================
 
-test('BULLISH + RESISTANCE (opposite-side) still uses the OLD engine untouched', async () => {
-  const { model } = await startedModel({ trend: 'BULLISH', support: [1, 2, 3], resistance: [999000, 998000, 997000] });
-  await model.onHydrate(flat(19, 61000, BASE));
-  const touch = candleAt(19, 998990, 999005, 998980, 998995);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: touch.timestamp, data: touch }, null);
-  assert.equal(model.patternCandidate.engine, 'OLD');
-  assert.equal(model.patternCandidate.stage, 'WAITING_FOR_CANDLE2');
-});
+test('BULLISH + RESISTANCE uses the same NEW SELL pattern as BEARISH + RESISTANCE', async () => {
+  const { ctx, model } = await startedModel({
+    trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [65000, 66000, 67000]
+  });
+  await model.onHydrate(flat(19, 64000, BASE));
+  const a = candleAt(19, 65020, 65030, 65010, 65015);
+  const b = candleAt(20, 65010, 65015, 64995, 65000);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: a.timestamp, data: a }, null);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: b.timestamp, data: b }, null);
+  assert.equal(model.patternCandidate.engine, 'NEW');
+  assert.equal(model.patternCandidate.direction, 'SELL');
+  assert.equal(model.patternCandidate.stage, 'AWAITING_CANDLE3');
+  assert.equal(model.patternCandidate.isCalibrationPattern, true);
+  assert.equal(ctx.commands.length, 0);
 
-// =========================================================================
-// Hydration replay of the NEW engine
-// =========================================================================
+  // Running wick reaches lower while close remains above it: SELL must trigger.
+  const c3 = candleAt(21, 65000, 65005, 64990, 65002);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c3.timestamp, data: c3 }, null);
+  assert.equal(ctx.commands.length, 0, 'first R1 setup is calibration-only');
+  assert.equal(model.r1Calibrated, true);
+});
 
 test('HYDRATION: an unfinished NEW-engine pattern (B validated, awaiting C) is recovered after restart', async () => {
   const { model } = await buyFixture();

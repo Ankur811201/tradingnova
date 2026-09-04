@@ -62,12 +62,12 @@ const candleBValid = (i) => ({ timestamp: BASE + i * MIN, open: 60010, high: 600
 const candleABear = (i) => ({ timestamp: BASE + i * MIN, open: 64960, high: 64980, low: 64950, close: 64970, volume: null });
 const candleBBear = (i) => ({ timestamp: BASE + i * MIN, open: 64990, high: 65005, low: 64930, close: 64940, volume: null });
 
-// --- opposite-side (OLD engine) fixtures ----------------------------------
-// BULLISH + Resistance touch -> SELL; BEARISH + Support touch -> BUY.
+// --- SELL mirror fixtures ---------------------------------------------------
+// BULLISH + Resistance -> SELL uses the same NEW A/B/C algorithm as BUY.
 
-const resTouch = (i) => ({ timestamp: BASE + i * MIN, open: 64995, high: 65010, low: 64985, close: 65005, volume: null });
-// Touches Candle 1's body low (64995) without touching Resistance itself.
-const resCandle2 = (i) => ({ timestamp: BASE + i * MIN, open: 64998, high: 64999, low: 64980, close: 64985, volume: null });
+const resTouch = (i) => ({ timestamp: BASE + i * MIN, open: 65020, high: 65030, low: 65010, close: 65015, volume: null });
+// Candle 2 touches Resistance with its wick and validates SELL against A's body-low.
+const resCandle2 = (i) => ({ timestamp: BASE + i * MIN, open: 64998, high: 65005, low: 64985, close: 64990, volume: null });
 const supTouch = (i) => ({ timestamp: BASE + i * MIN, open: 60010, high: 60020, low: 59990, close: 60005, volume: null });
 const supCandle2 = (i) => ({ timestamp: BASE + i * MIN, open: 60003, high: 60025, low: 60002, close: 60020, volume: null });
 
@@ -208,19 +208,18 @@ test('3. BULLISH + SUPPORT (same-side, BUY): upper is the BUY side, lower invali
   assert.equal(lowerLine(chart).color, '#f43f5e');
 });
 
-test('4. BULLISH + RESISTANCE (opposite-side, SELL): upper invalidates, lower is the SELL side', async () => {
+test('4. BULLISH + RESISTANCE (mirror NEW, SELL): upper invalidates, lower is the SELL side', async () => {
   const { ctx, model } = await startBot({ trend: 'BULLISH' });
   await feed(model, resTouch(10));
   await feed(model, resCandle2(11));
 
   const payload = lastDecision(ctx);
-  // The existing routing really does produce SELL here — this is the exact
-  // screenshot scenario (Trend BULLISH, Resistance TOUCHED, awaiting break).
-  assert.equal(payload.reason, 'candle2_confirmed_awaiting_boundary_break');
+  // BULLISH + RESISTANCE now uses the same NEW A/B/C flow as BUY + BEARISH.
+  assert.equal(payload.reason, 'candle2_confirmed_awaiting_candle3');
   assert.equal(payload.checks.resistance.status, 'TOUCHED');
   assert.equal(payload.checks.trend.status, 'BULLISH');
   assert.equal(payload.checks.patternVisual.direction, 'SELL');
-  assert.equal(payload.checks.patternState, 'WAITING_FOR_BOUNDARY_BREAK');
+  assert.equal(payload.checks.patternState, 'AWAITING_CANDLE3');
 
   const chart = await bootChart();
   chart.applyDecision(payload.checks);
@@ -244,10 +243,12 @@ test('5. BEARISH + RESISTANCE (same-side, SELL): SELL labels', async () => {
   assert.equal(lowerLine(chart).title, 'LOWER (SELL<)');
 });
 
-test('6. BEARISH + SUPPORT (opposite-side, BUY): BUY labels', async () => {
+test('6. BEARISH + SUPPORT (mirror NEW, BUY): BUY labels', async () => {
   const { ctx, model } = await startBot({ trend: 'BEARISH' });
-  await feed(model, supTouch(10));
-  await feed(model, supCandle2(11));
+  const a = candleA(10);
+  const b = { timestamp: BASE + 11 * MIN, open: 60050, high: 60205, low: 60000, close: 60200, volume: null };
+  await feed(model, a);
+  await feed(model, b);
 
   const payload = lastDecision(ctx);
   assert.equal(payload.checks.patternVisual.direction, 'BUY');
@@ -272,8 +273,8 @@ test('8. C1/C2/C3 labels still render alongside the corrected boundaries', async
   chart.applyDecision(lastDecision(ctx).checks);
   const m = chart.patternMarkers();
   assert.equal(m.length, 2);
-  assert.match(m.find((x) => x.id.endsWith('CANDLE_1')).text, /^\u2460 C1 \u2022 TOUCH$/);
-  assert.match(m.find((x) => x.id.endsWith('CANDLE_2')).text, /^\u2461 C2$/);
+  assert.match(m.find((x) => x.id.endsWith('CANDLE_1')).text, /^\u2460 C1$/);
+  assert.match(m.find((x) => x.id.endsWith('CANDLE_2')).text, /^\u2461 C2 \u2022 TOUCH$/);
   m.forEach((x) => assert.equal(x.position, 'aboveBar', 'a SELL pattern labels above the candles'));
 });
 
@@ -287,8 +288,8 @@ test('9. invalidation removes the boundary lines together with C1/C2/C3', async 
   assert.ok(upperLine(chart));
   assert.equal(chart.patternMarkers().length, 2);
 
-  // Close above the upper boundary invalidates a SELL pattern.
-  await feed(model, { timestamp: BASE + 12 * MIN, open: 64998, high: 65020, low: 64996, close: 65015, volume: null });
+  // Running wick above the upper boundary invalidates a SELL pattern; close is irrelevant.
+  await feed(model, { timestamp: BASE + 12 * MIN, open: 64998, high: 65010, low: 64996, close: 65000, volume: null });
   const invalid = lastDecision(ctx);
   assert.match(invalid.reason, /invalidated/);
   assert.equal(invalid.checks.patternVisual, null);
@@ -330,5 +331,5 @@ test('the decision panel shows the same backend direction the chart uses', async
   assert.match(html, /Direction/);
   assert.match(html, />SELL</);
   assert.match(html, /BULLISH/);
-  assert.match(html, /WAITING_FOR_BOUNDARY_BREAK/);
+  assert.match(html, /AWAITING_CANDLE3/);
 });

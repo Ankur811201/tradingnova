@@ -1,17 +1,10 @@
 'use strict';
 
 /**
- * MODEL_002 — same-side pattern tests (BULLISH+SUPPORT=BUY,
- * BEARISH+RESISTANCE=SELL). Covers every unambiguous step of the newly
- * confirmed requirement: touch detection, Candle 2 shape validation
- * (UpperP/LowerP/BodyP + candle nature), stop loss, risk length, and the
- * natural-number lot mapping — all verified against the requirement's own
- * worked examples first, then exercised end-to-end through Model002.
- *
- * Candle 3's confirmation-boundary formula is explicitly UNDEFINED (see
- * bot-models/model-002/sameSidePatternEngine.js's header comment) — this
- * file tests that the system honestly reports that instead of guessing,
- * not that BUY/SELL is ever actually produced (it cannot be yet).
+ * MODEL_002 — pattern engine formula tests plus all-four-route integration
+ * coverage. Covers touch detection, Candle 2 shape validation
+ * (UpperP/LowerP/BodyP + candle nature), stop loss, risk length, lot mapping,
+ * and the running-candle boundary trigger used by all four MODEL_002 patterns.
  */
 
 const { test } = require('node:test');
@@ -29,6 +22,10 @@ function flat(count, price, startTs) {
     arr.push({ timestamp: startTs + i * MIN, open: price, high: price + 0.01, low: price - 0.01, close: price, volume: null });
   }
   return arr;
+}
+
+function candleAt(idx, o, h, l, cl, startTs = BASE) {
+  return { timestamp: startTs + idx * MIN, open: o, high: h, low: l, close: cl, volume: null };
 }
 
 function makeCtx() {
@@ -227,59 +224,114 @@ test('computeBoundaries: fixed at Candle2.high/low', () => {
   assert.deepEqual(sp.computeBoundaries({ high: 60100, low: 60000 }), { upper: 60100, lower: 60000 });
 });
 
-test('evaluateBoundaryBreak (BUY): close strictly above upper -> BUY', () => {
+test('evaluateBoundaryBreak (BUY): running wick reaches upper -> BUY without candle close', () => {
   const b = { upper: 60100, lower: 60000 };
-  assert.equal(sp.evaluateBoundaryBreak({ close: 60100.01 }, b, 'BUY').outcome, 'BUY');
+  assert.equal(sp.evaluateBoundaryBreak({ high: 60100, low: 60050, close: 60080 }, b, 'BUY').outcome, 'BUY');
 });
 
-test('evaluateBoundaryBreak (BUY): close exactly at upper -> WAIT (touching alone is not enough)', () => {
+test('evaluateBoundaryBreak (BUY): running wick is above upper while close remains inside -> BUY', () => {
   const b = { upper: 60100, lower: 60000 };
-  assert.equal(sp.evaluateBoundaryBreak({ close: 60100 }, b, 'BUY').outcome, 'WAIT');
+  assert.equal(sp.evaluateBoundaryBreak({ high: 60101, low: 60050, close: 60090 }, b, 'BUY').outcome, 'BUY');
 });
 
-test('evaluateBoundaryBreak (BUY): close inside the boundaries -> WAIT', () => {
+test('evaluateBoundaryBreak (BUY): high below upper and close inside -> WAIT', () => {
   const b = { upper: 60100, lower: 60000 };
-  assert.equal(sp.evaluateBoundaryBreak({ close: 60050 }, b, 'BUY').outcome, 'WAIT');
+  assert.equal(sp.evaluateBoundaryBreak({ high: 60099.99, low: 60050, close: 60080 }, b, 'BUY').outcome, 'WAIT');
 });
 
-test('evaluateBoundaryBreak (BUY): close exactly at lower -> WAIT', () => {
+test('evaluateBoundaryBreak (BUY): close exactly at upper but high below upper -> WAIT', () => {
   const b = { upper: 60100, lower: 60000 };
-  assert.equal(sp.evaluateBoundaryBreak({ close: 60000 }, b, 'BUY').outcome, 'WAIT');
+  assert.equal(sp.evaluateBoundaryBreak({ high: 60099.99, low: 60050, close: 60100 }, b, 'BUY').outcome, 'WAIT');
 });
 
-test('evaluateBoundaryBreak (BUY): close strictly below lower -> INVALID', () => {
+test('evaluateBoundaryBreak (BUY): close below lower -> INVALID', () => {
   const b = { upper: 60100, lower: 60000 };
-  assert.equal(sp.evaluateBoundaryBreak({ close: 59999.99 }, b, 'BUY').outcome, 'INVALID');
+  assert.equal(sp.evaluateBoundaryBreak({ high: 60050, low: 59990, close: 59999.99 }, b, 'BUY').outcome, 'INVALID');
 });
 
-test('evaluateBoundaryBreak (SELL): close strictly below lower -> SELL', () => {
+test('evaluateBoundaryBreak (SELL): running wick reaches lower -> SELL without candle close', () => {
   const b = { upper: 65100, lower: 65000 };
-  assert.equal(sp.evaluateBoundaryBreak({ close: 64999.99 }, b, 'SELL').outcome, 'SELL');
+  assert.equal(sp.evaluateBoundaryBreak({ high: 65050, low: 65000, close: 65030 }, b, 'SELL').outcome, 'SELL');
 });
 
-test('evaluateBoundaryBreak (SELL): close exactly at lower -> WAIT', () => {
+test('evaluateBoundaryBreak (SELL): running wick is below lower while close remains inside -> SELL', () => {
   const b = { upper: 65100, lower: 65000 };
-  assert.equal(sp.evaluateBoundaryBreak({ close: 65000 }, b, 'SELL').outcome, 'WAIT');
+  assert.equal(sp.evaluateBoundaryBreak({ high: 65050, low: 64999, close: 65020 }, b, 'SELL').outcome, 'SELL');
 });
 
-test('evaluateBoundaryBreak (SELL): close inside boundaries -> WAIT', () => {
+test('evaluateBoundaryBreak (SELL): low above lower and close inside -> WAIT', () => {
   const b = { upper: 65100, lower: 65000 };
-  assert.equal(sp.evaluateBoundaryBreak({ close: 65050 }, b, 'SELL').outcome, 'WAIT');
+  assert.equal(sp.evaluateBoundaryBreak({ high: 65050, low: 65000.01, close: 65020 }, b, 'SELL').outcome, 'WAIT');
 });
 
-test('evaluateBoundaryBreak (SELL): close exactly at upper -> WAIT', () => {
+test('evaluateBoundaryBreak (SELL): close exactly at lower but low above lower -> WAIT', () => {
   const b = { upper: 65100, lower: 65000 };
-  assert.equal(sp.evaluateBoundaryBreak({ close: 65100 }, b, 'SELL').outcome, 'WAIT');
+  assert.equal(sp.evaluateBoundaryBreak({ high: 65050, low: 65000.01, close: 65000 }, b, 'SELL').outcome, 'WAIT');
 });
 
-test('evaluateBoundaryBreak (SELL): close strictly above upper -> INVALID', () => {
+test('evaluateBoundaryBreak (SELL): close above upper -> INVALID', () => {
   const b = { upper: 65100, lower: 65000 };
-  assert.equal(sp.evaluateBoundaryBreak({ close: 65100.01 }, b, 'SELL').outcome, 'INVALID');
+  assert.equal(sp.evaluateBoundaryBreak({ high: 65110, low: 65050, close: 65100.01 }, b, 'SELL').outcome, 'INVALID');
+});
+
+test('BULLISH + RESISTANCE SELL: running wick touching lower triggers immediately without candle close', async () => {
+  const { ctx, model } = await startedModel({
+    trend: 'BULLISH',
+    support: [60000, 59000, 58000],
+    resistance: [65000, 66000, 67000],
+  }, { capitalAllocation: 10000 });
+  await model.onHydrate(flat(20, 64000, BASE));
+
+  const a = candleAt(20, 65020, 65030, 65010, 65015, BASE);
+  const b = candleAt(21, 65010, 65015, 64995, 65000, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: a.timestamp, data: a }, null);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: b.timestamp, data: b }, null);
+
+  assert.equal(model.patternCandidate.engine, 'NEW');
+  assert.equal(model.patternCandidate.direction, 'SELL');
+  assert.equal(model.patternCandidate.stage, 'AWAITING_CANDLE3');
+  assert.equal(model.patternCandidate.boundaries.lower, 64990);
+
+  // Running price touches lower; no candle close is required.
+  await model.onMarketData({
+    type: 'price', symbol: 'BTCUSD', timestamp: b.timestamp + 10000, data: { price: 64990 },
+  }, null);
+
+  assert.equal(ctx.commands.length, 0, 'R1 first setup is calibration-only');
+  assert.equal(model.r1Calibrated, true);
+});
+
+test('BEARISH + SUPPORT BUY: same NEW running-wick pattern as BULLISH + SUPPORT', async () => {
+  const { ctx, model } = await startedModel({
+    trend: 'BEARISH',
+    support: [58000, 59900, 59800],
+    resistance: [70000, 69000, 68000],
+  }, { capitalAllocation: 10000 });
+  await model.onHydrate(flat(20, 60000, BASE));
+
+  // B is the support-touch candle, exactly like BULLISH+SUPPORT. It is S2,
+  // so it is not subject to the one-time S1 calibration.
+  const b = candleAt(20, 60050, 60205, 59900, 60200, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: b.timestamp, data: b }, null);
+
+  assert.equal(model.patternCandidate.stage, 'AWAITING_CANDLE3');
+  assert.equal(model.patternCandidate.direction, 'BUY');
+  assert.equal(model.patternCandidate.engine, 'NEW');
+  assert.deepEqual(model.patternCandidate.boundaries, { upper: 60210, lower: 59895 });
+
+  // Running price touches the upper boundary while the forming candle close
+  // remains below it. BUY must trigger immediately.
+  await model.onMarketData({
+    type: 'price', symbol: 'BTCUSD', timestamp: b.timestamp + 10_000, data: { price: 60210 },
+  }, null);
+
+  assert.equal(ctx.commands.length, 1);
+  assert.equal(ctx.commands[0].action, 'LONG');
 });
 
 // =========================================================================
 // NOTE: the old "E2E BUY/SELL: Model002 3-candle state machine" section
-// (touch->search-for-Candle2->close-through-boundary, for the SAME-SIDE
+// (touch->search-for-Candle2->boundary trigger, for the SAME-SIDE
 // combinations BULLISH+SUPPORT/BEARISH+RESISTANCE) has been REMOVED from
 // this file. That exact behavior was superseded by the NEW A/B/C
 // wick-trigger spec — see reversalPatternEngine.js and
@@ -290,470 +342,183 @@ test('evaluateBoundaryBreak (SELL): close strictly above upper -> INVALID', () =
 // =========================================================================
 
 // =========================================================================
-// Opposite-side patterns are now IMPLEMENTED (this task's purpose):
-// BULLISH+RESISTANCE=SELL, BEARISH+SUPPORT=BUY, with one-time R1/S1
-// calibration. See the OPPOSITE-SIDE / CALIBRATION test block further down
-// for full coverage. These two tests confirm a level-1 (R1/S1) touch now
-// correctly starts a real (calibration-eligible) pattern instead of
-// staying IDLE — the premise these tests originally checked (opposite-side
-// never starts anything) has been superseded by client-confirmed rules.
+// ALL FOUR ACTIVE MODEL_002 COMBINATIONS USE THE SAME NEW A/B/C ENGINE
+//   BULLISH + SUPPORT    -> BUY
+//   BEARISH + SUPPORT    -> BUY (first S1 calibration-only)
+//   BULLISH + RESISTANCE -> SELL (mirror; first R1 calibration-only)
+//   BEARISH + RESISTANCE -> SELL
 // =========================================================================
 
-test('BULLISH + RESISTANCE (R1) touch now starts a real, calibration-eligible pattern candidate', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [1, 2, 3], resistance: [999000, 998000, 997000] });
-  await model.onHydrate(flat(19, 61000, BASE));
-  const touch = { timestamp: BASE + 19 * MIN, open: 998990, high: 999005, low: 998980, close: 998995, volume: null };
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: touch.timestamp, data: touch }, null);
-
-  assert.equal(ctx.commands.length, 0, 'still no trade at Candle 1 — same as every other pattern start');
-  assert.ok(model.patternCandidate);
-  assert.equal(model.patternCandidate.stage, 'WAITING_FOR_CANDLE2');
-  assert.equal(model.patternCandidate.direction, 'SELL');
-  assert.equal(model.patternCandidate.isCalibrationPattern, true, 'R1 is uncalibrated at bot start');
-});
-
-test('BEARISH + SUPPORT (S1) touch now starts a real, calibration-eligible pattern candidate', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BEARISH', support: [60000, 50, 25], resistance: [999000, 998000, 997000] });
-  await model.onHydrate(flat(19, 61000, BASE));
-  const touch = { timestamp: BASE + 19 * MIN, open: 60050, high: 60060, low: 60000, close: 60040, volume: null };
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: touch.timestamp, data: touch }, null);
-
-  assert.equal(ctx.commands.length, 0);
-  assert.ok(model.patternCandidate);
-  assert.equal(model.patternCandidate.stage, 'WAITING_FOR_CANDLE2');
-  assert.equal(model.patternCandidate.direction, 'BUY');
-  assert.equal(model.patternCandidate.isCalibrationPattern, true, 'S1 is uncalibrated at bot start');
-});
-
-// =========================================================================
-// No fake trades / no accidental trades — general safety
-// =========================================================================
-
-test('submitTradeCommand is only ever called from the two designated confirmed-trade paths (_confirmAndSubmit / _confirmAndSubmitNew) — no other code path can fabricate a trade', () => {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const content = fs.readFileSync(path.join(__dirname, '..', 'bot-models', 'model-002', 'Model002.js'), 'utf8');
-  const matches = content.match(/this\.submitTradeCommand\(/g) || [];
-  // TWO call sites since the A/B/C reversal-pattern spec: _confirmAndSubmit
-  // (OLD engine, opposite-side combinations) and _confirmAndSubmitNew (NEW
-  // engine, same-side combinations) — each independently reachable only
-  // from its own engine's resolved-BUY/SELL branch, never from a WAIT path.
-  assert.equal(matches.length, 2, 'submitTradeCommand must be called from exactly the two designated confirm methods');
-  assert.ok(/async _confirmAndSubmit\(candidate, boundaryResult, entryCandle\) \{[\s\S]*?this\.submitTradeCommand\(/.test(content));
-  assert.ok(/async _confirmAndSubmitNew\(candidate, candleC\) \{[\s\S]*?this\.submitTradeCommand\(/.test(content));
-});
-
-test('restart resets pattern candidate search (in-memory only) without crashing', async () => {
-  const { model } = await startedModel();
-  await model.onHydrate(flat(20, 61000, BASE));
-  // A valid NEW-engine B (touches support 60000; bodyHigh 61200 > A's flat bodyHigh 61000; BodyP is the max of the three; bullish nature).
-  const b = { timestamp: BASE + 20 * MIN, open: 60100, high: 61210, low: 59990, close: 61200, volume: null };
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: b.timestamp, data: b }, null);
-  assert.ok(model.patternCandidate);
-  assert.equal(model.patternCandidate.stage, 'AWAITING_CANDLE3');
-  await model.onStop();
-  assert.equal(model.patternCandidate, null);
-});
-
-// =========================================================================
-// Chart overlay — fixed Candle2 boundary lines (Section 32)
-// =========================================================================
-
-test('bot-detail-chart.js exposes a MODEL_002 pattern-boundary overlay using the existing setPriceLine/removePriceLine dedup mechanism', () => {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const content = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'bot-detail-chart.js'), 'utf8');
-  assert.match(content, /window\.NovaChartPatternOverlay/);
-  assert.match(content, /setPriceLine\('patternUpperBoundary'/);
-  assert.match(content, /setPriceLine\('patternLowerBoundary'/);
-  assert.match(content, /removePriceLine\('patternUpperBoundary'\)/);
-});
-
-test('bot-detail-ws.js wires the real decision boundaries (not invented) into the chart overlay, only for MODEL_002', () => {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const content = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'bot-detail-ws.js'), 'utf8');
-  assert.match(content, /modelId === 'MODEL_002' && window\.NovaChartPatternOverlay/);
-  assert.match(content, /data\.checks && data\.checks\.boundaries/);
-  // The boundaries are still the real ones from the decision; the third
-  // argument is the ACTIVE pattern's direction, also from the backend
-  // payload (patternVisual.direction) — never derived in the browser.
-  assert.match(content, /window\.NovaChartPatternOverlay\.setBoundaries\(boundaries\.upper, boundaries\.lower, patternGroup\.direction\)/);
-  assert.match(content, /var patternGroup = data\.checks && data\.checks\.patternVisual/);
-  assert.match(content, /window\.NovaChartPatternOverlay\.clearBoundaries\(\)/);
-});
-
-// =========================================================================
-// Dedicated classification regression test — reported runtime issue
-// (screenshot showed BEARISH+RESISTANCE incorrectly reaching the
-// opposite-side WAIT path; verified by direct execution against the real
-// Model002 class, not just static inspection — see the final report).
-// =========================================================================
-
-test('CLASSIFICATION: BEARISH + RESISTANCE touch is SAME-SIDE — instantly validates A/B (NEW engine), state becomes AWAITING_CANDLE3, reason is the NEW same-side reason, NEVER the opposite-side reason', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BEARISH', support: [64000, 63000, 62000], resistance: [64950, 65000, 65100] });
-  await model.onHydrate(flat(20, 64900, BASE)); // A: bodyLow = 64900
-
-  // B: touches resistance (high>=64950), bearish, bodyLow(64850) < A's bodyLow(64900), BodyP dominant.
-  const touch = { timestamp: BASE + 20 * MIN, open: 64900, high: 64960, low: 64840, close: 64850, volume: null };
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: touch.timestamp, data: touch }, null);
-
-  const decision = lastDecision(ctx);
-  assert.equal(decision.payload.checks.resistance.status, 'TOUCHED');
-  assert.equal(decision.payload.checks.resistance.level, 64950);
-  assert.equal(decision.payload.checks.patternState, 'AWAITING_CANDLE3', 'must NOT be IDLE');
-  assert.equal(model.patternCandidate.stage, 'AWAITING_CANDLE3');
-  assert.equal(model.patternCandidate.engine, 'NEW');
-  assert.equal(model.patternCandidate.direction, 'SELL');
-  assert.equal(decision.payload.reason, 'candle2_confirmed_awaiting_candle3', 'must be the NEW same-side reason');
-  assert.notEqual(decision.payload.reason, 'direct_entry_pending_client_confirmation', 'must NEVER be the opposite-side pending reason');
-  assert.equal(ctx.commands.length, 0);
-});
-
-test('CLASSIFICATION: BULLISH + SUPPORT touch is SAME-SIDE — same guarantees as above (regression sibling)', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [65000, 66000, 67000] });
-  await model.onHydrate(flat(20, 61000, BASE)); // A: bodyHigh = 61000
-
-  // B: touches support (low<=60000), bullish, bodyHigh(61200) > A's bodyHigh(61000), BodyP dominant.
-  const touch = { timestamp: BASE + 20 * MIN, open: 60100, high: 61210, low: 59990, close: 61200, volume: null };
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: touch.timestamp, data: touch }, null);
-
-  const decision = lastDecision(ctx);
-  assert.equal(decision.payload.checks.support.status, 'TOUCHED');
-  assert.equal(decision.payload.checks.patternState, 'AWAITING_CANDLE3');
-  assert.equal(model.patternCandidate.engine, 'NEW');
-  assert.equal(model.patternCandidate.direction, 'BUY');
-  assert.equal(decision.payload.reason, 'candle2_confirmed_awaiting_candle3');
-  assert.notEqual(decision.payload.reason, 'direct_entry_pending_client_confirmation');
-});
-
-test('CLASSIFICATION: BULLISH + RESISTANCE (R1) is now a real, calibration-eligible SELL pattern (opposite-side patterns implemented)', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [65000, 66000, 67000] });
-  await model.onHydrate(flat(19, 61000, BASE));
-
-  const touch = { timestamp: BASE + 19 * MIN, open: 64990, high: 65010, low: 64980, close: 65000, volume: null };
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: touch.timestamp, data: touch }, null);
-
-  const decision = lastDecision(ctx);
-  assert.ok(model.patternCandidate);
-  assert.equal(model.patternCandidate.stage, 'WAITING_FOR_CANDLE2');
-  assert.equal(model.patternCandidate.direction, 'SELL');
-  assert.equal(model.patternCandidate.isCalibrationPattern, true);
-  assert.equal(decision.payload.reason, 'candle1_resistance_touch_awaiting_candle2');
-  assert.equal(ctx.commands.length, 0);
-});
-
-test('CLASSIFICATION: BEARISH + SUPPORT (S1) is now a real, calibration-eligible BUY pattern (opposite-side patterns implemented)', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BEARISH', support: [64000, 63000, 62000], resistance: [64950, 65000, 65100] });
-  await model.onHydrate(flat(19, 64500, BASE));
-
-  const touch = { timestamp: BASE + 19 * MIN, open: 64010, high: 64020, low: 63995, close: 64000, volume: null };
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: touch.timestamp, data: touch }, null);
-
-  const decision = lastDecision(ctx);
-  assert.ok(model.patternCandidate);
-  assert.equal(model.patternCandidate.stage, 'WAITING_FOR_CANDLE2');
-  assert.equal(model.patternCandidate.direction, 'BUY');
-  assert.equal(model.patternCandidate.isCalibrationPattern, true);
-  assert.equal(decision.payload.reason, 'candle1_support_touch_awaiting_candle2');
-  assert.equal(ctx.commands.length, 0);
-});
-
-// =========================================================================
-// Historical last-touch recovery during hydration (client-confirmed rule:
-// "use last touch"). onHydrate must reconstruct Candle 1 from the LAST
-// valid same-side touch in already-closed history, without ever trading
-// or emitting a DECISION during hydration — Candle 2 and everything after
-// it still only ever comes from live candles.
-// =========================================================================
-
-function candleAt(idx, o, h, l, cl, startTs) {
-  return { timestamp: startTs + idx * MIN, open: o, high: h, low: l, close: cl, volume: null };
+function bearishSellA(idx) {
+  return candleAt(idx, 65020, 65030, 65010, 65015, BASE);
 }
 
-test('HYDRATION RECOVERY: no historical touch -> patternCandidate remains null, state remains IDLE', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BEARISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] });
-  await model.onHydrate(flat(20, 64800, BASE)); // nowhere near any configured level
-  assert.equal(model.patternCandidate, null);
-});
+function bearishSellB(idx, level = 65000) {
+  return candleAt(idx, 65010, 65015, level - 5, 65000, BASE);
+}
 
-test('HYDRATION RECOVERY: a historical Resistance (R1) touch under BULLISH trend IS now recovered as a calibration-eligible SELL Candle 1', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [65000, 65100, 65200] });
-  const candles = [];
-  for (let i = 0; i < 20; i += 1) {
-    candles.push(i === 12
-      ? candleAt(i, 64990, 65010, 64980, 65000, BASE) // touches resistance 65000 (R1)
-      : candleAt(i, 61000, 61010, 60990, 61005, BASE));
-  }
-  await model.onHydrate(candles);
-  assert.ok(model.patternCandidate, 'opposite-side patterns are now implemented — this touch must be recovered');
-  assert.equal(model.patternCandidate.stage, 'WAITING_FOR_CANDLE2');
+test('BULLISH + RESISTANCE (R1) uses NEW SELL A/B/C flow and first R1 is calibration-only', async () => {
+  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [65000, 66000, 67000] });
+  await model.onHydrate(flat(20, 64000, BASE));
+
+  const a = bearishSellA(20);
+  const b = bearishSellB(21);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: a.timestamp, data: a }, null);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: b.timestamp, data: b }, null);
+
+  assert.ok(model.patternCandidate);
+  assert.equal(model.patternCandidate.engine, 'NEW');
   assert.equal(model.patternCandidate.direction, 'SELL');
-  assert.equal(model.patternCandidate.isCalibrationPattern, true);
-});
-
-test('HYDRATION RECOVERY: hydration NEVER submits a TradeCommand, even when a real historical touch is recovered', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BEARISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] });
-  const candles = [];
-  for (let i = 0; i < 20; i += 1) {
-    candles.push(i === 15
-      ? candleAt(i, 64900, 64960, 64890, 64920, BASE)
-      : candleAt(i, 64800, 64830, 64770, 64800, BASE));
-  }
-  await model.onHydrate(candles);
-  assert.equal(ctx.commands.length, 0, 'hydration must never submit a TradeCommand');
-});
-
-test('HYDRATION RECOVERY: hydration NEVER emits a DECISION event, even when a real historical touch is recovered', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BEARISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] });
-  const candles = [];
-  for (let i = 0; i < 20; i += 1) {
-    candles.push(i === 15
-      ? candleAt(i, 64900, 64960, 64890, 64920, BASE)
-      : candleAt(i, 64800, 64830, 64770, 64800, BASE));
-  }
-  await model.onHydrate(candles);
-  assert.ok(!ctx.events.some((e) => e.eventType === 'DECISION'), 'hydration must never emit a DECISION event');
-});
-
-test('Model002.js contains no console.log calls — the temporary hydration/replay diagnostics have been fully removed', () => {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const content = fs.readFileSync(path.join(__dirname, '..', 'bot-models', 'model-002', 'Model002.js'), 'utf8');
-  assert.equal(/console\.log\(/.test(content), false, 'no debug logging should remain in Model002.js');
-});
-
-// =========================================================================
-// OPPOSITE-SIDE PATTERNS + ONE-TIME R1/S1 CALIBRATION (client-confirmed)
-//   BULLISH + RESISTANCE -> SELL (R1 special: first pattern calibrates only)
-//   BEARISH + SUPPORT    -> BUY  (S1 special: first pattern calibrates only)
-//   R2/R3/S2/S3 -> normal, unchanged same-side-engine behavior
-// =========================================================================
-
-test('CALIBRATION: BULLISH + R1 Pattern 1 confirms with NO TradeCommand, mutates resistance[0] to Candle1.high, sets r1Calibrated', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] }, { capitalAllocation: 10000 });
-  await model.onHydrate(flat(20, 64800, BASE));
-
-  const c1 = candleAt(20, 64900, 64960, 64890, 64920, BASE);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c1.timestamp, data: c1 }, null);
+  assert.equal(model.patternCandidate.stage, 'AWAITING_CANDLE3');
   assert.equal(model.patternCandidate.isCalibrationPattern, true);
 
-  const c2 = candleAt(21, 64900, 64901.5, 64898, 64898.5, BASE);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c2.timestamp, data: c2 }, null);
-  assert.equal(model.patternCandidate.stage, 'WAITING_FOR_BOUNDARY_BREAK');
-
-  const c3 = candleAt(22, 64898, 64898.2, 64895, 64895, BASE); // closes below lower(64898) -> would-be SELL -> calibration
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c3.timestamp, data: c3 }, null);
-
-  assert.equal(ctx.commands.length, 0, 'Pattern 1 must NEVER submit a TradeCommand');
-  assert.equal(model.patternCandidate, null, 'candidate cleared after calibration');
-  assert.equal(model.r1Calibrated, true);
-  assert.equal(model.params.resistance[0], 64960, 'resistance[0] must become Pattern 1 Candle1.high (64960)');
-  assert.equal(model.params.resistance[1], 65000, 'R2 must be untouched');
-  assert.equal(model.params.resistance[2], 65100, 'R3 must be untouched');
-});
-
-test('CALIBRATION: BULLISH + R1 Pattern 1 confirmation reason is a client-safe message, not a raw code, via the shared reason map', async () => {
-  const { formatModel002Reason } = require('../public/js/renderers/model002-reason-map.js');
-  const text = formatModel002Reason('r1_calibration_confirmed_no_trade');
-  assert.equal(text, 'Pattern confirmed — R1 updated, waiting for next R1 pattern');
-  assert.equal(/_/.test(text), false, 'must be human-readable, no raw snake_case leaking through');
-});
-
-test('CALIBRATION Q1: the confirming candle (Candle 3) itself is NOT reused as a fresh Candle 1, even though it happens to sit near the new R1 — strictly the next candle only', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] }, { capitalAllocation: 10000 });
-  await model.onHydrate(flat(20, 64800, BASE));
-  const c1 = candleAt(20, 64900, 64960, 64890, 64920, BASE); // new R1 will become 64960
-  const c2 = candleAt(21, 64900, 64901.5, 64898, 64898.5, BASE);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c1.timestamp, data: c1 }, null);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c2.timestamp, data: c2 }, null);
-  // Candle 3 ALSO touches the about-to-become-new R1 (64960) in its own range, in addition to resolving the boundary.
-  const c3 = candleAt(22, 64958, 64965, 64896, 64896, BASE); // wicks up through 64960 AND closes below lower(64898)
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c3.timestamp, data: c3 }, null);
-
-  assert.equal(model.r1Calibrated, true);
-  assert.equal(model.patternCandidate, null, 'Candle 3 must NOT become a fresh Candle 1 despite touching the new R1 in the same candle');
-  assert.equal(ctx.commands.length, 0);
-});
-
-test('CALIBRATION -> SECOND PATTERN: after calibration, a fresh R1 (new value) pattern produces a real SELL TradeCommand with SL = second pattern Candle1.high + 5', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] }, { capitalAllocation: 10000 });
-  await model.onHydrate(flat(20, 64800, BASE));
-
-  // Pattern 1 (calibration)
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: candleAt(20, 64900, 64960, 64890, 64920, BASE).timestamp, data: candleAt(20, 64900, 64960, 64890, 64920, BASE) }, null);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: candleAt(21, 64900, 64901.5, 64898, 64898.5, BASE).timestamp, data: candleAt(21, 64900, 64901.5, 64898, 64898.5, BASE) }, null);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: candleAt(22, 64898, 64898.2, 64895, 64895, BASE).timestamp, data: candleAt(22, 64898, 64898.2, 64895, 64895, BASE) }, null);
-  assert.equal(model.r1Calibrated, true);
-  assert.equal(ctx.commands.length, 0);
-
-  // Pattern 2 (real trade), starting from candle idx 23 (the very next candle after Pattern 1's Candle 3 at idx 22)
-  const p2c1 = candleAt(23, 64955, 64965, 64950, 64960, BASE); // touches new R1=64960
-  const p2c2 = candleAt(24, 64955, 64956.5, 64953, 64953.5, BASE); // valid Candle 2
-  const p2c3 = candleAt(25, 64953, 64953.2, 64950, 64950, BASE); // closes below lower(64953) -> real SELL
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: p2c1.timestamp, data: p2c1 }, null);
-  assert.equal(model.patternCandidate.isCalibrationPattern, false, 'Pattern 2 must NOT be calibration-eligible — R1 is already calibrated');
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: p2c2.timestamp, data: p2c2 }, null);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: p2c3.timestamp, data: p2c3 }, null);
-
-  assert.equal(ctx.commands.length, 1, 'Pattern 2 must submit exactly one real TradeCommand');
-  assert.equal(ctx.commands[0].action, 'SHORT');
-  assert.equal(ctx.commands[0].stopLoss, 64970, 'SL must be Pattern 2 Candle1.high(64965) + 5, never derived from Pattern 1');
-});
-
-test('CALIBRATION: R2 (BULLISH+RESISTANCE, index 2) behaves as a completely normal trade — never calibration-eligible', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [70000, 64950, 65100] }, { capitalAllocation: 10000 });
-  await model.onHydrate(flat(20, 64800, BASE));
-  const c1 = candleAt(20, 64900, 64960, 64890, 64920, BASE); // touches R2=64950 (index 2)
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c1.timestamp, data: c1 }, null);
-  assert.equal(model.patternCandidate.matchedLevel.index, 2);
-  assert.equal(model.patternCandidate.isCalibrationPattern, false, 'R2 must never be calibration-eligible, only R1');
-});
-
-test('CALIBRATION: BEARISH + S1 Pattern 1 confirms with NO TradeCommand, mutates support[0] to Candle1.low, sets s1Calibrated', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BEARISH', support: [60040, 59000, 58000], resistance: [999000, 998000, 997000] }, { capitalAllocation: 10000 });
-  await model.onHydrate(flat(20, 60200, BASE));
-
-  const c1 = candleAt(20, 60100, 60110, 60040, 60060, BASE); // touches S1=60040
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c1.timestamp, data: c1 }, null);
-  assert.equal(model.patternCandidate.isCalibrationPattern, true);
-
-  // Candle2: touches Candle1 bodyHigh=max(60100,60060)=60100, bullish, valid
-  const c2 = candleAt(21, 60099, 60102, 60098.5, 60101, BASE);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c2.timestamp, data: c2 }, null);
-  assert.equal(model.patternCandidate.stage, 'WAITING_FOR_BOUNDARY_BREAK');
-
-  const c3 = candleAt(22, 60102, 60105, 60101.8, 60105, BASE); // closes above upper(60102) -> would-be BUY -> calibration
+  const c3 = candleAt(22, 65000, 65005, 64990, 65002, BASE);
   await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c3.timestamp, data: c3 }, null);
 
   assert.equal(ctx.commands.length, 0);
-  assert.equal(model.patternCandidate, null);
-  assert.equal(model.s1Calibrated, true);
-  assert.equal(model.params.support[0], 60040, 'support[0] must become Pattern 1 Candle1.low (60040)');
-  assert.equal(model.params.support[1], 59000, 'S2 must be untouched');
+  assert.equal(model.r1Calibrated, true);
+  assert.equal(model.params.resistance[0], a.high);
 });
 
-test('CALIBRATION: S3 (BEARISH+SUPPORT, index 3) behaves as a completely normal trade — never calibration-eligible', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BEARISH', support: [40000, 59000, 60040], resistance: [999000, 998000, 997000] }, { capitalAllocation: 10000 });
-  await model.onHydrate(flat(20, 60200, BASE));
-  const c1 = candleAt(20, 60100, 60110, 60040, 60060, BASE); // touches S3=60040 (index 3)
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c1.timestamp, data: c1 }, null);
-  assert.equal(model.patternCandidate.matchedLevel.index, 3);
-  assert.equal(model.patternCandidate.isCalibrationPattern, false);
-});
+test('BULLISH + RESISTANCE: after R1 calibration, R1 uses the same normal NEW SELL pattern and running trigger', async () => {
+  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [65000, 66000, 67000] }, { capitalAllocation: 10000 });
+  await model.onHydrate(flat(20, 64000, BASE));
 
-test('CALIBRATION: zero Positions/Orders/Trades result from Pattern 1 — only submitTradeCommand is the pipeline entry point, and it is never called', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] }, { capitalAllocation: 10000 });
-  await model.onHydrate(flat(20, 64800, BASE));
-  const candles = [
-    candleAt(20, 64900, 64960, 64890, 64920, BASE),
-    candleAt(21, 64900, 64901.5, 64898, 64898.5, BASE),
-    candleAt(22, 64898, 64898.2, 64895, 64895, BASE),
-  ];
-  for (const c of candles) {
+  // First R1 calibration pattern.
+  const a1 = bearishSellA(20);
+  const b1 = bearishSellB(21);
+  const c1 = candleAt(22, 65000, 65005, 64990, 65002, BASE);
+  for (const c of [a1, b1, c1]) {
     await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c.timestamp, data: c }, null);
   }
-  assert.equal(ctx.commands.length, 0, 'no TradeCommand means no downstream Position/Order/Trade can ever be created for Pattern 1');
-});
-
-// --- Restart/replay reconstructs calibration -----------------------------
-
-test('RESTART REPLAY: calibration that completed entirely within the hydrated window is correctly reconstructed (r1Calibrated=true, resistance[0] mutated)', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] }, { capitalAllocation: 10000 });
-  const candles = [];
-  for (let i = 0; i < 20; i += 1) candles.push(candleAt(i, 64800, 64830, 64770, 64800, BASE));
-  candles[15] = candleAt(15, 64900, 64960, 64890, 64920, BASE);
-  candles[16] = candleAt(16, 64900, 64901.5, 64898, 64898.5, BASE);
-  candles[17] = candleAt(17, 64898, 64898.2, 64895, 64895, BASE); // resolves calibration within the window
-  await model.onHydrate(candles);
-
   assert.equal(model.r1Calibrated, true);
-  assert.equal(model.params.resistance[0], 64960);
-  assert.equal(model.patternCandidate, null, 'Q1: the resolving candle itself must not become a fresh Candle 1 during replay either');
+  assert.equal(model.params.resistance[0], 65030);
   assert.equal(ctx.commands.length, 0);
+
+  // Second R1 setup is normal NEW SELL, exactly mirroring post-calibration S1 BUY.
+  const a2 = candleAt(23, 65035, 65040, 65025, 65030, BASE);
+  const b2 = candleAt(24, 65030, 65035, 65015, 65020, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: a2.timestamp, data: a2 }, null);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: b2.timestamp, data: b2 }, null);
+  assert.equal(model.patternCandidate.engine, 'NEW');
+  assert.equal(model.patternCandidate.direction, 'SELL');
+  assert.equal(model.patternCandidate.isCalibrationPattern, false);
+
+  // Running low touches lower; close remains above it.
+  const c2 = candleAt(25, 65020, 65025, 65010, 65018, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c2.timestamp, data: c2 }, null);
+  assert.equal(ctx.commands.length, 1);
+  assert.equal(ctx.commands[0].action, 'SHORT');
 });
 
-test('RESTART REPLAY: an unfinished SECOND pattern (post-calibration) reconstructs correctly as WAITING_FOR_BOUNDARY_BREAK, not calibration-eligible', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] }, { capitalAllocation: 10000 });
-  const candles = [];
-  for (let i = 0; i < 14; i += 1) candles.push(candleAt(i, 64800, 64830, 64770, 64800, BASE));
-  candles[14] = candleAt(14, 64900, 64960, 64890, 64920, BASE); // Pattern 1 Candle 1
-  candles[15] = candleAt(15, 64900, 64901.5, 64898, 64898.5, BASE); // Pattern 1 Candle 2
-  candles[16] = candleAt(16, 64898, 64898.2, 64895, 64895, BASE); // Pattern 1 resolves -> calibration
-  candles[17] = candleAt(17, 64955, 64965, 64950, 64960, BASE); // Pattern 2 Candle 1 (touches new R1=64960)
-  candles[18] = candleAt(18, 64955, 64956.5, 64953, 64953.5, BASE); // Pattern 2 Candle 2 -> WAITING_FOR_BOUNDARY_BREAK
-  candles[19] = candleAt(19, 64954, 64955, 64953.5, 64954, BASE); // stays inside boundaries
-  await model.onHydrate(candles);
+test('BULLISH + RESISTANCE: R2 and R3 are normal NEW SELL patterns, never calibration', async () => {
+  for (const [index, level] of [[2, 66000], [3, 67000]]) {
+    const resistance = index === 2 ? [70000, 66000, 71000] : [70000, 71000, 67000];
+    const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [50000, 51000, 52000], resistance });
+    await model.onHydrate(flat(20, 64000, BASE));
+    const a = candleAt(20, level + 20, level + 30, level + 10, level + 15, BASE);
+    const b = candleAt(21, level + 10, level + 15, level - 5, level, BASE);
+    await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: a.timestamp, data: a }, null);
+    await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: b.timestamp, data: b }, null);
+    assert.ok(model.patternCandidate);
+    assert.equal(model.patternCandidate.engine, 'NEW');
+    assert.equal(model.patternCandidate.direction, 'SELL');
+    assert.equal(model.patternCandidate.matchedLevel.index, index);
+    assert.equal(model.patternCandidate.isCalibrationPattern, false);
+    assert.equal(ctx.commands.length, 0);
+  }
+});
 
+test('BULLISH + RESISTANCE: first R1 running-candle SELL is consumed as calibration, not traded', async () => {
+  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [65000, 66000, 67000] });
+  await model.onHydrate(flat(20, 64000, BASE));
+  const a = bearishSellA(20);
+  const b = bearishSellB(21);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: a.timestamp, data: a }, null);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: b.timestamp, data: b }, null);
+  await model.onMarketData({ type: 'price', symbol: 'BTCUSD', timestamp: b.timestamp + 10000, data: { price: 64990 } }, null);
+  assert.equal(ctx.commands.length, 0);
+  assert.equal(model.patternCandidate, null);
   assert.equal(model.r1Calibrated, true);
-  assert.ok(model.patternCandidate);
-  assert.equal(model.patternCandidate.stage, 'WAITING_FOR_BOUNDARY_BREAK');
-  assert.equal(model.patternCandidate.isCalibrationPattern, false, 'Pattern 2 reconstructed after calibration must not be calibration-eligible');
-  assert.equal(ctx.commands.length, 0);
 });
 
-// --- Known, documented limitation: no MongoDB persistence yet ------------
+// S1/S2/S3 BUY behavior remains the exact mirror on the opposite trend side.
+test('BEARISH + SUPPORT: S1/S2/S3 all use the same NEW BUY pattern after the one-time S1 calibration', async () => {
+  const { ctx, model } = await startedModel({ trend: 'BEARISH', support: [60040, 59000, 58000], resistance: [70000, 69000, 68000] });
+  await model.onHydrate(flat(20, 60200, BASE));
 
-test('CALIBRATION HISTORY OUTSIDE HYDRATION WINDOW: when Pattern 1\'s calibration evidence predates the hydrated window, replay honestly defaults to uncalibrated (documented limitation, not a silent guess)', async () => {
-  // Simulates a restart whose hydration window only contains what would,
-  // in reality, be the SECOND (post-calibration) pattern's data — Pattern
-  // 1's own Candle 1/2/3 happened earlier and has aged out of the window.
-  // Without MongoDB persistence, replay has no way to know calibration
-  // already occurred, so it deterministically (and honestly) starts from
-  // r1Calibrated=false and treats this R1 touch as calibration-eligible
-  // again. This is the CURRENT, documented, tested behavior — not a bug
-  // being silently papered over.
-  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [64960, 65000, 65100] }, { capitalAllocation: 10000 });
-  // Window contains ONLY what would be "Pattern 2" in a real continuous
-  // run — Pattern 1's own candles are not present at all.
-  const candles = [];
-  for (let i = 0; i < 17; i += 1) candles.push(candleAt(i, 64800, 64830, 64770, 64800, BASE));
-  candles[17] = candleAt(17, 64955, 64965, 64950, 64960, BASE); // touches resistance[0]=64960 -- looks like a fresh R1 touch
-  await model.onHydrate(candles);
+  const a1 = candleAt(20, 60100, 60200, 60100, 60150, BASE);
+  const b1 = candleAt(21, 60100, 60310, 60040, 60300, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: a1.timestamp, data: a1 }, null);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: b1.timestamp, data: b1 }, null);
+  assert.equal(model.patternCandidate.engine, 'NEW');
+  assert.equal(model.patternCandidate.isCalibrationPattern, true);
 
-  assert.ok(model.patternCandidate);
-  assert.equal(
-    model.patternCandidate.isCalibrationPattern, true,
-    'documented limitation: with no persisted calibration flag, a restart whose window misses the original calibration evidence will treat the next R1 touch as calibration-eligible again'
-  );
-  assert.equal(model.r1Calibrated, false, 'r1Calibrated honestly reflects only what THIS window\'s replay actually witnessed — never guessed true');
+  const c1 = candleAt(22, 60300, 60315, 60250, 60310, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c1.timestamp, data: c1 }, null);
+  assert.equal(model.s1Calibrated, true);
+  assert.equal(ctx.commands.length, 0);
+
+  // S1 after calibration: ordinary NEW BUY.
+  const a2 = candleAt(23, 60300, 60400, 60250, 60350, BASE);
+  const b2 = candleAt(24, 60120, 60410, 60100, 60400, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: a2.timestamp, data: a2 }, null);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: b2.timestamp, data: b2 }, null);
+  assert.equal(model.patternCandidate.isCalibrationPattern, false);
+  await model.onMarketData({ type: 'price', symbol: 'BTCUSD', timestamp: b2.timestamp + 10000, data: { price: 60415 } }, null);
+  assert.equal(ctx.commands.length, 1);
+  assert.equal(ctx.commands[0].action, 'LONG');
+
+  // Rerun S2/S3 in isolated bots: same NEW BUY algorithm and never calibration.
+  for (const [index, level, support] of [[2, 59000, [50000, 59000, 58000]], [3, 58000, [50000, 51000, 58000]]]) {
+    const { model: m } = await startedModel({ trend: 'BEARISH', support, resistance: [70000, 69000, 68000] });
+    await m.onHydrate(flat(20, 60000, BASE));
+    const a = candleAt(20, level + 100, level + 120, level + 80, level + 110, BASE);
+    const b = candleAt(21, level + 105, level + 310, level - 5, level + 300, BASE);
+    await m.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: a.timestamp, data: a }, null);
+    await m.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: b.timestamp, data: b }, null);
+    assert.equal(m.patternCandidate.engine, 'NEW');
+    assert.equal(m.patternCandidate.direction, 'BUY');
+    assert.equal(m.patternCandidate.matchedLevel.index, index);
+    assert.equal(m.patternCandidate.isCalibrationPattern, false);
+  }
 });
 
 // =========================================================================
-// READINESS DECOUPLING: startup readiness is a fixed 3-candle threshold,
-// independent of historySize (which continues to govern the pattern
-// engine's rolling buffer window and hydration fetch cap, unchanged).
+// READINESS: pattern finding starts after the first eligible candle.
+// A second candle is still required when a level touch needs A/B validation;
+// readiness itself must never wait for three candles.
 // =========================================================================
 
-test('READINESS: bot is NOT ready with 0, 1, or 2 candles, and becomes ready at exactly 3 — not 20 (historySize)', async () => {
-  const { ctx, model } = await startedModel({ trend: 'BEARISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] });
-  assert.equal(model.getReadiness().required, 3, 'readiness threshold must be 3, decoupled from historySize=20');
+test('READINESS: bot becomes ready with the first eligible candle', async () => {
+  const { model } = await startedModel({ trend: 'BEARISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] });
+  assert.equal(model.getReadiness().required, 1, 'readiness threshold must be 1');
 
   await model.onHydrate([]);
   assert.equal(model.getReadiness().ready, false);
   assert.equal(model.getReadiness().have, 0);
 
-  const flatCandle = (i) => candleAt(i, 64800, 64830, 64770, 64800, BASE);
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: flatCandle(0).timestamp, data: flatCandle(0) }, null);
+  const first = candleAt(0, 64800, 64830, 64770, 64800, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: first.timestamp, data: first }, null);
   assert.equal(model.getReadiness().have, 1);
-  assert.equal(model.getReadiness().ready, false);
+  assert.equal(model.getReadiness().ready, true, 'must become ready after the first eligible closed candle');
+});
 
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: flatCandle(1).timestamp, data: flatCandle(1) }, null);
-  assert.equal(model.getReadiness().have, 2);
-  assert.equal(model.getReadiness().ready, false);
-
-  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: flatCandle(2).timestamp, data: flatCandle(2) }, null);
-  assert.equal(model.getReadiness().have, 3);
-  assert.equal(model.getReadiness().ready, true, 'must become ready at exactly the 3rd new closed candle');
+test('READINESS: pattern finding is attempted immediately after first candle, not blocked until 3 candles', async () => {
+  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [999000, 998000, 997000] });
+  const first = candleAt(0, 60020, 60030, 60010, 60020, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: first.timestamp, data: first }, null);
+  assert.equal(model.getReadiness().ready, true);
+  const decision = lastDecision(ctx);
+  assert.equal(decision.payload.decision, 'WAIT');
+  assert.equal(decision.payload.reason, 'no_level_touch');
 });
 
 test('READINESS: the model still correctly evaluates real patterns once ready — decoupling readiness from historySize does not affect pattern detection', async () => {
   const { ctx, model } = await startedModel({ trend: 'BEARISH', support: [60000, 59000, 58000], resistance: [64950, 65000, 65100] });
   await model.onHydrate([]);
-  for (let i = 0; i < 3; i += 1) {
-    const flatCandle = candleAt(i, 64800, 64830, 64770, 64800, BASE); // A: bodyLow = 64800
-    await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: flatCandle.timestamp, data: flatCandle }, null);
-  }
+  const first = candleAt(0, 64800, 64830, 64770, 64800, BASE); // A: bodyLow = 64800
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: first.timestamp, data: first }, null);
   assert.equal(model.getReadiness().ready, true);
 
   // B: touches resistance (high>=64950), bearish, bodyLow(64750) < A's bodyLow(64800), BodyP dominant.

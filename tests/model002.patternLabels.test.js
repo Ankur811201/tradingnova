@@ -527,51 +527,50 @@ test('23. the strategy engines and execution path were not touched by this chang
 // group at all. These tests drive that exact path.
 // =========================================================================
 
-// BEARISH trend + a SUPPORT touch = the opposite-side combination (OLD engine, BUY).
-const oldTouch = (i) => ({ timestamp: BASE + i * MIN, open: 60010, high: 60020, low: 59990, close: 60005, volume: null });
-// Touches Candle 1's body high (60010) without touching Support itself.
-const oldCandle2 = (i) => ({ timestamp: BASE + i * MIN, open: 60003, high: 60025, low: 60002, close: 60020, volume: null });
-const oldCandle3Wait = (i) => ({ timestamp: BASE + i * MIN, open: 60010, high: 60020, low: 60005, close: 60015, volume: null });
+// BEARISH trend + SUPPORT = the shared NEW BUY algorithm.
+const bearishBuyA = (i) => ({ timestamp: BASE + i * MIN, open: 60000, high: 60010, low: 59990, close: 60000, volume: null });
+const bearishBuyB = (i) => ({ timestamp: BASE + i * MIN, open: 60050, high: 60205, low: 59900, close: 60200, volume: null });
+const bearishBuyCWait = (i) => ({ timestamp: BASE + i * MIN, open: 60100, high: 60150, low: 60000, close: 60120, volume: null });
 
-test('LIVE BUG: an opposite-side pattern now produces a real labelled group (it produced none before)', async () => {
+test('LIVE BUG: BEARISH + SUPPORT now uses the same NEW BUY labelled group', async () => {
   const { ctx, model } = await startBot({ trend: 'BEARISH' });
-  const t = oldTouch(10);
-  const c2 = oldCandle2(11);
-  const c3 = oldCandle3Wait(12);
-  await feed(model, t);
-  await feed(model, c2);
+  const a = bearishBuyA(10);
+  const b = bearishBuyB(11);
+  const c3 = bearishBuyCWait(12);
+  await feed(model, a);
+  await feed(model, b);
   await feed(model, c3);
 
   const payload = lastDecision(ctx);
-  assert.equal(payload.reason, 'awaiting_boundary_break');
+  assert.equal(payload.reason, 'awaiting_boundary_touch');
   const visual = payload.checks.patternVisual;
-  assert.ok(visual, 'the OLD engine now reports a visual group');
-  assert.equal(visual.engine, 'OLD');
+  assert.ok(visual, 'the NEW BUY engine must report a visual group');
+  assert.equal(visual.engine, 'NEW');
+  assert.equal(visual.direction, 'BUY');
 
   const byRole = {};
   visual.labels.forEach((l) => { byRole[l.role] = l; });
-  assert.equal(byRole.CANDLE_1.timestamp, t.timestamp);
-  assert.equal(byRole.CANDLE_2.timestamp, c2.timestamp);
+  assert.equal(byRole.CANDLE_1.timestamp, a.timestamp);
+  assert.equal(byRole.CANDLE_2.timestamp, b.timestamp);
   assert.equal(byRole.CANDLE_3.timestamp, c3.timestamp);
-  // In THIS engine the touch candle is Candle 1, so that is where TOUCH goes.
-  assert.equal(byRole.CANDLE_1.touch, true);
-  assert.equal(byRole.CANDLE_2.touch, false);
+  assert.equal(byRole.CANDLE_2.touch, true);
+  assert.equal(byRole.CANDLE_1.touch, false);
 
   const chart = await bootChart();
   chart.render(payload.checks);
   const m = chart.patternMarkers();
   assert.equal(m.length, 3);
-  assert.match(labelOf(m, 'C1').text, /^\u2460 C1 \u2022 TOUCH$/);
-  assert.match(labelOf(m, 'C2').text, /^\u2461 C2$/);
+  assert.match(labelOf(m, 'C1').text, /^\u2460 C1$/);
+  assert.match(labelOf(m, 'C2').text, /^\u2461 C2 \u2022 TOUCH$/);
   assert.match(labelOf(m, 'C3').text, /^\u2462 C3$/);
-  assert.equal(labelOf(m, 'C1').time, t.timestamp / 1000, 'markers are not shifted by one candle');
+  assert.equal(labelOf(m, 'C1').time, a.timestamp / 1000, 'markers are not shifted by one candle');
 });
 
 test('LIVE BUG: the Decision Engine panel no longer renders "undefined" in front of the OHLC', async () => {
   const { ctx, model } = await startBot({ trend: 'BEARISH' });
-  await feed(model, oldTouch(10));
-  await feed(model, oldCandle2(11));
-  await feed(model, oldCandle3Wait(12));
+  await feed(model, bearishBuyA(10));
+  await feed(model, bearishBuyB(11));
+  await feed(model, bearishBuyCWait(12));
 
   const sandbox = { window: {}, console: { error() {} } };
   sandbox.self = sandbox.window;
@@ -580,9 +579,9 @@ test('LIVE BUG: the Decision Engine panel no longer renders "undefined" in front
 
   const html = sandbox.window.ModelThinkingRegistry.renderers.MODEL_002(lastDecision(ctx).checks);
   assert.doesNotMatch(html, /undefined/);
-  assert.match(html, /C1 TOUCH O:60010/);
-  assert.match(html, /C2 O:60003/);
-  assert.match(html, /C3 O:60010/);
+  assert.match(html, /C1 O:60000/);
+  assert.match(html, /C2 TOUCH O:60050/);
+  assert.match(html, /C3 O:60100/);
 });
 
 test('the reported live candles produce a Candle 1 body reference of 78237.5', () => {
