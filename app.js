@@ -27,6 +27,7 @@ const logsRoutes = require('./routes/logsRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');
 const safetyRoutes = require('./routes/safetyRoutes');
 const healthRoutes = require('./routes/healthRoutes');
+const recordingsRoutes = require('./routes/recordingsRoutes');
 const viewRoutes = require('./routes/viewRoutes');
 const botRoutes = require('./routes/botRoutes')
 
@@ -143,6 +144,7 @@ console.log("=================================");
   app.use('/api/settings', settingsRoutes);
   app.use('/api/safety', safetyRoutes);
   app.use('/api/health', healthRoutes);
+  app.use('/api/recordings', recordingsRoutes);
  
 
   // --- Frontend page routes (Part 2) ---

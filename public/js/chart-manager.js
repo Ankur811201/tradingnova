@@ -27,6 +27,10 @@ class ChartManager {
         borderColor: '#d1d4dc',
         timeVisible: true,
         secondsVisible: false,
+        // Keep the latest candle visually separated from the right chart edge.
+        // This is shared by the live chart and the server-side recording so
+        // their candle placement remains visually consistent.
+        rightOffset: 3,
       },
     });
 
@@ -59,6 +63,18 @@ class ChartManager {
     if (indicators.ema20 || indicators.ema50) {
       this.overlayManager.updateIndicators(candle.time, indicators.ema20, indicators.ema50);
     }
+  }
+
+  // Replace the complete canonical candle snapshot without creating a new
+  // chart or series. The server-side recorder uses this to keep every frame
+  // deterministic: the frame always contains the same full candle history
+  // that was supplied in the recording snapshot, followed by the live candle.
+  // This is intentionally separate from onLiveCandle(), which remains the
+  // normal browser live-update path.
+  replaceCandleSnapshot(candles) {
+    if (!Array.isArray(candles) || !candles.length) return;
+    this.candleSeries.setData(candles);
+    this.chart.timeScale().scrollToRealTime();
   }
 
   // NOVA TRADE -- PART 10: real executed BUY/SELL/EXIT markers. Both methods

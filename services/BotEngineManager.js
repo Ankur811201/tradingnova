@@ -298,11 +298,6 @@ class BotEngineManager extends EventEmitter {
       }
 
 
-      console.log(
-        '✅ MARKET MATCHED BOT:',
-        instanceId
-      );
-
 
       instance.lastPrice = price;
 
@@ -591,10 +586,6 @@ class BotEngineManager extends EventEmitter {
     const room =
       `bot:${instanceId}`;
 
-
-    console.log(
-      `[SOCKET EMIT] ${event} → ${room}`
-    );
 
 
     this.io

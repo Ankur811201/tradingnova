@@ -210,7 +210,6 @@ class CandlePersistenceService {
         },
         { upsert: true }
       );
-      console.log(`[CANDLE] ${symbol} ${timeframe} saved/updated`);
       events.push(this._toCanonicalEvent(symbol, timeframe, current, false));
       return events;
     }
@@ -226,7 +225,6 @@ class CandlePersistenceService {
       { $max: { high: price }, $min: { low: price }, $set: { close: price } },
       { upsert: false }
     );
-    console.log(`[CANDLE] ${symbol} ${timeframe} saved/updated`);
     events.push(this._toCanonicalEvent(symbol, timeframe, current, false));
     return events;
   }
@@ -360,12 +358,6 @@ class CandlePersistenceService {
           timeframe,
           candle: candlePayload,
         });
-
-        if (IS_DEV) {
-          console.log(
-            `[SOCKET] bot:candle instance=${instanceId} ${symbol} ${timeframe} time=${candlePayload.time} closed=${candlePayload.closed}`
-          );
-        }
       }
     }
   }

@@ -9,6 +9,7 @@ const candleBackfillService = require('../marketData/CandleBackfillService');
 const { getUsableRecentHistory } = require('../marketData/usableHistoryQuery');
 const riskEngine = require('../riskEngine/RiskEngine');
 const executionRouter = require('../execution/ExecutionRouter');
+const recordingService = require('../recording/RecordingService');
 const { validateTradeCommand } = require('../../bot-models/TradeCommandSchema');
 const { newInstanceId } = require('../../utils/ids');
 const logger = require('../../utils/logger');
@@ -1053,6 +1054,17 @@ class BotManager {
       const dbInstance = await BotInstance.findOne({ instanceId });
       if (!dbInstance || dbInstance.status !== 'RUNNING' || dbInstance.symbol !== marketUpdate.symbol) continue;
 
+      if (marketUpdate.type === 'price') {
+        // Recording-only observer: uses the existing live price stream to
+        // start immediately on S1/R1 touch. It never changes bot strategy
+        // state and never enters RiskEngine/ExecutionRouter.
+        recordingService.observePriceForLevelTouch(
+          dbInstance,
+          marketUpdate.data && marketUpdate.data.price,
+          marketUpdate.timestamp
+        );
+      }
+
       if (marketUpdate.type === 'candle') {
         // PART 13.1 -- PHASE D: dbInstance.status === 'RUNNING' here is only
         // reachable after onStart succeeded, which now requires an
@@ -1240,6 +1252,25 @@ class BotManager {
       }
 
       await dbInstance.save();
+
+      // MODEL_002 recording: reuse the existing LEVEL_TOUCHED event. Only
+      // S1/R1 (index 1) starts a server-side 1 FPS recording. This is
+      // monitoring only and never participates in trading/risk/execution.
+      if (dbInstance.modelId === 'MODEL_002' && event.eventType === 'LEVEL_TOUCHED') {
+        try {
+          await recordingService.startFromLevelTouch({
+            instanceId,
+            touch: event.payload || {},
+            bot: dbInstance,
+          });
+        } catch (err) {
+          await logger.warn('BOT', `Recording start failed for ${instanceId}: ${err.message}`);
+        }
+      }
+
+      if (dbInstance.modelId === 'MODEL_002' && event.eventType === 'DECISION') {
+        recordingService.updateDecision(instanceId, event.payload || {});
+      }
 
       if (timeframeSwitchApplied) {
         // The candle builder decides which timeframes to persist from the

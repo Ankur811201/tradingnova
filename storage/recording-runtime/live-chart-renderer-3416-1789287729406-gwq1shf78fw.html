@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1280,height=720,initial-scale=1">
+<title>NOVA TRADE Recording Renderer</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1280px; height: 720px; overflow: hidden; background: #05060a; }
+  body { font-family: Inter, Arial, sans-serif; color: #e5e7eb; }
+  #root { position: relative; width: 1280px; height: 720px; background: #05060a; }
+  #chart-panel { position: absolute; left: 15px; top: 66px; width: 730px; height: 580px; background: #fff; border-radius: 16px; overflow: hidden; }
+  #bot-chart-panel { position: relative; width: 100%; height: 100%; }
+  #bot-chart-container { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #bot-chart-state { display: none; }
+  #chart-price-label { position: absolute; right: 0; z-index: 10; pointer-events: none; transform: translateY(-50%); border-radius: 6px; border: 1px solid rgba(52,211,153,.30); background: rgba(11,18,32,.95); padding: 4px 8px; text-align: center; line-height: 1.1; font-family: 'JetBrains Mono', monospace; }
+  #header { position: absolute; left: 15px; right: 15px; top: 15px; height: 38px; display: flex; align-items: center; justify-content: space-between; }
+  #title { font-size: 18px; font-weight: 700; }
+  #subtitle { color: #60a5fa; font-family: monospace; font-size: 12px; margin-left: 10px; }
+  #rec { color: #fb7185; font-family: monospace; font-size: 11px; font-weight: 700; }
+  #side { position: absolute; left: 763px; top: 66px; width: 502px; height: 580px; background: #0b0f17; border: 1px solid rgba(255,255,255,.07); border-radius: 16px; padding: 22px; }
+  .side-label { color: #64748b; font-size: 10px; text-transform: uppercase; margin-top: 24px; }
+  .side-value { color: #e2e8f0; font-family: monospace; font-size: 15px; margin-top: 6px; }
+  #decision { font-size: 34px; font-weight: 700; margin-top: 12px; }
+  #reason { color: #cbd5e1; font-family: monospace; font-size: 12px; margin-top: 8px; line-height: 1.45; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="header"><div><span id="title">NOVA TRADE</span><span id="subtitle">BTCUSD • 1m • MODEL_002</span></div><div id="rec">● RECORDING 1 FPS • S1</div></div>
+  <div id="chart-panel">
+    <div id="bot-chart-panel">
+      <div id="bot-chart-container"></div>
+      <div id="bot-chart-state"></div>
+      <div id="chart-price-label" class="hidden">
+        <div style="font-size:12px;font-weight:700;color:#fff" id="chart-current-price">--</div>
+        <div style="font-size:10px;font-weight:600;color:#34d399" id="chart-next-candle">--:--</div>
+      </div>
+    </div>
+  </div>
+  <div id="side">
+    <div style="color:#94a3b8;font-size:11px;font-weight:700">BOT DECISION ENGINE</div>
+    <div class="side-label">Trend</div><div class="side-value" id="trend">--</div>
+    <div class="side-label">Support</div><div class="side-value" id="support">--</div>
+    <div class="side-label">Resistance</div><div class="side-value" id="resistance">--</div>
+    <div class="side-label">Pattern State</div><div class="side-value" id="pattern">--</div>
+    <div class="side-label">Final Decision</div><div id="decision">WAIT</div>
+    <div id="reason">--</div>
+    <div class="side-label">Touched Level</div><div class="side-value" id="level">--</div>
+    <div class="side-label">Recording</div><div class="side-value" id="elapsed">● 0s • 1 FPS</div>
+  </div>
+</div>
+
+<!-- The recording page intentionally loads the production chart modules in
+     the same order/combination as bot-detail.ejs. No replacement chart is
+     implemented here. -->
+<script>
+  window.BOT_RECORDINGS_ENABLED = true;
+  window.NOVA_RECORDING_MODE = true;
+  window.BOT_CONFIG = {"instanceId":"inst_31559f23-b69e-4639-a20c-9df11ef586b1","modelId":"MODEL_002","pair":"BTCUSD","timeframe":"1m","activeTimeframe":"1m","timeframeSwitched":false,"status":"RUNNING","createdAtMs":1789286789703,"levels":null,"targets":[],"support":[76950,76800,76700],"resistance":[77110,77210,77300],"levelTouch":{"supportTouched":false,"supportTouchedAt":null,"supportTouchedLevel":null,"supportTouchedIndex":null,"resistanceTouched":false,"resistanceTouchedAt":null,"resistanceTouchedLevel":null,"resistanceTouchedIndex":null}};
+  window.BOT_INITIAL_DECISION = {"decision":"TOUCHED","reason":"Manual recording started","activeLevel":null,"triggerTime":1789287729324};
+  window.BOT_INITIAL_POSITION = null;
+  window.BOT_INITIAL_TRADES = [];
+  window.BOT_PERFORMANCE = null;
+  window.NovaBotSocket = { on: function () {} };
+
+  // bot-detail-chart.js normally gets its 300-candle snapshot from the
+  // authenticated REST endpoint. The headless recorder is intentionally
+  // offline from that endpoint, so provide the exact server snapshot through
+  // the browser fetch contract. The chart code itself remains production
+  // code and performs the same sanitation + setData + fitContent flow.
+  const __novaRecordingCandles = [{"time":1789286820,"open":77095.5,"high":77107.5,"low":77095.5,"close":77107.5},{"time":1789286880,"open":77107,"high":77108,"low":77107,"close":77108},{"time":1789286940,"open":77107.5,"high":77119,"low":77074.5,"close":77090},{"time":1789287000,"open":77089.5,"high":77090,"low":77042,"close":77042},{"time":1789287060,"open":77042,"high":77043.5,"low":77042,"close":77043},{"time":1789287120,"open":77043.5,"high":77043.5,"low":77028,"close":77032},{"time":1789287180,"open":77032.5,"high":77037.5,"low":77007.5,"close":77037.5},{"time":1789287240,"open":77037.5,"high":77037.5,"low":77037,"close":77037.5},{"time":1789287300,"open":77037,"high":77037.5,"low":77027.5,"close":77028},{"time":1789287360,"open":77027.5,"high":77028,"low":77027.5,"close":77027.5},{"time":1789287420,"open":77028,"high":77028,"low":76983,"close":76983.5},{"time":1789287480,"open":76983.5,"high":76988,"low":76973.5,"close":76988},{"time":1789287540,"open":76987.5,"high":76988,"low":76977,"close":76977},{"time":1789287600,"open":76977,"high":77013.5,"low":76977,"close":77013},{"time":1789287660,"open":77013,"high":77013.5,"low":76991.5,"close":76999.5},{"time":1789287720,"open":76999.5,"high":76999.5,"low":76999.5,"close":76999.5}];
+  const __novaRealFetch = window.fetch;
+  window.fetch = function (url) {
+    if (String(url).indexOf('/candles') !== -1) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: function () {
+          return Promise.resolve({
+            success: true,
+            data: {
+              instanceId: window.BOT_CONFIG.instanceId,
+              symbol: window.BOT_CONFIG.pair,
+              timeframe: window.BOT_CONFIG.activeTimeframe || window.BOT_CONFIG.timeframe,
+              count: __novaRecordingCandles.length,
+              candles: __novaRecordingCandles,
+            }
+          });
+        }
+      });
+    }
+    return __novaRealFetch ? __novaRealFetch.apply(window, arguments) : Promise.reject(new Error('fetch unavailable'));
+  };
+</script>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/public/js/chart-manager.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/public/js/candle-series.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/public/js/overlay-manager.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/public/js/marker-manager.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/public/js/execution-markers.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/public/js/chart-price-label.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/public/js/renderers/model002-level-state.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/public/js/bot-detail-chart.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/services/recording/live-chart-renderer-client.js"></script>
+</body></html>

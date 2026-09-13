@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1280,height=720,initial-scale=1">
+<title>NOVA TRADE Recording Renderer</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1280px; height: 720px; overflow: hidden; background: #05060a; }
+  body { font-family: Inter, Arial, sans-serif; color: #e5e7eb; }
+  #root { position: relative; width: 1280px; height: 720px; background: #05060a; }
+  #chart-panel { position: absolute; left: 15px; top: 66px; width: 730px; height: 580px; background: #fff; border-radius: 16px; overflow: hidden; }
+  #chart { width: 100%; height: 100%; }
+  #side { position: absolute; left: 763px; top: 66px; width: 502px; height: 580px; background: #0b0f17; border: 1px solid rgba(255,255,255,.07); border-radius: 16px; padding: 22px; }
+  #header { position: absolute; left: 15px; right: 15px; top: 15px; height: 38px; display: flex; align-items: center; justify-content: space-between; }
+  #title { font-size: 18px; font-weight: 700; }
+  #subtitle { color: #60a5fa; font-family: monospace; font-size: 12px; margin-left: 10px; }
+  #rec { color: #fb7185; font-family: monospace; font-size: 11px; font-weight: 700; }
+  .side-label { color: #64748b; font-size: 10px; text-transform: uppercase; margin-top: 24px; }
+  .side-value { color: #e2e8f0; font-family: monospace; font-size: 15px; margin-top: 6px; }
+  #decision { font-size: 34px; font-weight: 700; margin-top: 12px; }
+  #reason { color: #cbd5e1; font-family: monospace; font-size: 12px; margin-top: 8px; line-height: 1.45; }
+  #price-label { position: absolute; right: 1px; transform: translateY(-50%); background: #0b1220; color: #fff; border: 1px solid rgba(52,211,153,.30); border-radius: 6px; padding: 4px 8px; font: 700 11px/1.1 'JetBrains Mono', monospace; z-index: 5; white-space: nowrap; }
+  #price-label small { display:block; text-align:center; font-size:9px; margin-top:2px; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="header"><div><span id="title">NOVA TRADE</span><span id="subtitle">BTCUSD • 1m • MODEL_002</span></div><div id="rec">● RECORDING 1 FPS • S1</div></div>
+  <div id="chart-panel"><div id="chart"></div><div id="price-label" style="display:none"><span id="price">--</span><small id="countdown">--</small></div></div>
+  <div id="side">
+    <div style="color:#94a3b8;font-size:11px;font-weight:700">BOT DECISION ENGINE</div>
+    <div class="side-label">Trend</div><div class="side-value" id="trend">--</div>
+    <div class="side-label">Support</div><div class="side-value" id="support">--</div>
+    <div class="side-label">Resistance</div><div class="side-value" id="resistance">--</div>
+    <div class="side-label">Pattern State</div><div class="side-value" id="pattern">--</div>
+    <div class="side-label">Final Decision</div><div id="decision">WAIT</div>
+    <div id="reason">--</div>
+    <div class="side-label">Touched Level</div><div class="side-value" id="level">--</div>
+    <div class="side-label">Recording</div><div class="side-value" id="elapsed">● 0s • 1 FPS</div>
+  </div>
+</div>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/public/js/candle-series.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/public/js/marker-manager.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/public/js/overlay-manager.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/public/js/chart-manager.js"></script>
+<script src="file:///C:/Users/IT%20Care/Desktop/Ankur%20kumar/trading%20all%20project/pro%2020%20test/services/recording/live-chart-renderer-client.js"></script>
+</body></html>

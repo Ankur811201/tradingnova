@@ -157,6 +157,7 @@
                 <i data-lucide="maximize-2" class="w-3.5 h-3.5"></i>
                 <span class="hidden sm:inline" id="chart-fullscreen-label">Full screen</span>
               </button>
+              <div id="chart-recording-status" class="hidden text-rose-400 font-mono text-[10px] font-semibold animate-pulse">● RECORDING 1 FPS</div>
               <div id="chart-connection-status" class="flex items-center gap-1.5 text-emerald-400">
                 <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Dynamic Stream Active
               </div>
@@ -589,6 +590,9 @@
         <button class="tab-btn" data-tab="decisions" data-active="false" onclick="switchTab('decisions')">
           <span class="flex items-center gap-1.5 px-3 sm:px-4 py-3 text-xs font-semibold text-gray-400 whitespace-nowrap"><i data-lucide="git-branch" class="w-3.5 h-3.5"></i> Decision History</span>
         </button>
+        <button class="tab-btn" data-tab="recordings" data-active="false" onclick="switchTab('recordings')">
+          <span class="flex items-center gap-1.5 px-3 sm:px-4 py-3 text-xs font-semibold text-gray-400 whitespace-nowrap"><i data-lucide="video" class="w-3.5 h-3.5"></i> Break Recordings</span>
+        </button>
         <button class="tab-btn" data-tab="indicators" data-active="false" onclick="switchTab('indicators')">
           <span class="flex items-center gap-1.5 px-3 sm:px-4 py-3 text-xs font-semibold text-gray-400 whitespace-nowrap"><i data-lucide="activity" class="w-3.5 h-3.5"></i> Indicators</span>
         </button>
@@ -719,6 +723,24 @@
           </div>
         </div>
 
+        <!-- BREAK RECORDINGS TAB -->
+        <div class="tab-panel" data-tab="recordings" data-active="false">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <div class="text-xs font-semibold text-gray-300 uppercase tracking-wide">Break Recordings</div>
+              <div class="text-[10px] text-gray-500 mt-1">Server recorded at 1 FPS in 5-minute chunks. Starts automatically on S1/R1 touch, or manually. Each completed chunk can be watched or deleted.</div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="recording-start-btn" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20 text-xs font-semibold">▶ Start</button>
+              <button id="recording-stop-btn" type="button" disabled class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/25 text-rose-400 hover:bg-rose-500/20 text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed">■ Stop</button>
+              <span id="recording-live-status" class="hidden text-[10px] font-mono text-rose-400">● RECORDING 1 FPS</span>
+            </div>
+          </div>
+          <div id="trade-recordings-list" class="space-y-2">
+            <div class="text-gray-500 italic text-xs py-4">Loading recordings...</div>
+          </div>
+        </div>
+
         <!-- INDICATORS TAB -->
         <div class="tab-panel" data-tab="indicators" data-active="false">
           <% if (bot.modelId === 'MODEL_002') { %>
@@ -823,6 +845,7 @@
   <!-- INLINE DATA BOOTSTRAP -->
  <!-- Place this script in views/bot-detail.ejs BEFORE loading bot-detail-ws.js -->
 <script>
+  window.BOT_RECORDINGS_ENABLED = true;
   window.BOT_CONFIG = {
   instanceId: "<%= bot.instanceId || bot._id %>",
   modelId: "<%= bot.modelId || 'MODEL_UNKNOWN' %>",
@@ -1386,6 +1409,7 @@
 <script src="/js/renderers/model002-reason-map.js"></script>
 <script src="/js/renderers/model002-level-state.js"></script>
 <script src="/js/renderers/model-thinking-registry.js"></script>
+<script src="/js/trade-recordings.js"></script>
 <script src="/js/bot-detail-ws.js"></script>
 </body>
 </html>

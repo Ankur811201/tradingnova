@@ -85,10 +85,6 @@ function initSockets(httpServer, sessionMiddleware) {
 
   io.on('connection', (socket) => {
 
-    console.log(
-      `[SOCKET] Connected: ${socket.id} user=${socket.userId}`
-    );
-
 
     // =======================================================
     // DEFAULT ROOMS
@@ -149,11 +145,6 @@ function initSockets(httpServer, sessionMiddleware) {
         socket.join(room);
 
 
-        console.log(
-          `[SOCKET] ${socket.id} joined ${room}`
-        );
-
-
         // Tell frontend subscription succeeded
         socket.emit(
           'bot:subscribed',
@@ -187,11 +178,6 @@ function initSockets(httpServer, sessionMiddleware) {
 
 
         socket.leave(room);
-
-
-        console.log(
-          `[SOCKET] ${socket.id} left ${room}`
-        );
       }
     );
 
@@ -203,11 +189,6 @@ function initSockets(httpServer, sessionMiddleware) {
     socket.on(
       'disconnect',
       (reason) => {
-
-        console.log(
-          `[SOCKET] Disconnected: ${socket.id}`,
-          reason
-        );
 
         // Socket.IO automatically removes
         // the socket from all rooms.

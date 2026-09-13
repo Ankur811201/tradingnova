@@ -49,6 +49,11 @@
     var low = Number(raw.low);
     var close = Number(raw.close);
     if (![time, open, high, low, close].every(Number.isFinite)) return null;
+    // Never allow zero/negative or internally impossible OHLC into the chart.
+    // A single bad candle can force Lightweight Charts to autoscale toward 0,
+    // making the real BTC price action collapse into a tiny strip.
+    if (time <= 0 || open <= 0 || high <= 0 || low <= 0 || close <= 0) return null;
+    if (high < Math.max(open, close) || low > Math.min(open, close)) return null;
 
     var volume = null;
     if (raw.volume !== null && raw.volume !== undefined && Number.isFinite(Number(raw.volume))) {
@@ -59,6 +64,19 @@
   }
 
   async function fetchCandles(instanceId) {
+    // Server-side recording already has the exact canonical snapshot. Use it
+    // directly instead of depending on an authenticated REST request from a
+    // file:// headless page. Normal browser pages still use the real API.
+    if (window.NOVA_RECORDING_MODE === true && Array.isArray(window.__NOVA_RECORDING_CANDLES__)) {
+      return {
+        instanceId: instanceId,
+        symbol: window.BOT_CONFIG && window.BOT_CONFIG.pair,
+        timeframe: window.BOT_CONFIG && (window.BOT_CONFIG.activeTimeframe || window.BOT_CONFIG.timeframe),
+        count: window.__NOVA_RECORDING_CANDLES__.length,
+        candles: window.__NOVA_RECORDING_CANDLES__
+      };
+    }
+
     var url = '/api/bot-instances/' + encodeURIComponent(instanceId) + '/candles?limit=' + CANDLE_LIMIT;
     var res = await fetch(url, { credentials: 'include' });
     var body = null;
@@ -626,6 +644,11 @@
       setChartState('Unable to load candle history.');
     } finally {
       historyLoaded = true;
+      // Shared readiness signal for the server-side recorder. This does not
+      // change the normal browser chart; it only tells a headless consumer
+      // that the SAME production chart has completed its initial history
+      // load/fitContent pass and is safe to capture.
+      window.__novaBotChartReady = true;
 
       if (pendingLiveCandles.length) {
         var createdAtMsDrain = window.BOT_CONFIG && window.BOT_CONFIG.createdAtMs;

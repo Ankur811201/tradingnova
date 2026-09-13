@@ -13,6 +13,7 @@ const { getMarketDataProvider } = require('./services/marketData');
 const SystemSetting = require('./models/SystemSetting');
 const botEngineManager = require('./services/BotEngineManager');
 const candlePersistenceService = require('./services/marketData/CandlePersistenceService');
+const recordingService = require('./services/recording/RecordingService');
 
 
 async function main() {
@@ -31,6 +32,7 @@ async function main() {
   logger.attachSocketServer(io);
   botManager.attachSocketServer(io);
   candlePersistenceService.attachSocketServer(io);
+  recordingService.attachSocketServer(io);
   socketBus.attachIO(io);
   botEngineManager.init(io);
 
@@ -77,6 +79,11 @@ for (const symbol of env.RISK_ALLOWED_SYMBOLS) {
 
 
       // =====================================================
+      // Feed the same Delta tick to active server-side recordings.
+      for (const [instanceId] of recordingService.active) {
+        recordingService.updatePrice(instanceId, price, timestamp);
+      }
+
       // 2. Update paper trading positions
       // =====================================================
 
@@ -117,6 +124,9 @@ for (const symbol of env.RISK_ALLOWED_SYMBOLS) {
 
 
       // =====================================================
+      // Feed canonical candle events into active recordings.
+      recordingService.ingestCandleEvents(candleEvents);
+
       // 4. Dispatch the live price tick to BotManager first.
       //
       //    MODEL_002 uses type:'price' while a NEW-engine candidate is
@@ -156,9 +166,6 @@ for (const symbol of env.RISK_ALLOWED_SYMBOLS) {
       for (const event of candleEvents) {
         if (!event.candle.closed) continue;
 
-        console.log(
-          `[CANDLE] ${event.symbol} ${event.timeframe} closed timestamp=${event.candle.timestamp}`
-        );
         console.log(
           `[BOT] Dispatching canonical ${event.symbol} ${event.timeframe} candle to BotManager`
         );

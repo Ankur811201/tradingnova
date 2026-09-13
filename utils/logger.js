@@ -19,9 +19,14 @@ function attachSocketServer(io) {
 
 async function write(level, category, message, meta = {}) {
   const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] [${category}] ${message}`;
-  if (level === 'error') console.error(line, meta && Object.keys(meta).length ? meta : '');
-  else if (level === 'warn') console.warn(line, meta && Object.keys(meta).length ? meta : '');
-  else console.log(line, meta && Object.keys(meta).length ? meta : '');
+  // Candle persistence is high-frequency (one line per market update).
+  // Keep these records available in SystemLog/socket consumers, but do not
+  // spam the server terminal with routine CANDLE messages.
+  if (category !== 'CANDLE') {
+    if (level === 'error') console.error(line, meta && Object.keys(meta).length ? meta : '');
+    else if (level === 'warn') console.warn(line, meta && Object.keys(meta).length ? meta : '');
+    else console.log(line, meta && Object.keys(meta).length ? meta : '');
+  }
 
   try {
     const Model = getModel();
