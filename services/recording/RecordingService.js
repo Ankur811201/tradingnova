@@ -6,7 +6,7 @@ const { spawn } = require('child_process');
 const Candle = require('../../models/Candle');
 const BotInstance = require('../../models/BotInstance');
 const { getActiveTimeframe } = require('../../utils/activeTimeframe');
-const LiveChartRenderer = require('./LiveChartRenderer');
+const SvgChartRenderer = require('./SvgChartRenderer');
 
 const RECORDINGS_DIR = path.join(__dirname, '..', '..', 'storage', 'recordings');
 const FPS = 1;
@@ -228,19 +228,22 @@ class RecordingService {
       console.warn(`[RECORDING] history load failed for ${id}: ${err.message}`);
     }
 
-    // Use the same Lightweight Charts implementation as the live bot page,
-    // rendered in a headless browser. This keeps recordings visually faithful
-    // to the live graph while remaining server-side (the client can be closed).
-    session.renderer = new LiveChartRenderer();
+    // Server-side SVG->PNG chart renderer. No browser process is launched:
+    // the same canonical candle/decision state that used to be pushed into a
+    // headless Chrome tab is instead rendered directly to an SVG document
+    // and rasterized with sharp. See SvgChartRenderer.js for the frame
+    // builder (renderChartFrame) and visual-parity notes.
+    session.renderer = new SvgChartRenderer();
     try {
       await session.renderer.start(session);
     } catch (err) {
       this.active.delete(instanceId);
       try { if (session.renderer) await session.renderer.stop(); } catch (_) {}
       try { fs.rmSync(session.framesDir, { recursive: true, force: true }); } catch (_) {}
-      throw new Error(`Live chart renderer failed to start: ${err.message}`);
+      throw new Error(`Chart renderer failed to start: ${err.message}`);
     }
 
+    console.log(`[RECORDING] starting ${id} instance=${instanceId} symbol=${bot.symbol} timeframe=${timeframe}`);
     await this.captureFrame(session);
     // Frame capture and chunk rotation are deliberately independent. A slow
     // encode must never prevent the 5-minute boundary from being scheduled.
@@ -371,10 +374,18 @@ class RecordingService {
 
   async captureFrame(session) {
     if (!session || session.stopping || session.rotating || !session.renderer) return;
-    await session.renderer.update(session);
+    try {
+      await session.renderer.update(session);
+    } catch (err) {
+      throw new Error(`[RECORDING] frame generation failed ${session.id}: ${err.message}`);
+    }
     const file = path.join(session.framesDir, `frame-${String(session.frameIndex).padStart(6, '0')}.png`);
     session.frameIndex += 1;
-    await session.renderer.screenshot(file);
+    try {
+      await session.renderer.screenshot(file);
+    } catch (err) {
+      throw new Error(`[RECORDING] frame rasterization failed ${session.id}: ${err.message}`);
+    }
   }
 
   async _rotateChunkIfNeeded(session) {
@@ -400,6 +411,7 @@ class RecordingService {
     session.framesDir = path.join(RECORDINGS_DIR, `${session.id}-chunk-${session.chunkIndex}`);
     fs.mkdirSync(session.framesDir, { recursive: true });
 
+    console.log(`[RECORDING] rotating ${session.id} chunk=${oldIndex} frames=${oldFrameIndex}`);
     try {
       await this._encodeChunk(session, oldDir, oldIndex, oldStartedAt, oldFrameIndex);
       this._emit(session.instanceId, 'CHUNK_READY', session, { chunkIndex: oldIndex });
@@ -456,20 +468,26 @@ class RecordingService {
       throw new Error(`Invalid frame count ${frameCount} for chunk ${chunkIndex}`);
     }
 
+    console.log(`[RECORDING] encoding ${session.id} chunk=${chunkIndex} frames=${frameCount}`);
     const ffmpeg = resolveFfmpeg();
-    await this.run(ffmpeg, [
-      '-y',
-      '-loglevel', 'error',
-      '-framerate', String(FPS),
-      '-start_number', '0',
-      '-i', inputPattern,
-      '-frames:v', String(frameCount),
-      '-c:v', 'libvpx-vp9',
-      '-b:v', '0',
-      '-crf', '35',
-      '-pix_fmt', 'yuv420p',
-      webm,
-    ], FFMPEG_TIMEOUT_MS);
+    try {
+      await this.run(ffmpeg, [
+        '-y',
+        '-loglevel', 'error',
+        '-framerate', String(FPS),
+        '-start_number', '0',
+        '-i', inputPattern,
+        '-frames:v', String(frameCount),
+        '-c:v', 'libvpx-vp9',
+        '-b:v', '0',
+        '-crf', '35',
+        '-pix_fmt', 'yuv420p',
+        webm,
+      ], FFMPEG_TIMEOUT_MS);
+    } catch (err) {
+      throw new Error(`[RECORDING] ffmpeg failed chunk=${chunkIndex}: ${err.message}`);
+    }
+    console.log(`[RECORDING] ffmpeg complete ${session.id} chunk=${chunkIndex}`);
 
     let stat;
     try {
@@ -481,26 +499,31 @@ class RecordingService {
       throw new Error(`FFmpeg produced an invalid/empty video file (${stat.size || 0} bytes): ${webm}`);
     }
 
-    await Recording.create({
-      recordingId: `${session.id}-chunk-${chunkIndex}`,
-      instanceId: session.instanceId,
-      botName: session.botName,
-      symbol: session.symbol,
-      timeframe: session.timeframe,
-      environment: session.environment,
-      direction: session.direction,
-      level: session.level || null,
-      triggerTime: new Date(session.startedAt),
-      chunkIndex,
-      chunkStartedAt: new Date(chunkStartedAt),
-      chunkEndedAt: new Date(chunkStartedAt + Math.max(frameCount - 1, 0) * 1000),
-      durationSeconds: frameCount / FPS,
-      frameRate: FPS,
-      status: 'READY',
-      fileName: path.basename(webm),
-      filePath: path.relative(path.join(__dirname, '..', '..'), webm).replace(/\\/g, '/'),
-      triggerReason: session.decision.reason || reason || null,
-    });
+    try {
+      await Recording.create({
+        recordingId: `${session.id}-chunk-${chunkIndex}`,
+        instanceId: session.instanceId,
+        botName: session.botName,
+        symbol: session.symbol,
+        timeframe: session.timeframe,
+        environment: session.environment,
+        direction: session.direction,
+        level: session.level || null,
+        triggerTime: new Date(session.startedAt),
+        chunkIndex,
+        chunkStartedAt: new Date(chunkStartedAt),
+        chunkEndedAt: new Date(chunkStartedAt + Math.max(frameCount - 1, 0) * 1000),
+        durationSeconds: frameCount / FPS,
+        frameRate: FPS,
+        status: 'READY',
+        fileName: path.basename(webm),
+        filePath: path.relative(path.join(__dirname, '..', '..'), webm).replace(/\\/g, '/'),
+        triggerReason: session.decision.reason || reason || null,
+      });
+    } catch (err) {
+      throw new Error(`[RECORDING] database save failed chunk=${chunkIndex}: ${err.message}`);
+    }
+    console.log(`[RECORDING] database record ready ${session.id} chunk=${chunkIndex}`);
 
     try { fs.rmSync(framesDir, { recursive: true, force: true }); } catch (_) {}
   }
