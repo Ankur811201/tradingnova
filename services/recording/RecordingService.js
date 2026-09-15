@@ -9,9 +9,10 @@ const { getActiveTimeframe } = require('../../utils/activeTimeframe');
 const SvgChartRenderer = require('./SvgChartRenderer');
 
 const RECORDINGS_DIR = path.join(__dirname, '..', '..', 'storage', 'recordings');
-const FPS = 1;
+const FRAME_INTERVAL_MS = 2000;
+const FPS = 1 / (FRAME_INTERVAL_MS / 1000);
 const POST_EVENT_TAIL_MS = 5000;
-const CHUNK_MS = 5 * 60 * 1000;
+const CHUNK_MS = 10 * 60 * 1000;
 const MAX_RECORDING_MS = 24 * 60 * 60 * 1000;
 const MAX_CANDLES = 300;
 const MAX_LEVEL_TOUCH_INDEX = 1; // Only S1 / R1 start recordings.
@@ -182,6 +183,7 @@ class RecordingService {
       stopping: false,
       renderer: null,
       capturePromise: Promise.resolve(),
+      executionMarkers: [],
     };
 
     // Register the session BEFORE the first database read. The trading
@@ -251,7 +253,7 @@ class RecordingService {
       session.capturePromise = session.capturePromise
         .then(() => this.captureFrame(session))
         .catch(err => console.error(`[RECORDING] frame failed for ${session.id}: ${err.stack || err.message}`));
-    }, 1000);
+    }, FRAME_INTERVAL_MS);
     this._scheduleChunkRotation(session);
 
     session.maxTimer = setTimeout(() => {
@@ -283,9 +285,16 @@ class RecordingService {
   }
 
 
-  updatePrice(instanceId, price, timestamp) {
+  updatePrice(instanceId, symbol, price, timestamp) {
     const session = this.active.get(instanceId);
     if (!session) return;
+
+    // The market-data loop can service multiple subscribed symbols. Never
+    // feed a tick into a recording for a different instrument; doing so can
+    // combine (for example) a low-priced symbol with BTCUSD OHLC and create
+    // a visually catastrophic giant candle.
+    if (String(session.symbol || '').toUpperCase() !== String(symbol || '').toUpperCase()) return;
+
     const p = num(price);
     if (p == null) return;
     session.currentPrice = p;
@@ -329,6 +338,46 @@ class RecordingService {
     session.decision = { ...session.decision, ...decision };
     if (decision.candle3 && validRecordingCandle(decision.candle3)) {
       session.currentCandle = { ...decision.candle3 };
+    }
+  }
+
+  updateExecution(instanceId, execution) {
+    const session = this.active.get(instanceId);
+    if (!session || !execution) return;
+    const timeframeMs = this._timeframeMs(session.timeframe);
+    const toMarker = (type, item) => {
+      if (!item) return null;
+      const price = num(type === 'EXIT' ? item.exitPrice : item.entryPrice);
+      const rawTime = item.closedAt || item.openedAt;
+      const ms = rawTime instanceof Date ? rawTime.getTime() : new Date(rawTime).getTime();
+      if (price == null || price <= 0 || !Number.isFinite(ms)) return null;
+      const sec = Math.floor(ms / 1000);
+      const bucket = Math.floor(ms / timeframeMs) * timeframeMs;
+      const side = item.side === 'LONG' ? 'BUY' : item.side === 'SHORT' ? 'SELL' : null;
+      return {
+        id: `${type.toLowerCase()}:${String(item._id || `${sec}:${price}`)}`,
+        type, side, price, execTime: sec, time: Math.floor(bucket / 1000),
+        text: type === 'EXIT' ? 'EXIT' : (side || 'ACTION'),
+      };
+    };
+    const markers = [];
+    if (execution.position) {
+      const m = toMarker('ENTRY', execution.position);
+      if (m) markers.push(m);
+    }
+    if (execution.trade) {
+      const entry = toMarker('ENTRY', execution.trade);
+      const exit = toMarker('EXIT', execution.trade);
+      if (entry) markers.push(entry);
+      if (exit) markers.push(exit);
+    }
+    for (const marker of markers) {
+      if (!session.executionMarkers.some(existing => existing.id === marker.id)) {
+        session.executionMarkers.push(marker);
+      }
+    }
+    if (session.executionMarkers.length > 20) {
+      session.executionMarkers = session.executionMarkers.slice(-20);
     }
   }
 
@@ -397,7 +446,7 @@ class RecordingService {
     }
 
     session.rotating = true;
-    // Finish any in-flight 1 FPS screenshot before detaching the old chunk
+    // Finish any in-flight 0.5 FPS frame before detaching the old chunk
     // directory. Otherwise a slow screenshot could land in the wrong chunk.
     await session.capturePromise;
     const oldDir = session.framesDir;
@@ -430,8 +479,8 @@ class RecordingService {
     if (session.chunkTimer) clearInterval(session.chunkTimer);
 
     // Chunk rotation has its own timer. It is intentionally independent from
-    // frame capture and from FFmpeg. Every second we check the wall-clock
-    // boundary and rotate exactly once when the current 5-minute chunk ends.
+    // frame capture and from FFmpeg. We check the wall-clock boundary and
+    // rotate exactly once when the current 10-minute chunk ends.
     session.chunkTimer = setInterval(() => {
       if (session.stopping || session.rotating) return;
       const elapsed = Date.now() - session.chunkStartedAt;
@@ -512,7 +561,7 @@ class RecordingService {
         triggerTime: new Date(session.startedAt),
         chunkIndex,
         chunkStartedAt: new Date(chunkStartedAt),
-        chunkEndedAt: new Date(chunkStartedAt + Math.max(frameCount - 1, 0) * 1000),
+        chunkEndedAt: new Date(chunkStartedAt + Math.max(frameCount - 1, 0) * FRAME_INTERVAL_MS),
         durationSeconds: frameCount / FPS,
         frameRate: FPS,
         status: 'READY',

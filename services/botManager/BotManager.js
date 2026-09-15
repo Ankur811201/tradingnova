@@ -1456,12 +1456,17 @@ class BotManager {
         }).sort({ closedAt: -1 }).lean();
       }
 
-      this.ioRef.to(`bot:${instanceId}`).emit('bot:execution', {
+      const executionPayload = {
         instanceId,
         action: normalizedCommand.action,
         position: position || null,
         trade: trade || null,
-      });
+      };
+      // Recording-only mirror of the authoritative execution result. This
+      // does not alter trading state; it lets the SVG recorder render the
+      // same BUY/SELL/EXIT action markers visible on the live chart.
+      recordingService.updateExecution(instanceId, executionPayload);
+      this.ioRef.to(`bot:${instanceId}`).emit('bot:execution', executionPayload);
     } catch (err) {
       await logger.error('BOT', `Failed to emit bot:execution for ${instanceId}: ${err.message}`);
     }

@@ -83,19 +83,35 @@ test('package.json depends on sharp and not on puppeteer/playwright', () => {
 test('renderChartFrame produces one complete, well-formed SVG document', () => {
   const state = {
     symbol: 'BTCUSD', timeframe: '1m', startedAt: Date.now(), direction: 'BUY',
-    currentPrice: 63500, support: [63000], resistance: [64000],
-    level: { side: 'SUPPORT', index: 1, price: 63000 }, trend: 'BULLISH',
+    currentPrice: 63500, support: [], resistance: [],
+    level: null, trend: 'BULLISH',
     decision: { decision: 'BUY', reason: 'S1 touched' },
     candles: makeCandles(30, Date.now() - 30 * 60000).map((c) => ({ time: c.timestamp / 1000, open: c.open, high: c.high, low: c.low, close: c.close })),
   };
   const svg = renderChartFrame(state);
   assert.match(svg, /^<svg viewBox="0 0 1380 720" width="1380" height="720"/);
   assert.match(svg, /<\/svg>$/);
-  assert.match(svg, /NOVA TRADE/);
-  assert.match(svg, /BOT DECISION ENGINE/);
-  // one rect per candle body at minimum
-  const rectCount = (svg.match(/<rect/g) || []).length;
-  assert.ok(rectCount >= 30, 'expected at least one <rect> per candle body');
+  assert.doesNotMatch(svg, /NOVA TRADE/);
+  assert.doesNotMatch(svg, /BOT DECISION ENGINE/);
+  // The recording view intentionally contains exactly 10 history candles + 1 live candle.
+  const candleBodyRects = (svg.match(/<rect[^>]*fill="#(?:089981|f23645)"/g) || []).length;
+  assert.equal(candleBodyRects, 11, 'expected exactly 10 historical candles plus 1 live candle');
+  assert.doesNotMatch(svg, /Trend|Support|Resistance|Final Decision|Recording/);
+});
+
+test('recording frame shows only 10 past candles plus one live candle centred', () => {
+  const history = makeCandles(30, Date.now() - 30 * 60000).map((c) => ({ time: c.timestamp / 1000, open: c.open, high: c.high, low: c.low, close: c.close }));
+  const live = history[history.length - 1];
+  const svg = renderChartFrame({
+    symbol: 'BTCUSD', timeframe: '1m', currentPrice: live.close, support: [], resistance: [],
+    candles: history,
+  });
+  const candleBodies = svg.match(/<rect[^>]*fill="#(?:089981|f23645)"/g) || [];
+  assert.equal(candleBodies.length, 11);
+  assert.doesNotMatch(svg, /BOT DECISION ENGINE|Final Decision|Trend|Recording 1 FPS/);
+  const geo = buildGeometry(history.slice(-11));
+  const liveX = geo.xCenter(10);
+  assert.ok(Math.abs(liveX - (geo.plotX + geo.plotW / 2)) < 0.01, 'live candle must be centred');
 });
 
 test('renderChartFrame never produces a blank/partial frame when there are no candles yet', () => {
@@ -192,6 +208,11 @@ test('recording history uses the same instance creation boundary as the live can
   assert.match(recordingSrc, /const candleFilter = \{ symbol: bot\.symbol, timeframe \};/);
   assert.match(recordingSrc, /candleFilter\.timestamp = \{ \$gte: bot\.createdAt\.getTime\(\) \};/);
   assert.match(recordingSrc, /Candle\.find\(candleFilter\)/);
+});
+
+test('recording price updates are symbol-scoped', () => {
+  assert.match(recordingSrc, /updatePrice\(instanceId, symbol, price, timestamp\)/);
+  assert.match(recordingSrc, /String\(session\.symbol \|\| ''\)\.toUpperCase\(\) !== String\(symbol \|\| ''\)\.toUpperCase\(\)/);
 });
 
 test('recording pipeline rejects zero-price OHLC that would destroy autoscale', () => {

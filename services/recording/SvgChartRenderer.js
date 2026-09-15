@@ -11,14 +11,20 @@
  * then rasterized to PNG with sharp. FFmpeg (unchanged, in RecordingService)
  * encodes the PNG sequence to WebM.
  *
- * Visual parity target: the SAME candle data, support/resistance lines,
- * MODEL_002 pattern boundaries/body-reference/role markers and side-panel
- * decision readout as the live bot-detail chart (chart-manager.js,
- * candle-series.js, overlay-manager.js, marker-manager.js). Colors, layout
- * proportions (1380x720, 830px chart panel, 502px side panel) and the
- * S1/R1/MANUAL header badge all mirror the previous Chrome-rendered page so
- * a recording still looks like the bot page it was recording.
+ * Recording view: chart-only, with exactly 10 completed candles and one
+ * live/current candle centred horizontally. The data/decision side panel and
+ * recording header are intentionally excluded so the video contains only the
+ * market chart. Candle/level colours and price scaling remain aligned with
+ * the live chart styling.
  */
+
+const path = require('path');
+
+// Keep recording fonts self-contained so Sharp/librsvg renders text consistently
+// on localhost and Linux/cPanel servers.
+const RECORDING_FONT_DIR = path.join(__dirname, 'fonts');
+const FONTCONFIG_FILE = path.join(RECORDING_FONT_DIR, 'fonts.conf');
+if (!process.env.FONTCONFIG_FILE) process.env.FONTCONFIG_FILE = FONTCONFIG_FILE;
 
 const sharp = require('sharp');
 
@@ -28,19 +34,22 @@ const sharp = require('sharp');
 const CANVAS_W = 1380;
 const CANVAS_H = 720;
 const CHART_X = 15;
-const CHART_Y = 66;
-const CHART_W = 830;
-const CHART_H = 580;
-const SIDE_X = 863;
-const SIDE_Y = 66;
-const SIDE_W = 502;
-const SIDE_H = 580;
+const CHART_Y = 30;
+const CHART_W = 1350;
+const CHART_H = 660;
 
+// Recording view: show exactly 10 completed candles plus the current/live
+// candle. The live candle is anchored at the horizontal centre, leaving the
+// right side empty just like a live chart's forward-looking area.
+const HISTORY_CANDLES = 10;
+const LIVE_CANDLE_INDEX = HISTORY_CANDLES;
+// Recording-only chart zoom. 2x zoom-out keeps the same 10 + 1 candles
+// but shows more horizontal and vertical breathing room around them.
+const RECORDING_ZOOM_OUT = 2;
 const PLOT_PAD_LEFT = 10;
 const PLOT_PAD_TOP = 14;
-const PLOT_PAD_RIGHT = 64; // right price axis
-const PLOT_PAD_BOTTOM = 26; // bottom time axis
-const RIGHT_OFFSET_CANDLES = 3; // matches timeScale.rightOffset: 3
+const PLOT_PAD_RIGHT = 70;
+const PLOT_PAD_BOTTOM = 26;
 
 const UP_COLOR = '#089981';
 const DOWN_COLOR = '#f23645';
@@ -128,8 +137,12 @@ function buildGeometry(candles) {
   const plotH = CHART_H - PLOT_PAD_TOP - PLOT_PAD_BOTTOM;
 
   const n = candles.length;
-  const totalSlots = Math.max(n + RIGHT_OFFSET_CANDLES, 1);
-  const slotWidth = plotW / totalSlots;
+  // Keep the live candle in the centre regardless of the number of valid
+  // candles received. The renderer normally receives 11 candles (10 history
+  // + 1 live), but this remains stable during startup.
+  const totalSlots = HISTORY_CANDLES + 1;
+  const slotWidth = plotW / (20 * RECORDING_ZOOM_OUT);
+  const liveX = plotX + plotW / 2;
 
   let lo = Infinity;
   let hi = -Infinity;
@@ -144,10 +157,14 @@ function buildGeometry(candles) {
     if (hi <= lo) { lo = mid - 1; hi = mid + 1; }
   }
   const pad = (hi - lo) * 0.08 || Math.max(Math.abs(hi), 1) * 0.01;
-  const min = lo - pad;
-  const max = hi + pad;
+  const paddedLo = lo - pad;
+  const paddedHi = hi + pad;
+  const mid = (paddedLo + paddedHi) / 2;
+  const halfRange = ((paddedHi - paddedLo) / 2) * RECORDING_ZOOM_OUT;
+  const min = mid - halfRange;
+  const max = mid + halfRange;
 
-  const xCenter = (i) => plotX + (i + 0.5) * slotWidth;
+  const xCenter = (i) => liveX + (i - LIVE_CANDLE_INDEX) * slotWidth;
   const yPrice = (price) => {
     const p = num(price);
     if (p == null) return null;
@@ -158,7 +175,7 @@ function buildGeometry(candles) {
     return p != null && p >= min && p <= max;
   };
 
-  return { plotX, plotY, plotW, plotH, slotWidth, min, max, xCenter, yPrice, inRange };
+  return { plotX, plotY, plotW, plotH, slotWidth, min, max, xCenter, yPrice, inRange, liveX };
 }
 
 function niceTicks(min, max, count) {
@@ -181,20 +198,6 @@ function niceTicks(min, max, count) {
 // ---------------------------------------------------------------------
 // SVG fragment builders
 // ---------------------------------------------------------------------
-function svgHeader(state) {
-  const level = state.level || {};
-  const isManual = !state.level || state.direction === 'MANUAL';
-  const side = level.side === 'SUPPORT' ? 'S' : 'R';
-  const index = level.index || 1;
-  const badge = isManual ? '\u25CF RECORDING 1 FPS \u2022 MANUAL' : `\u25CF RECORDING 1 FPS \u2022 ${side}${index}`;
-  const subtitle = `${esc(state.symbol || '--')} \u2022 ${esc(state.timeframe || '--')} \u2022 MODEL_002`;
-
-  return `
-  <text x="${CHART_X}" y="34" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700" fill="#e5e7eb">NOVA TRADE</text>
-  <text x="${CHART_X + 118}" y="34" font-family="monospace" font-size="12" fill="#60a5fa">${subtitle}</text>
-  <text x="${SIDE_X + SIDE_W}" y="34" font-family="monospace" font-size="11" font-weight="700" fill="#fb7185" text-anchor="end">${esc(badge)}</text>`;
-}
-
 function svgChartPanelBg() {
   return `<rect x="${CHART_X}" y="${CHART_Y}" width="${CHART_W}" height="${CHART_H}" rx="16" fill="#ffffff"/>`;
 }
@@ -206,7 +209,7 @@ function svgGridAndAxes(geo, candles) {
     const y = geo.yPrice(price);
     if (y == null) return;
     parts.push(`<line x1="${geo.plotX}" y1="${y.toFixed(1)}" x2="${geo.plotX + geo.plotW}" y2="${y.toFixed(1)}" stroke="${GRID_COLOR}" stroke-width="1"/>`);
-    parts.push(`<text x="${geo.plotX + geo.plotW + 6}" y="${(y + 3.5).toFixed(1)}" font-family="JetBrains Mono, monospace" font-size="10" fill="${AXIS_TEXT}">${fmtPrice(price)}</text>`);
+    parts.push(`<text x="${geo.plotX + geo.plotW + 6}" y="${(y + 3.5).toFixed(1)}" font-family="DejaVu Sans Mono" font-size="10" fill="${AXIS_TEXT}">${fmtPrice(price)}</text>`);
   });
 
   // Vertical grid + time axis, one label roughly every ~1/6th of the candles.
@@ -215,7 +218,7 @@ function svgGridAndAxes(geo, candles) {
   for (let i = 0; i < n; i += step) {
     const x = geo.xCenter(i);
     parts.push(`<line x1="${x.toFixed(1)}" y1="${geo.plotY}" x2="${x.toFixed(1)}" y2="${geo.plotY + geo.plotH}" stroke="${GRID_COLOR}" stroke-width="1"/>`);
-    parts.push(`<text x="${x.toFixed(1)}" y="${geo.plotY + geo.plotH + 16}" font-family="JetBrains Mono, monospace" font-size="9" fill="#787b86" text-anchor="middle">${fmtTime(candles[i].time)}</text>`);
+    parts.push(`<text x="${x.toFixed(1)}" y="${geo.plotY + geo.plotH + 16}" font-family="DejaVu Sans Mono" font-size="9" fill="#787b86" text-anchor="middle">${fmtTime(candles[i].time)}</text>`);
   }
 
   // Axis borders.
@@ -253,7 +256,7 @@ function svgLevelLines(geo, state) {
     const y = geo.yPrice(price);
     parts.push(`<line x1="${geo.plotX}" y1="${y.toFixed(1)}" x2="${geo.plotX + geo.plotW}" y2="${y.toFixed(1)}" stroke="${color}" stroke-width="1" stroke-dasharray="4,3"/>`);
     parts.push(`<rect x="${(geo.plotX + geo.plotW + 1).toFixed(1)}" y="${(y - 7).toFixed(1)}" width="60" height="14" fill="${color}"/>`);
-    parts.push(`<text x="${(geo.plotX + geo.plotW + 31).toFixed(1)}" y="${(y + 4).toFixed(1)}" font-family="monospace" font-size="9" font-weight="700" fill="#ffffff" text-anchor="middle">${esc(label)}</text>`);
+    parts.push(`<text x="${(geo.plotX + geo.plotW + 31).toFixed(1)}" y="${(y + 4).toFixed(1)}" font-family="DejaVu Sans Mono" font-size="9" font-weight="700" fill="#ffffff" text-anchor="middle">${esc(label)}</text>`);
   };
   (state.support || []).forEach((price, idx) => draw(price, '#089981', `S${idx + 1}`));
   (state.resistance || []).forEach((price, idx) => draw(price, '#f23645', `R${idx + 1}`));
@@ -273,7 +276,7 @@ function svgBoundaries(geo, checks) {
     if (price == null || !geo.inRange(price)) return;
     const y = geo.yPrice(price);
     parts.push(`<line x1="${geo.plotX}" y1="${y.toFixed(1)}" x2="${geo.plotX + geo.plotW}" y2="${y.toFixed(1)}" stroke="${color}" stroke-width="1.4" stroke-dasharray="2,2"/>`);
-    parts.push(`<text x="${(geo.plotX + 4).toFixed(1)}" y="${(y - 3).toFixed(1)}" font-family="monospace" font-size="9" font-weight="700" fill="${color}">${esc(label)}</text>`);
+    parts.push(`<text x="${(geo.plotX + 4).toFixed(1)}" y="${(y - 3).toFixed(1)}" font-family="DejaVu Sans Mono" font-size="9" font-weight="700" fill="${color}">${esc(label)}</text>`);
   };
   if (num(boundaries.upper) != null) draw(num(boundaries.upper), upperIsTrigger ? '#22c55e' : '#f43f5e', labels.upper);
   if (num(boundaries.lower) != null) draw(num(boundaries.lower), upperIsTrigger ? '#f43f5e' : '#22c55e', labels.lower);
@@ -310,7 +313,7 @@ function svgBodyReference(geo, checks, candles) {
   const label = isBodyHigh ? 'C1 BODY HIGH' : 'C1 BODY LOW';
   return [
     `<line x1="${x1.toFixed(1)}" y1="${y.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${color}" stroke-width="1.2" stroke-dasharray="1,2"/>`,
-    `<text x="${x1.toFixed(1)}" y="${(y - 3).toFixed(1)}" font-family="monospace" font-size="8" fill="${color}">${esc(label)}</text>`,
+    `<text x="${x1.toFixed(1)}" y="${(y - 3).toFixed(1)}" font-family="DejaVu Sans Mono" font-size="8" fill="${color}">${esc(label)}</text>`,
   ].join('\n');
 }
 
@@ -341,7 +344,32 @@ function svgPatternMarkers(geo, checks, candles) {
     let text = `${label.badge ? `${label.badge} ` : ''}${label.trigger || label.code || ''}`;
     if (label.touch) text += ' \u2022 TOUCH';
     parts.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="${color}"/>`);
-    parts.push(`<text x="${x.toFixed(1)}" y="${(aboveBar ? y - 6 : y + 14).toFixed(1)}" font-family="monospace" font-size="9" font-weight="700" fill="${color}" text-anchor="middle">${esc(text)}</text>`);
+    parts.push(`<text x="${x.toFixed(1)}" y="${(aboveBar ? y - 6 : y + 14).toFixed(1)}" font-family="DejaVu Sans Mono" font-size="9" font-weight="700" fill="${color}" text-anchor="middle">${esc(text)}</text>`);
+  });
+  return parts.join('\n');
+}
+
+/** Authoritative execution markers, matching the live chart's BUY/SELL/EXIT visuals. */
+function svgExecutionMarkers(geo, state, candles) {
+  const markers = Array.isArray(state.executionMarkers) ? state.executionMarkers : [];
+  const parts = [];
+  markers.forEach((marker) => {
+    const markerTime = num(marker.time);
+    if (markerTime == null) return;
+    let idx = candles.findIndex((c) => Number(c.time) === markerTime);
+    if (idx < 0) return;
+    const candle = candles[idx];
+    const x = geo.xCenter(idx);
+    const isExit = marker.type === 'EXIT';
+    const isBuy = marker.side === 'LONG' || marker.text === 'BUY';
+    const color = isExit ? '#f59e0b' : (isBuy ? '#089981' : '#f23645');
+    const yBase = isExit ? geo.yPrice(candle.high) : geo.yPrice(candle.low);
+    if (yBase == null) return;
+    const y = isExit ? yBase - 20 : yBase + 20;
+    const label = esc(marker.text || (isExit ? 'EXIT' : (isBuy ? 'BUY' : 'SELL')));
+    parts.push(`<line x1="${x.toFixed(1)}" y1="${(isExit ? y + 4 : y - 4).toFixed(1)}" x2="${x.toFixed(1)}" y2="${yBase.toFixed(1)}" stroke="${color}" stroke-width="1.2"/>`);
+    parts.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5" fill="${color}"/>`);
+    parts.push(`<text x="${x.toFixed(1)}" y="${(isExit ? y - 8 : y + 15).toFixed(1)}" font-family="DejaVu Sans Mono" font-size="9" font-weight="700" fill="${color}" text-anchor="middle">${label}</text>`);
   });
   return parts.join('\n');
 }
@@ -362,8 +390,8 @@ function svgCurrentPriceLabel(geo, state) {
   return [
     `<line x1="${geo.plotX}" y1="${y.toFixed(1)}" x2="${geo.plotX + geo.plotW}" y2="${y.toFixed(1)}" stroke="#34d399" stroke-width="0.75" stroke-dasharray="2,2" opacity="0.6"/>`,
     `<rect x="${boxX.toFixed(1)}" y="${boxY.toFixed(1)}" width="${boxW}" height="${boxH}" rx="6" fill="#0b1220" stroke="#34d39955"/>`,
-    `<text x="${(boxX + boxW / 2).toFixed(1)}" y="${(boxY + 13).toFixed(1)}" font-family="monospace" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">${fmtPrice(price)}</text>`,
-    `<text x="${(boxX + boxW / 2).toFixed(1)}" y="${(boxY + 25).toFixed(1)}" font-family="monospace" font-size="9" font-weight="600" fill="#34d399" text-anchor="middle">${countdown}</text>`,
+    `<text x="${(boxX + boxW / 2).toFixed(1)}" y="${(boxY + 13).toFixed(1)}" font-family="DejaVu Sans Mono" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">${fmtPrice(price)}</text>`,
+    `<text x="${(boxX + boxW / 2).toFixed(1)}" y="${(boxY + 25).toFixed(1)}" font-family="DejaVu Sans Mono" font-size="9" font-weight="600" fill="#34d399" text-anchor="middle">${countdown}</text>`,
   ].join('\n');
 }
 
@@ -375,58 +403,7 @@ function timeframeSeconds(tf) {
 }
 
 function svgEmptyChart() {
-  return `<text x="${CHART_X + CHART_W / 2}" y="${CHART_Y + CHART_H / 2}" font-family="monospace" font-size="14" fill="#94a3b8" text-anchor="middle">Waiting for candle data\u2026</text>`;
-}
-
-function svgSidePanel(state) {
-  const level = state.level || {};
-  const isManual = !state.level || state.direction === 'MANUAL';
-  const side = level.side === 'SUPPORT' ? 'S' : 'R';
-  const index = level.index || 1;
-  const decision = state.decision || {};
-  const decisionValue = decision.decision || 'WAIT';
-  const decisionColor = decisionValue === 'SELL' ? '#fb7185' : decisionValue === 'BUY' ? '#34d399' : '#60a5fa';
-  const reasonLines = wrapText(decision.reason || (isManual ? 'Manual recording' : `${side}${index} touched`), 46, 4);
-  const startedAt = num(state.startedAt);
-  const elapsedSec = startedAt != null ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
-
-  const supportText = (state.support || []).map((p, i) => `S${i + 1} ${fmtPrice(p)}`).join(' \u2022 ') || '--';
-  const resistanceText = (state.resistance || []).map((p, i) => `R${i + 1} ${fmtPrice(p)}`).join(' \u2022 ') || '--';
-  const touchedText = level.side ? `${level.side} ${level.index} \u2022 ${fmtPrice(level.price)}` : '--';
-  const patternState = decision.patternState || 'IDLE';
-
-  let y = SIDE_Y + 22;
-  const rows = [];
-  rows.push(`<text x="${SIDE_X + 22}" y="${y}" font-family="monospace" font-size="11" font-weight="700" fill="#94a3b8">BOT DECISION ENGINE</text>`);
-
-  const field = (label, value, opts = {}) => {
-    y += 24;
-    rows.push(`<text x="${SIDE_X + 22}" y="${y}" font-family="Inter, Arial, sans-serif" font-size="10" fill="#64748b">${esc(label)}</text>`);
-    y += 18;
-    rows.push(`<text x="${SIDE_X + 22}" y="${y}" font-family="monospace" font-size="${opts.size || 13}" font-weight="${opts.weight || 400}" fill="${opts.color || '#e2e8f0'}">${esc(value)}</text>`);
-  };
-
-  field('Trend', state.trend || '--');
-  field('Support', supportText);
-  field('Resistance', resistanceText);
-  field('Pattern State', patternState);
-
-  y += 30;
-  rows.push(`<text x="${SIDE_X + 22}" y="${y}" font-family="Inter, Arial, sans-serif" font-size="10" fill="#64748b">Final Decision</text>`);
-  y += 32;
-  rows.push(`<text x="${SIDE_X + 22}" y="${y}" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="700" fill="${decisionColor}">${esc(decisionValue)}</text>`);
-
-  y += 20;
-  reasonLines.forEach((line) => {
-    y += 15;
-    rows.push(`<text x="${SIDE_X + 22}" y="${y}" font-family="monospace" font-size="11" fill="#cbd5e1">${esc(line)}</text>`);
-  });
-
-  y += 10;
-  field('Touched Level', touchedText);
-  field('Recording', `\u25CF ${elapsedSec}s \u2022 1 FPS`, { color: '#e2e8f0' });
-
-  return `<rect x="${SIDE_X}" y="${SIDE_Y}" width="${SIDE_W}" height="${SIDE_H}" rx="16" fill="#0b0f17" stroke="#ffffff12"/>\n${rows.join('\n')}`;
+  return `<text x="${CHART_X + CHART_W / 2}" y="${CHART_Y + CHART_H / 2}" font-family="DejaVu Sans Mono" font-size="14" fill="#94a3b8" text-anchor="middle">Waiting for candle data\u2026</text>`;
 }
 
 // ---------------------------------------------------------------------
@@ -439,7 +416,11 @@ function svgSidePanel(state) {
  * still renders a complete (placeholder) frame rather than throwing.
  */
 function renderChartFrame(state) {
-  const candles = Array.isArray(state.candles) ? state.candles.filter(validCandle) : [];
+  // Defensive boundary: even callers that pass a larger history get the same
+  // focused recording viewport — 10 completed candles + 1 live/latest candle.
+  const candles = Array.isArray(state.candles)
+    ? state.candles.filter(validCandle).slice(-HISTORY_CANDLES - 1)
+    : [];
   const geo = buildGeometry(candles);
   const checks = (state.decision && state.decision.checks) || null;
 
@@ -447,28 +428,27 @@ function renderChartFrame(state) {
     ? [
       svgGridAndAxes(geo, candles),
       svgLevelLines(geo, state),
-      checks ? svgBoundaries(geo, checks) : '',
-      checks ? svgBodyReference(geo, checks, candles) : '',
+      svgBoundaries(geo, checks),
+      svgBodyReference(geo, checks, candles),
       svgCandles(geo, candles),
-      checks ? svgPatternMarkers(geo, checks, candles) : '',
+      svgPatternMarkers(geo, checks, candles),
+      svgExecutionMarkers(geo, state, candles),
       svgCurrentPriceLabel(geo, state),
     ].join('\n')
     : svgEmptyChart();
 
   return `<svg viewBox="0 0 ${CANVAS_W} ${CANVAS_H}" width="${CANVAS_W}" height="${CANVAS_H}" xmlns="http://www.w3.org/2000/svg">
 <rect x="0" y="0" width="${CANVAS_W}" height="${CANVAS_H}" fill="#05060a"/>
-${svgHeader(state)}
 ${svgChartPanelBg()}
 <clipPath id="chartClip"><rect x="${CHART_X}" y="${CHART_Y}" width="${CHART_W}" height="${CHART_H}" rx="16"/></clipPath>
 <g clip-path="url(#chartClip)">
 ${body}
 </g>
-${svgSidePanel(state)}
 </svg>`;
 }
 
 // ---------------------------------------------------------------------
-// Renderer class — drop-in replacement for the old LiveChartRenderer.
+// Renderer class — chart-only server-side recorder.
 // Same interface RecordingService already calls: start/update/screenshot/stop.
 // ---------------------------------------------------------------------
 class SvgChartRenderer {
@@ -504,7 +484,7 @@ class SvgChartRenderer {
   }
 
   _publicState(session) {
-    const candles = Array.from(session.candles.values())
+    const allCandles = Array.from(session.candles.values())
       .filter((c) => {
         if (!c || typeof c !== 'object') return false;
         const values = [c.timestamp, c.open, c.high, c.low, c.close].map(Number);
@@ -513,21 +493,35 @@ class SvgChartRenderer {
         return ts > 0 && open > 0 && high > 0 && low > 0 && close > 0 &&
           high >= Math.max(open, close) && low <= Math.min(open, close);
       })
-      .sort((a, b) => Number(a.timestamp) - Number(b.timestamp))
-      .slice(-300)
-      .map((c) => ({ time: Number(c.timestamp) / 1000, open: Number(c.open), high: Number(c.high), low: Number(c.low), close: Number(c.close) }));
+      .sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
 
+    // The live candle is kept separate from completed history. This prevents
+    // the recorder from accidentally showing hundreds of historical candles
+    // and guarantees the live candle is always the centre candle.
+    let live = null;
     if (session.currentCandle) {
       const values = [session.currentCandle.timestamp, session.currentCandle.open, session.currentCandle.high, session.currentCandle.low, session.currentCandle.close].map(Number);
       const [ts, open, high, low, close] = values;
       const valid = values.every(Number.isFinite) && ts > 0 && open > 0 && high > 0 && low > 0 && close > 0 &&
         high >= Math.max(open, close) && low <= Math.min(open, close);
-      if (valid) {
-        const current = { time: ts / 1000, open, high, low, close };
-        const idx = candles.findIndex((c) => c.time === current.time);
-        if (idx >= 0) candles[idx] = current; else candles.push(current);
-      }
+      if (valid) live = { time: ts / 1000, open, high, low, close };
     }
+
+    // If there is no separately tracked live candle yet, use the latest valid
+    // candle as the live position so startup frames remain useful rather than
+    // displaying a blank chart.
+    if (!live && allCandles.length) {
+      const last = allCandles[allCandles.length - 1];
+      live = { time: Number(last.timestamp) / 1000, open: Number(last.open), high: Number(last.high), low: Number(last.low), close: Number(last.close) };
+    }
+
+    const liveTime = live ? live.time : null;
+    const history = allCandles
+      .filter((c) => Number(c.timestamp) / 1000 !== liveTime)
+      .slice(-HISTORY_CANDLES)
+      .map((c) => ({ time: Number(c.timestamp) / 1000, open: Number(c.open), high: Number(c.high), low: Number(c.low), close: Number(c.close) }));
+
+    const candles = live ? [...history, live] : [];
 
     return {
       symbol: session.symbol,
@@ -540,6 +534,7 @@ class SvgChartRenderer {
       level: session.level || null,
       trend: session.trend || '',
       decision: session.decision || {},
+      executionMarkers: Array.isArray(session.executionMarkers) ? session.executionMarkers.slice(-20) : [],
       candles,
     };
   }

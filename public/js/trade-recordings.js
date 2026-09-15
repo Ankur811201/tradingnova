@@ -9,6 +9,7 @@
   const socket = window.NovaBotSocket;
   const startBtn = document.getElementById('recording-start-btn');
   const stopBtn = document.getElementById('recording-stop-btn');
+  const deleteAllBtn = document.getElementById('recording-delete-all-btn');
   if (!enabled || !listEl || !config.instanceId) return;
 
   function escapeHtml(value) {
@@ -87,6 +88,33 @@
     }
   }
 
+  async function deleteAllRecordings() {
+    if (!deleteAllBtn) return;
+    const confirmed = window.confirm(
+      'Delete ALL recordings, videos, and temporary recording frame files for this bot? This cannot be undone.'
+    );
+    if (!confirmed) return;
+
+    deleteAllBtn.disabled = true;
+    deleteAllBtn.textContent = 'Deleting...';
+    try {
+      const response = await fetch(`/api/recordings/${encodeURIComponent(config.instanceId)}/all`, {
+        method: 'DELETE',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) throw new Error(data.error || 'Unable to delete all recordings');
+      await load();
+      window.alert(`Deleted ${Number(data.deletedRecordings || 0)} recording(s) and cleaned temporary recording files.`);
+    } catch (err) {
+      window.alert(err.message);
+    } finally {
+      deleteAllBtn.disabled = false;
+      deleteAllBtn.textContent = '🗑 Delete All';
+    }
+  }
+
   async function startRecording() {
     if (!startBtn) return;
     startBtn.disabled = true;
@@ -162,6 +190,7 @@
 
   if (startBtn) startBtn.addEventListener('click', startRecording);
   if (stopBtn) stopBtn.addEventListener('click', stopRecording);
+  if (deleteAllBtn) deleteAllBtn.addEventListener('click', deleteAllRecordings);
 
   document.addEventListener('DOMContentLoaded', load);
   window.NovaTradeRecordings = { refresh: load };

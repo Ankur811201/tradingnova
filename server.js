@@ -81,7 +81,7 @@ for (const symbol of env.RISK_ALLOWED_SYMBOLS) {
       // =====================================================
       // Feed the same Delta tick to active server-side recordings.
       for (const [instanceId] of recordingService.active) {
-        recordingService.updatePrice(instanceId, price, timestamp);
+        recordingService.updatePrice(instanceId, symbol, price, timestamp);
       }
 
       // 2. Update paper trading positions
