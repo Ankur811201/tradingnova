@@ -22,14 +22,14 @@
     const active = status === 'STARTED';
     const level = data && data.level ? `${data.level.side === 'SUPPORT' ? 'S' : 'R'}${data.level.index}` : 'MANUAL';
     if (liveEl) {
-      liveEl.textContent = active ? `● RECORDING 1 FPS • ${level}` : '● RECORDING 1 FPS';
+      liveEl.textContent = active ? `● RECORDING 0.5 FPS • ${level}` : '● RECORDING 0.5 FPS';
       liveEl.classList.toggle('hidden', !active);
       liveEl.classList.toggle('animate-pulse', active);
     }
     if (startBtn) startBtn.disabled = active;
     if (stopBtn) stopBtn.disabled = !active;
     if (chartLiveEl) {
-      chartLiveEl.textContent = active ? `● RECORDING 1 FPS • ${level}` : '● RECORDING 1 FPS';
+      chartLiveEl.textContent = active ? `● RECORDING 0.5 FPS • ${level}` : '● RECORDING 0.5 FPS';
       chartLiveEl.classList.toggle('hidden', !active);
     }
   }
@@ -47,7 +47,7 @@
       const start = r.chunkStartedAt ? new Date(r.chunkStartedAt).toLocaleTimeString() : time;
       const end = r.chunkEndedAt ? new Date(r.chunkEndedAt).toLocaleTimeString() : '--';
       const directionClass = r.direction === 'SELL' ? 'text-rose-400' : 'text-emerald-400';
-      const videoUrl = `/api/recordings/${encodeURIComponent(config.instanceId)}/${encodeURIComponent(r.recordingId)}/video`;
+      const playerUrl = `/bots/${encodeURIComponent(config.instanceId)}/recordings/${encodeURIComponent(r.recordingId)}`;
       return `
         <div class="glass-tight rounded-xl p-3 flex flex-col sm:flex-row sm:items-center gap-3">
           <div class="flex-1 min-w-0">
@@ -61,7 +61,7 @@
             <div class="text-[10px] text-gray-500 mt-1">Chunk ${chunk} • ${escapeHtml(r.symbol)} • ${escapeHtml(r.timeframe)} • ${escapeHtml(start)} → ${escapeHtml(end)} • ${duration}s • 1 FPS</div>
           </div>
           <div class="flex items-center gap-2">
-            <a href="${videoUrl}" target="_blank" rel="noopener" class="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/25 text-blue-400 hover:bg-blue-500/20 text-xs font-semibold">▶ Watch</a>
+            <a href="${playerUrl}" class="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/25 text-blue-400 hover:bg-blue-500/20 text-xs font-semibold">▶ Watch</a>
             <button type="button" data-recording-delete="${escapeHtml(r.recordingId)}" class="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/25 text-rose-400 hover:bg-rose-500/20 text-xs font-semibold">🗑 Delete</button>
           </div>
         </div>`;

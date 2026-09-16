@@ -3,6 +3,7 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const botController = require('../controllers/botController');
+const recordingsController = require('../controllers/recordingsController');
 
 
 const router = express.Router();
@@ -28,6 +29,12 @@ router.get('/login', (req, res) => {
 });
 
 
+
+router.get(
+    '/bots/:instanceId/recordings/:recordingId',
+    requireAuth,
+    recordingsController.renderRecordingPlayer
+);
 
 router.get(
     '/bots/:instanceId',

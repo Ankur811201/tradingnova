@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= title %></title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'class' };
+  </script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    body { background:#05060a; }
+    body::before { content:''; position:fixed; inset:0; pointer-events:none; background:radial-gradient(1100px 600px at 85% -10%,rgba(59,130,246,.10),transparent 60%),radial-gradient(900px 500px at 5% 15%,rgba(16,185,129,.055),transparent 60%); z-index:0; }
+    .glass { background:linear-gradient(180deg,rgba(255,255,255,.038),rgba(255,255,255,.014)); border:1px solid rgba(255,255,255,.075); backdrop-filter:blur(18px); }
+    .glass-tight { background:rgba(255,255,255,.025); border:1px solid rgba(255,255,255,.065); }
+    .control { border:1px solid rgba(255,255,255,.09); background:rgba(255,255,255,.045); transition:.18s ease; }
+    .control:hover { background:rgba(255,255,255,.09); border-color:rgba(255,255,255,.15); }
+    .control:disabled { opacity:.35; cursor:not-allowed; }
+    #timeline { appearance:none; height:5px; border-radius:999px; background:linear-gradient(90deg,rgba(59,130,246,.9) var(--progress,0%),rgba(255,255,255,.10) var(--progress,0%)); outline:none; }
+    #timeline::-webkit-slider-thumb { appearance:none; width:14px; height:14px; border-radius:50%; background:#fff; box-shadow:0 0 0 3px rgba(59,130,246,.25); cursor:pointer; }
+    #timeline::-moz-range-thumb { width:14px; height:14px; border:0; border-radius:50%; background:#fff; cursor:pointer; }
+    .event-marker { position:absolute; top:50%; transform:translate(-50%,-50%); width:9px; height:9px; border-radius:50%; border:2px solid #05060a; box-shadow:0 0 0 1px rgba(255,255,255,.18); cursor:pointer; z-index:3; }
+    .event-marker:hover { width:12px; height:12px; }
+    .event-marker.buy { background:#34d399; }
+    .event-marker.sell { background:#fb7185; }
+    .event-marker.exit { background:#fbbf24; }
+    .event-marker.info { background:#60a5fa; }
+    .event-row { cursor:pointer; transition:.16s ease; }
+    .event-row:hover,.event-row.active { background:rgba(255,255,255,.055); border-color:rgba(255,255,255,.11); }
+    .event-dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+    .event-dot.buy { background:#34d399; box-shadow:0 0 12px rgba(52,211,153,.45); }
+    .event-dot.sell { background:#fb7185; box-shadow:0 0 12px rgba(251,113,133,.45); }
+    .event-dot.exit { background:#fbbf24; box-shadow:0 0 12px rgba(251,191,36,.45); }
+    .event-dot.info { background:#60a5fa; }
+    video::-webkit-media-controls { display:none !important; }
+    .no-select { user-select:none; }
+    @media (max-width: 900px) { .player-grid { grid-template-columns:1fr !important; } }
+  </style>
+</head>
+<body class="text-gray-100 antialiased min-h-screen relative">
+  <header class="sticky top-0 z-30 glass border-b border-white/5 px-4 sm:px-6 py-3">
+    <div class="max-w-[1800px] mx-auto flex items-center justify-between gap-4">
+      <div class="flex items-center gap-3 min-w-0">
+        <a href="/bots/<%= encodeURIComponent(recording.instanceId) %>" class="control rounded-lg px-2.5 py-2 text-gray-300 hover:text-white" title="Back to bot">
+          <i data-lucide="arrow-left" class="w-4 h-4"></i>
+        </a>
+        <div class="min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <h1 class="font-semibold text-white truncate"><%= recording.symbol %> Recording Replay</h1>
+            <span class="text-[10px] font-mono px-2 py-0.5 rounded-md bg-blue-500/10 border border-blue-500/20 text-blue-400"><%= bot.modelId || 'MODEL' %></span>
+          </div>
+          <div class="text-[11px] text-gray-500 mt-0.5 truncate"><%= bot.name %> · <%= recording.timeframe %> · <%= recording.environment %></div>
+        </div>
+      </div>
+      <div class="hidden sm:flex items-center gap-2 text-[10px] font-mono text-gray-500">
+        <span class="px-2 py-1 rounded-md bg-white/[.03] border border-white/5">TRADING REPLAY</span>
+        <span class="px-2 py-1 rounded-md bg-white/[.03] border border-white/5"><%= Number(recording.frameRate || 0.5) %> FPS</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="relative z-10 max-w-[1800px] mx-auto p-3 sm:p-5 space-y-4">
+    <section class="glass rounded-2xl overflow-hidden shadow-2xl">
+      <div class="px-4 sm:px-5 py-3 border-b border-white/5 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_12px_rgba(96,165,250,.7)]"></span>
+          <span class="text-xs font-semibold uppercase tracking-wider text-gray-300">Recording Player</span>
+          <span id="status-text" class="text-[10px] text-gray-500 truncate">Ready to play</span>
+        </div>
+        <button id="shortcuts-btn" class="control rounded-lg px-2.5 py-1.5 text-[10px] text-gray-400 hover:text-white">⌨ Shortcuts</button>
+      </div>
+
+      <div id="video-wrap" class="relative bg-black aspect-video max-h-[76vh] flex items-center justify-center overflow-hidden group">
+        <video id="player" class="w-full h-full object-contain" preload="metadata" playsinline src="<%= player.videoUrl %>"></video>
+        <button id="center-play" class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-16 h-16 rounded-full bg-white text-black shadow-2xl flex items-center justify-center hover:scale-105 transition-transform">
+          <i data-lucide="play" class="w-7 h-7 fill-current ml-1"></i>
+        </button>
+        <div id="loading" class="hidden absolute inset-0 items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div class="flex flex-col items-center gap-3 text-xs text-gray-300"><div class="w-7 h-7 border-2 border-white/20 border-t-white rounded-full animate-spin"></div>Loading recording…</div>
+        </div>
+        <div id="video-error" class="hidden absolute inset-0 items-center justify-center bg-black/80">
+          <div class="text-center px-6"><div class="text-rose-400 text-sm font-semibold">Unable to play this recording</div><div class="text-gray-500 text-xs mt-1">The video file may be unavailable or unsupported by this browser.</div><button id="retry-btn" class="control mt-4 rounded-lg px-4 py-2 text-xs text-gray-200">Retry</button></div>
+        </div>
+      </div>
+
+      <div class="px-4 sm:px-5 pt-3">
+        <div id="timeline-wrap" class="relative h-5 flex items-center">
+          <input id="timeline" type="range" min="0" max="0" step="0.01" value="0" class="w-full">
+          <div id="markers" class="absolute left-0 right-0 top-1/2 h-0 pointer-events-none"></div>
+        </div>
+        <div class="flex justify-between text-[10px] font-mono text-gray-500 mt-1"><span id="current-time">00:00</span><span id="duration">--:--</span></div>
+      </div>
+
+      <div class="px-4 sm:px-5 py-3 flex flex-wrap items-center justify-between gap-3 border-t border-white/5 bg-white/[.012] no-select">
+        <div class="flex items-center gap-1.5">
+          <button id="back-5" class="control rounded-lg p-2.5" title="Back 5 seconds"><i data-lucide="rotate-ccw" class="w-4 h-4"></i></button>
+          <button id="play-pause" class="control rounded-xl px-4 py-2.5 bg-white/[.08] text-white" title="Play/Pause"><i data-lucide="play" class="w-4 h-4 fill-current"></i></button>
+          <button id="forward-5" class="control rounded-lg p-2.5" title="Forward 5 seconds"><i data-lucide="rotate-cw" class="w-4 h-4"></i></button>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] uppercase tracking-wider text-gray-500 hidden sm:inline">Speed</span>
+          <select id="speed" class="control rounded-lg px-3 py-2 text-xs text-gray-200 outline-none bg-[#0b0d12]">
+            <option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option><option value="20">20×</option>
+          </select>
+          <button id="mute" class="control rounded-lg p-2.5" title="Mute"><i data-lucide="volume-2" class="w-4 h-4"></i></button>
+          <button id="fullscreen" class="control rounded-lg p-2.5" title="Fullscreen"><i data-lucide="maximize-2" class="w-4 h-4"></i></button>
+        </div>
+      </div>
+    </section>
+
+    <div class="player-grid grid grid-cols-[minmax(0,1fr)_360px] gap-4">
+      <section class="glass rounded-2xl overflow-hidden">
+        <div class="px-4 py-3 border-b border-white/5 flex items-center justify-between">
+          <div><h2 class="text-xs font-semibold uppercase tracking-wider text-gray-300">Event Timeline</h2><p class="text-[10px] text-gray-500 mt-0.5">Jump directly to important moments in the recording.</p></div>
+          <span id="event-count" class="text-[10px] font-mono text-gray-500"><%= events.length %> events</span>
+        </div>
+        <div id="events" class="p-2 max-h-[390px] overflow-auto space-y-1"></div>
+      </section>
+
+      <aside class="space-y-4">
+        <section class="glass rounded-2xl p-4">
+          <div class="text-[10px] uppercase tracking-wider text-gray-500 mb-3">Recording</div>
+          <div class="text-lg font-semibold text-white"><%= recording.symbol %></div>
+          <div class="text-xs text-gray-500 mt-1"><%= bot.name %></div>
+          <div class="grid grid-cols-2 gap-2 mt-4">
+            <div class="glass-tight rounded-xl p-3"><div class="text-[9px] uppercase text-gray-500">Model</div><div class="text-xs font-semibold text-gray-200 mt-1"><%= bot.modelId || '--' %></div></div>
+            <div class="glass-tight rounded-xl p-3"><div class="text-[9px] uppercase text-gray-500">Timeframe</div><div class="text-xs font-semibold text-gray-200 mt-1"><%= recording.timeframe || '--' %></div></div>
+            <div class="glass-tight rounded-xl p-3"><div class="text-[9px] uppercase text-gray-500">Mode</div><div class="text-xs font-semibold text-gray-200 mt-1"><%= recording.environment || '--' %></div></div>
+            <div class="glass-tight rounded-xl p-3"><div class="text-[9px] uppercase text-gray-500">Duration</div><div id="meta-duration" class="text-xs font-semibold text-gray-200 mt-1"><%= Math.round(Number(recording.durationSeconds || 0)) %>s</div></div>
+          </div>
+        </section>
+
+        <section class="glass rounded-2xl p-4">
+          <div class="text-[10px] uppercase tracking-wider text-gray-500 mb-3">Trigger</div>
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-sm font-semibold <%= recording.direction === 'SELL' ? 'text-rose-400' : recording.direction === 'BUY' ? 'text-emerald-400' : 'text-blue-400' %>"><%= recording.direction || 'MANUAL' %></span>
+            <% if (recording.level) { %><span class="text-xs font-mono text-gray-300"><%= recording.level.side === 'SUPPORT' ? 'S' : 'R' %><%= recording.level.index %></span><% } %>
+          </div>
+          <div class="text-[11px] text-gray-500 mt-2"><%= recording.triggerReason || (recording.level ? `${recording.level.side === 'SUPPORT' ? 'Support' : 'Resistance'} level touched` : 'Manual recording') %></div>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <div id="shortcuts-modal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm items-center justify-center p-4">
+    <div class="glass rounded-2xl w-full max-w-md p-5 shadow-2xl">
+      <div class="flex items-center justify-between"><h3 class="font-semibold text-white">Keyboard shortcuts</h3><button id="close-shortcuts" class="control rounded-lg p-2"><i data-lucide="x" class="w-4 h-4"></i></button></div>
+      <div class="grid grid-cols-2 gap-2 mt-4 text-xs"><div class="glass-tight rounded-lg p-3"><b>Space</b><span class="text-gray-500 ml-2">Play / pause</span></div><div class="glass-tight rounded-lg p-3"><b>← / →</b><span class="text-gray-500 ml-2">±5 seconds</span></div><div class="glass-tight rounded-lg p-3"><b>Shift + ← / →</b><span class="text-gray-500 ml-2">Previous / next event</span></div><div class="glass-tight rounded-lg p-3"><b>↑ / ↓</b><span class="text-gray-500 ml-2">Speed</span></div><div class="glass-tight rounded-lg p-3"><b>F</b><span class="text-gray-500 ml-2">Fullscreen</span></div><div class="glass-tight rounded-lg p-3"><b>M</b><span class="text-gray-500 ml-2">Mute</span></div></div>
+    </div>
+  </div>
+
+  <script>
+    window.RECORDING_PLAYER = <%- JSON.stringify({ events, duration: Number(recording.durationSeconds || 0), videoUrl: player.videoUrl }) %>;
+  </script>
+  <script src="/js/recording-player.js"></script>
+</body>
+</html>

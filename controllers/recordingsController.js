@@ -1,6 +1,8 @@
 'use strict';
 
 const BotInstance = require('../models/BotInstance');
+const Trade = require('../models/Trade');
+const StrategyEvent = require('../models/StrategyEvent');
 const recordingService = require('../services/recording/RecordingService');
 
 
@@ -64,6 +66,87 @@ async function getRecording(req, res, next) {
   }
 }
 
+
+
+async function renderRecordingPlayer(req, res, next) {
+  try {
+    const { instanceId, recordingId } = req.params;
+    const bot = await BotInstance.findOne({ instanceId, user: req.session.userId }).lean();
+    if (!bot) return res.status(404).render('404', { title: 'Bot Instance Not Found' });
+
+    const Recording = require('../models/TradeRecording');
+    const recording = await Recording.findOne({ recordingId, instanceId }).lean();
+    if (!recording || recording.status !== 'READY' || !recording.filePath) {
+      return res.status(404).render('404', { title: 'Recording Not Found' });
+    }
+
+    const start = recording.chunkStartedAt || recording.triggerTime;
+    const end = recording.chunkEndedAt || new Date(new Date(start).getTime() + Number(recording.durationSeconds || 0) * 1000);
+
+    const [trades, strategyEvents] = await Promise.all([
+      Trade.find({
+        instanceId,
+        environment: recording.environment,
+        $or: [
+          { openedAt: { $gte: start, $lte: end } },
+          { closedAt: { $gte: start, $lte: end } },
+          { openedAt: { $lte: start }, closedAt: { $gte: start } },
+        ],
+      }).sort({ openedAt: 1, closedAt: 1 }).limit(100).lean(),
+      StrategyEvent.find({
+        instanceId,
+        at: { $gte: start, $lte: end },
+      }).sort({ at: 1 }).limit(300).lean(),
+    ]);
+
+    const events = [];
+    const addEvent = (event) => {
+      const at = new Date(event.at);
+      const seconds = Math.max(0, Math.min(Number(recording.durationSeconds || 0), (at.getTime() - new Date(start).getTime()) / 1000));
+      events.push({ ...event, seconds });
+    };
+
+    if (recording.triggerTime) {
+      addEvent({
+        type: recording.direction === 'MANUAL' ? 'RECORDING' : recording.direction,
+        at: recording.triggerTime,
+        price: recording.level && recording.level.price != null ? recording.level.price : null,
+        label: recording.triggerReason || (recording.level ? `${recording.level.side === 'SUPPORT' ? 'S' : 'R'}${recording.level.index} touched` : 'Recording started'),
+      });
+    }
+
+    for (const trade of trades) {
+      if (trade.openedAt) addEvent({ type: trade.side === 'LONG' ? 'BUY' : 'SELL', at: trade.openedAt, price: trade.entryPrice, label: 'Trade entry', tradeId: String(trade._id), pnl: null });
+      if (trade.closedAt) addEvent({ type: 'EXIT', at: trade.closedAt, price: trade.exitPrice, label: trade.reason || 'Trade exit', tradeId: String(trade._id), pnl: trade.realizedPnl });
+    }
+
+    for (const event of strategyEvents) {
+      const type = String(event.eventType || 'EVENT').toUpperCase();
+      addEvent({
+        type,
+        at: event.at,
+        price: event.payload && (event.payload.price ?? event.payload.entryPrice ?? event.payload.levelPrice),
+        label: event.payload && (event.payload.reason || event.payload.message || event.payload.label) || type.replace(/_/g, ' '),
+      });
+    }
+
+    events.sort((a, b) => a.seconds - b.seconds);
+
+    return res.render('recording-player', {
+      title: `Recording Player — ${recording.symbol}`,
+      bot,
+      recording,
+      events,
+      player: {
+        videoUrl: `/api/recordings/${encodeURIComponent(instanceId)}/${encodeURIComponent(recordingId)}/video`,
+        start,
+        end,
+      },
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
 
 async function deleteRecording(req, res, next) {
   try {
@@ -171,4 +254,4 @@ async function deleteAllRecordings(req, res, next) {
   }
 }
 
-module.exports = { startRecording, stopRecording, listRecordings, getRecording, deleteRecording, deleteAllRecordings };
+module.exports = { startRecording, stopRecording, listRecordings, getRecording, renderRecordingPlayer, deleteRecording, deleteAllRecordings };
