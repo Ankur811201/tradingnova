@@ -182,12 +182,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const content = document.getElementById('position-card-content');
     if (!content) return;
 
-    if (!position) {
+    if (!position || position.status === 'CLOSED' || position.status === 'LIQUIDATED') {
       content.innerHTML =
         '<div id="position-card-empty" class="text-center py-6 text-gray-500 italic flex flex-col items-center gap-2">' +
         'No Active Open Position</div>';
       const pnlMirror = document.getElementById('pos-pnl-mirror');
       if (pnlMirror) pnlMirror.textContent = '--';
+      if (window.NovaBotChartManager && window.NovaBotChartManager.overlayManager) {
+        window.NovaBotChartManager.overlayManager.clearTargetExitLines();
+      }
+      if (typeof window.renderTargetExitForPosition === 'function') {
+        window.renderTargetExitForPosition(null);
+      }
       return;
     }
 
@@ -217,6 +223,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const pnlMirror = document.getElementById('pos-pnl-mirror');
     if (pnlMirror) {
       pnlMirror.innerHTML = `<span class="${pnlCls}">$${Number.isFinite(pnl) ? pnl.toFixed(2) : '0.00'}</span>`;
+    }
+    if (window.NovaBotChartManager && window.NovaBotChartManager.overlayManager) {
+      window.NovaBotChartManager.overlayManager.syncPositionOverlays(position);
+    }
+    if (typeof window.renderTargetExitForPosition === 'function') {
+      window.renderTargetExitForPosition(position);
     }
   }
 
@@ -423,6 +435,12 @@ document.addEventListener('DOMContentLoaded', () => {
   socket.on('trade:rejected', (data) => {
     if (!data || data.instanceId !== instanceId) return;
     appendTradeStoryStep('Execution Rejected', data.reason || `${data.action || ''} ${data.symbol || ''}`.trim(), 'reject');
+  });
+
+  socket.on('target:updated', (data) => {
+    if (!data || data.instanceId !== instanceId) return;
+    if (data.position) renderCurrentPosition(data.position);
+    else renderCurrentPosition(null);
   });
 
   socket.on('bot:execution', (data) => {

@@ -578,6 +578,104 @@
       </div>
     </section>
 
+
+    <!-- ================= TARGET EXIT: POSITION-LEVEL CONTROL ================= -->
+    <section id="target-exit-section" class="glass rounded-2xl p-4 sm:p-5">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+              <i data-lucide="target" class="w-4 h-4 text-amber-400"></i>
+            </span>
+            <div>
+              <h2 class="text-sm font-semibold text-white">Target Exit</h2>
+              <p class="text-[11px] text-gray-500">Position-level exit management • does not pause the bot</p>
+            </div>
+          </div>
+        </div>
+        <span id="target-exit-status" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold bg-white/5 border border-white/10 text-gray-500">
+          Waiting for open position
+        </span>
+      </div>
+
+      <div id="target-exit-empty" class="<%= currentPosition ? 'hidden' : '' %> rounded-xl border border-dashed border-white/10 bg-black/10 px-4 py-5 text-center">
+        <i data-lucide="lock-keyhole" class="w-5 h-5 mx-auto text-gray-600 mb-2"></i>
+        <div class="text-xs font-medium text-gray-400">Target Exit is available after a position opens.</div>
+        <div class="text-[10px] text-gray-600 mt-1">Configure all four targets here without pausing the running bot.</div>
+      </div>
+
+      <div id="target-exit-form-wrap" class="<%= currentPosition ? '' : 'hidden' %>">
+        <div id="target-exit-position-summary" class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+          <div class="glass-tight rounded-xl px-3 py-2">
+            <div class="text-[9px] uppercase tracking-wide text-gray-600">Side</div>
+            <div id="target-position-side" class="text-xs font-bold text-gray-200 mt-0.5"><%= currentPosition ? currentPosition.side : '--' %></div>
+          </div>
+          <div class="glass-tight rounded-xl px-3 py-2">
+            <div class="text-[9px] uppercase tracking-wide text-gray-600">Entry</div>
+            <div id="target-position-entry" class="text-xs font-bold font-mono text-gray-200 mt-0.5"><%= currentPosition ? currentPosition.entryPrice : '--' %></div>
+          </div>
+          <div class="glass-tight rounded-xl px-3 py-2">
+            <div class="text-[9px] uppercase tracking-wide text-gray-600">Quantity</div>
+            <div id="target-position-quantity" class="text-xs font-bold font-mono text-gray-200 mt-0.5"><%= currentPosition ? currentPosition.quantity : '--' %></div>
+          </div>
+          <div class="glass-tight rounded-xl px-3 py-2">
+            <div class="text-[9px] uppercase tracking-wide text-gray-600">Active TF</div>
+            <div id="target-active-timeframe" class="text-xs font-bold font-mono text-blue-400 mt-0.5"><%= (bot.parameters && bot.parameters.targetExitActive) ? '3m' : ((bot.parameters && bot.parameters.timeframe) || '--') %></div>
+          </div>
+        </div>
+
+        <div id="target-exit-locked" class="hidden mb-3 rounded-xl border border-emerald-500/15 bg-emerald-500/5 px-3 py-2.5 text-[11px] text-emerald-300">
+          <div class="flex items-center gap-2 font-semibold"><i data-lucide="shield-check" class="w-3.5 h-3.5"></i> Target plan active</div>
+          <div class="text-[10px] text-emerald-400/70 mt-0.5">The bot continues running. Targets are monitored on 3-minute candles; T4 exits the remaining position immediately on touch.</div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <% 
+            var tep = currentPosition && currentPosition.targetExitPlan && currentPosition.targetExitPlan.enabled
+              ? currentPosition.targetExitPlan
+              : null;
+          %>
+          <% [1,2,3,4].forEach(function(n) { 
+               var tt = tep && tep.targets ? tep.targets.find(function(x){ return Number(x.index) === n; }) : null;
+          %>
+          <div class="glass-tight rounded-xl p-3 <%= n === 4 ? 'lg:col-span-2' : '' %>">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2">
+                <span class="w-6 h-6 rounded-md <%= n === 4 ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20' %> border flex items-center justify-center text-[10px] font-bold">T<%= n %></span>
+                <div class="text-xs font-semibold text-gray-200">Target <%= n %></div>
+              </div>
+              <span id="target-state-<%= n %>" class="text-[9px] uppercase tracking-wide text-gray-600"><%= tt && tt.executed ? 'Exited' : (tt && tt.triggered ? 'Armed' : 'Waiting') %></span>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="text-[9px] text-gray-500 uppercase tracking-wide">Price</label>
+                <input id="target-price-<%= n %>" type="number" step="any" min="0" value="<%= tt ? tt.price : '' %>" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-2 text-xs font-mono text-gray-100 placeholder:text-gray-700 focus:outline-none focus:border-amber-400/50" placeholder="Target price" <%= tep ? 'readonly' : '' %>>
+              </div>
+              <div>
+                <label class="text-[9px] text-gray-500 uppercase tracking-wide"><%= n === 4 ? 'Exit' : 'Exit %' %></label>
+                <% if (n === 4) { %>
+                  <div id="target-percent-4" class="w-full mt-1 bg-black/20 border border-white/5 rounded-lg px-2.5 py-2 text-xs font-mono text-rose-300">Remaining <%= tep && tt ? tt.exitPercent.toFixed(2) : '—' %>%</div>
+                <% } else { %>
+                  <input id="target-percent-<%= n %>" type="number" step="0.01" min="0.01" max="99.99" value="<%= tt ? tt.exitPercent : '' %>" class="w-full mt-1 bg-black/30 border border-white/10 rounded-lg px-2.5 py-2 text-xs font-mono text-gray-100 placeholder:text-gray-700 focus:outline-none focus:border-amber-400/50" placeholder="e.g. 30" <%= tep ? 'readonly' : '' %>>
+                <% } %>
+              </div>
+            </div>
+          </div>
+          <% }) %>
+        </div>
+
+        <div id="target-exit-validation" class="mt-3 text-[10px] text-gray-500 min-h-[16px]"></div>
+        <div class="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div class="text-[10px] text-gray-600">
+            T1–T3: touch → wait for the 3-minute candle close → exit configured %. T4: touch → immediate full exit. The bot is never paused.
+          </div>
+          <button id="target-exit-save-btn" type="button" class="shrink-0 inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/25 hover:bg-amber-500/20 transition disabled:opacity-40 disabled:pointer-events-none">
+            <i data-lucide="target" class="w-3.5 h-3.5"></i> Activate Targets
+          </button>
+        </div>
+      </div>
+    </section>
+
     <!-- ================= SECTION 3: DETAILED TABS ================= -->
     <section class="glass rounded-2xl overflow-hidden">
       <div class="flex items-center gap-1 px-2 sm:px-4 border-b border-white/5 overflow-x-auto scrollbar-thin">
@@ -1412,5 +1510,7 @@
 <script src="/js/renderers/model-thinking-registry.js"></script>
 <script src="/js/trade-recordings.js"></script>
 <script src="/js/bot-detail-ws.js"></script>
+<script>window.INITIAL_TARGET_POSITION = <%- JSON.stringify(currentPosition || null) %>;</script>
+<script src="/js/target-exit.js"></script>
 </body>
 </html>

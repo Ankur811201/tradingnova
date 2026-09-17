@@ -184,6 +184,7 @@ class RecordingService {
       renderer: null,
       capturePromise: Promise.resolve(),
       executionMarkers: [],
+      targetExitPlan: null,
     };
 
     // Register the session BEFORE the first database read. The trading
@@ -339,6 +340,12 @@ class RecordingService {
     if (decision.candle3 && validRecordingCandle(decision.candle3)) {
       session.currentCandle = { ...decision.candle3 };
     }
+  }
+
+  updateTargetPlan(instanceId, plan) {
+    const session = this.active.get(instanceId);
+    if (!session) return;
+    session.targetExitPlan = plan && plan.enabled ? JSON.parse(JSON.stringify(plan)) : null;
   }
 
   updateExecution(instanceId, execution) {

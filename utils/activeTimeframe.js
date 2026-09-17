@@ -73,6 +73,7 @@ function hasSwitched(parameters) {
 function getActiveTimeframe(instanceOrParameters) {
   if (!instanceOrParameters) return undefined;
   const parameters = instanceOrParameters.parameters || instanceOrParameters;
+  if (parameters.targetExitActive === true && parameters.targetExitTimeframe === '3m') return '3m';
   if (hasSwitched(parameters) && typeof parameters.activeTimeframe === 'string' && parameters.activeTimeframe) {
     return parameters.activeTimeframe;
   }
@@ -133,6 +134,9 @@ function computeAnalysisBaselineMs(dbInstance) {
   if (typeof parameters.levelsUpdatedAt === 'number') candidates.push(parameters.levelsUpdatedAt);
   if (hasSwitched(parameters) && typeof parameters.timeframeSwitchedAt === 'number') {
     candidates.push(parameters.timeframeSwitchedAt);
+  }
+  if (parameters.targetExitActive === true && typeof parameters.targetExitActivatedAt === 'number') {
+    candidates.push(parameters.targetExitActivatedAt);
   }
 
   if (!candidates.length) return null;

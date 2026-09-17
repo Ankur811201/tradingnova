@@ -23,7 +23,32 @@ const positionSchema = new mongoose.Schema(
     margin: { type: Number, required: true }, // REMAINING locked margin — reduced proportionally by each partial fill
 
     stopLoss: { type: Number, default: null }, // NEVER changes for a multi-target position — no breakeven, no trailing
-    takeProfit: { type: Number, default: null }, // left null for multi-target positions — see `targets` instead
+    takeProfit: { type: Number, default: null },
+
+    // User-defined 4-target exit plan. This is intentionally separate from
+    // the legacy R-multiple `targets` array so the new feature cannot trigger
+    // the old exit engine. It is attached only after a real position exists.
+    targetExitPlan: {
+      enabled: { type: Boolean, default: false },
+      confirmationTimeframe: { type: String, enum: ['3m'], default: '3m' },
+      originalTimeframe: { type: String, default: null },
+      activeTimeframe: { type: String, enum: ['3m'], default: '3m' },
+      targets: {
+        type: [{
+          index: { type: Number, required: true },
+          price: { type: Number, required: true },
+          exitPercent: { type: Number, required: true },
+          quantity: { type: Number, required: true },
+          triggered: { type: Boolean, default: false },
+          triggeredAt: { type: Date, default: null },
+          executed: { type: Boolean, default: false },
+          executedAt: { type: Date, default: null },
+        }],
+        default: [],
+      },
+      activatedAt: { type: Date, default: null },
+      completedAt: { type: Date, default: null },
+    },
 
     // Multi-target exit plan (confirmed rules): up to 4 R-multiple targets,
     // each closing 25% of originalQuantity. Empty array = no multi-target

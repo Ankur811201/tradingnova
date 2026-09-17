@@ -249,6 +249,25 @@ function svgCandles(geo, candles) {
 }
 
 /** Support/resistance full-width dashed price lines, same keys/colors as OverlayManager.setPriceLine. */
+function svgTargetExitLines(geo, state) {
+  const plan = state && state.targetExitPlan && state.targetExitPlan.enabled ? state.targetExitPlan : null;
+  const targets = plan && Array.isArray(plan.targets) ? plan.targets : [];
+  const parts = [];
+  targets.forEach((target) => {
+    const price = num(target.price);
+    if (price == null || !geo.inRange(price)) return;
+    const y = geo.yPrice(price);
+    const i = Number(target.index);
+    const color = i === 4 ? '#f43f5e' : '#f59e0b';
+    const status = target.executed ? '✓' : (target.triggered ? '•' : '');
+    const pct = target.exitPercent != null ? `${Number(target.exitPercent).toFixed(1)}%` : '';
+    parts.push(`<line x1="${geo.plotX}" y1="${y.toFixed(1)}" x2="${geo.plotX + geo.plotW}" y2="${y.toFixed(1)}" stroke="${color}" stroke-width="2.8"/>`);
+    parts.push(`<rect x="${(geo.plotX + geo.plotW + 1).toFixed(1)}" y="${(y - 8).toFixed(1)}" width="78" height="16" rx="3" fill="${color}"/>`);
+    parts.push(`<text x="${(geo.plotX + geo.plotW + 40).toFixed(1)}" y="${(y + 4).toFixed(1)}" font-family="DejaVu Sans Mono" font-size="9" font-weight="700" fill="#ffffff" text-anchor="middle">${esc(`T${i} ${pct} ${status}`.trim())}</text>`);
+  });
+  return parts.join('\n');
+}
+
 function svgLevelLines(geo, state) {
   const parts = [];
   const draw = (price, color, label) => {
@@ -428,6 +447,7 @@ function renderChartFrame(state) {
     ? [
       svgGridAndAxes(geo, candles),
       svgLevelLines(geo, state),
+      svgTargetExitLines(geo, state),
       svgBoundaries(geo, checks),
       svgBodyReference(geo, checks, candles),
       svgCandles(geo, candles),
@@ -535,6 +555,7 @@ class SvgChartRenderer {
       trend: session.trend || '',
       decision: session.decision || {},
       executionMarkers: Array.isArray(session.executionMarkers) ? session.executionMarkers.slice(-20) : [],
+      targetExitPlan: session.targetExitPlan || null,
       candles,
     };
   }

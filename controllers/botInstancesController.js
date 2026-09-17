@@ -267,6 +267,26 @@ async function updateConfig(req, res, next) {
   }
 }
 
+async function activateTargetExit(req, res, next) {
+  try {
+    await assertOwnership(req.params.instanceId, req.session.userId);
+    const result = await botManager.activateTargetExit(req.params.instanceId, req.body || {});
+    return success(res, result, 'Target Exit activated');
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function deactivateTargetExit(req, res, next) {
+  try {
+    await assertOwnership(req.params.instanceId, req.session.userId);
+    const result = await botManager.deactivateTargetExit(req.params.instanceId);
+    return success(res, result, 'Target Exit deactivated');
+  } catch (err) {
+    return next(err);
+  }
+}
+
 async function restartInstance(req, res, next) {
   try {
     await assertOwnership(req.params.instanceId, req.session.userId);
@@ -320,5 +340,5 @@ async function deleteInstance(req, res) {
 
 module.exports = {
   listInstances, getInstance, getCandles, createInstance,
-  startInstance, pauseInstance, stopInstance, restartInstance, updateConfig, deleteInstance,
+  startInstance, pauseInstance, stopInstance, restartInstance, updateConfig, activateTargetExit, deactivateTargetExit, deleteInstance,
 };
