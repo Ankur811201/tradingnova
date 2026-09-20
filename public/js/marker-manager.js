@@ -27,6 +27,7 @@ class MarkerManager {
     // authoritative execution markers so pattern visuals can be replaced
     // without ever deleting BUY/SELL/EXIT execution markers.
     this.patternMarkersById = new Map();
+    this.targetMarkersById = new Map();
   }
 
   /**
@@ -70,6 +71,23 @@ class MarkerManager {
     this._apply();
   }
 
+
+  /** Target confirmation/exit markers (CT1/CT2/CT3/Tn EXIT). */
+  setTargetMarkers(markers) {
+    this.targetMarkersById.clear();
+    (markers || []).forEach((marker) => {
+      if (!marker || !marker.id || !Number.isFinite(marker.time)) return;
+      this.targetMarkersById.set(marker.id, marker);
+    });
+    this._apply();
+  }
+
+  addTargetMarker(marker) {
+    if (!marker || !marker.id || !Number.isFinite(marker.time)) return;
+    this.targetMarkersById.set(marker.id, marker);
+    this._apply();
+  }
+
   /** Remove all Candle 1/2/3 visual markers without touching executions. */
   clearPatternMarkers() {
     if (this.patternMarkersById.size === 0) return;
@@ -80,7 +98,8 @@ class MarkerManager {
   /** Lightweight Charts requires markers passed to setMarkers() sorted ascending by time. */
   _apply() {
     const combined = Array.from(this.markersById.values())
-      .concat(Array.from(this.patternMarkersById.values()));
+      .concat(Array.from(this.patternMarkersById.values()))
+      .concat(Array.from(this.targetMarkersById.values()));
     const sorted = combined.sort((a, b) => a.time - b.time);
     this.series.setMarkers(sorted);
   }

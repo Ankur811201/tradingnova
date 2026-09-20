@@ -214,6 +214,39 @@ function deriveLiveMarkers(executionPayload, timeframe) {
   return out;
 }
 
+
+function makeTargetMarker(event, side) {
+  if (!event || !event.type || !Number.isFinite(Number(event.candleStart))) return null;
+  var time = Number(event.candleStart);
+  // TargetExitManager stores candleStart in epoch milliseconds; Lightweight
+  // Charts expects Unix seconds. Accept either form for compatibility.
+  if (time > 100000000000) time = Math.floor(time / 1000);
+  var targetIndex = Number(event.targetIndex);
+  if (!Number.isFinite(targetIndex) || targetIndex < 1 || targetIndex > 4) return null;
+  var isExit = event.type === 'TARGET_EXIT';
+  var stage = event.stage || null;
+  var text = isExit ? ('T' + targetIndex + ' EXIT') : ((stage || 'CT') + ' T' + targetIndex);
+  var isLong = side === 'LONG';
+  return {
+    id: 'target:' + (event.positionId || '') + ':' + (event.type || '') + ':' + targetIndex + ':' + (stage || '') + ':' + time,
+    type: isExit ? 'TARGET_EXIT' : 'TARGET_CONFIRMATION',
+    targetIndex: targetIndex,
+    stage: stage,
+    time: time,
+    price: Number(event.price),
+    position: isLong ? 'belowBar' : 'aboveBar',
+    color: isExit ? '#f59e0b' : '#2962ff',
+    shape: isExit ? 'arrowDown' : 'circle',
+    text: text,
+  };
+}
+
+function buildTargetMarkers(events, side) {
+  return (Array.isArray(events) ? events : [])
+    .map(function (event) { return makeTargetMarker(event, side); })
+    .filter(Boolean);
+}
+
 var NovaExecutionMarkers = {
   toUnixSeconds: toUnixSeconds,
   bucketToCandle: bucketToCandle,
@@ -222,6 +255,8 @@ var NovaExecutionMarkers = {
   makeExitMarkerFromTrade: makeExitMarkerFromTrade,
   buildHistoricalMarkers: buildHistoricalMarkers,
   deriveLiveMarkers: deriveLiveMarkers,
+  makeTargetMarker: makeTargetMarker,
+  buildTargetMarkers: buildTargetMarkers,
 };
 
 if (typeof window !== 'undefined') {

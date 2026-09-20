@@ -35,6 +35,7 @@ async function main() {
   botManager.attachSocketServer(io);
   candlePersistenceService.attachSocketServer(io);
   recordingService.attachSocketServer(io);
+  TargetExitManager.attachSocketServer(io);
   socketBus.attachIO(io);
   botEngineManager.init(io);
 
@@ -178,6 +179,21 @@ for (const symbol of env.RISK_ALLOWED_SYMBOLS) {
         console.log(
           `[BOT] Dispatching canonical ${event.symbol} ${event.timeframe} candle to BotManager`
         );
+
+        // Target Exit consumes the SAME canonical closed candle as MODEL_002.
+        // It never builds its own candle or counts ticks as candles.
+        try {
+          await TargetExitManager.onClosedCandle(
+            event.symbol,
+            event.timeframe,
+            event.candle
+          );
+        } catch (err) {
+          await logger.error(
+            'TRADING',
+            `TargetExit closed-candle processing failed for ${event.symbol} ${event.timeframe}: ${err.message}`
+          );
+        }
 
         try {
           await botManager.dispatchMarketData({

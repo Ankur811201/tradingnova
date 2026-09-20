@@ -514,6 +514,17 @@
     markers = markers.filter(function (m) { return m.time >= earliest; });
 
     chartManager.loadExecutionMarkers(markers);
+
+    // Target Exit confirmation markers persisted on the active position.
+    if (window.NovaExecutionMarkers && typeof window.NovaExecutionMarkers.buildTargetMarkers === 'function' &&
+        window.BOT_INITIAL_POSITION && window.BOT_INITIAL_POSITION.targetExit) {
+      var targetEvents = window.BOT_INITIAL_POSITION.targetExit.events || [];
+      var targetMarkers = window.NovaExecutionMarkers.buildTargetMarkers(
+        targetEvents,
+        window.BOT_INITIAL_POSITION.side
+      );
+      if (typeof chartManager.loadTargetMarkers === 'function') chartManager.loadTargetMarkers(targetMarkers);
+    }
   }
 
   function isRelevantEvent(evt) {

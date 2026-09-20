@@ -155,23 +155,15 @@ Current MODEL_002 trades therefore recover their S1/S2/S3/R1/R2/R3 loss counters
 
 ## 9. Target Exit
 
-Target Exit supports T1–T4. T1–T3 share one global 3-candle confirmation window:
+Target Exit supports T1–T4. T1–T3 use independent 3-candle confirmation flows:
 
-```text
-Candle 1: T1 touched → global window starts
-Candle 2: T2 touched → joins same window
-Candle 3 closes  → all ARMED T1–T3 execute together
-```
-
-T4 is independent and immediate:
-
-```text
-T4 touched → close all remaining quantity immediately
-```
-
-T1–T3 percentages must total 90%; T4 receives the remaining 10%.
-
-Target Exit uses the bot's configured timeframe and does not switch the chart timeframe.
+- A raw tick detects a new target touch.
+- The target's touch candle is CT1 when that canonical candle closes.
+- The next canonical candle close is CT2.
+- The following canonical candle close is CT3, then that target's configured percentage is exited.
+- T1, T2 and T3 may be confirming independently at the same time.
+- T4 remains immediate on a new crossing.
+- Target Exit never builds a second candle stream; it consumes the same canonical closed candles used by the bot.
 
 ## 10. Source-of-truth files
 
@@ -208,3 +200,7 @@ ENTRY
 ```
 
 Partial target exits are execution events, not separate trades.
+
+
+### Target Exit chart markers
+The Bot Detail chart displays canonical Target Exit events as CT1, CT2, CT3 and Tn EXIT markers. CT1 is the target-touch candle close; CT2 is the next candle close; CT3 is the following candle close, at which T1/T2/T3 partial exit executes.

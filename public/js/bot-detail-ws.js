@@ -425,6 +425,22 @@ document.addEventListener('DOMContentLoaded', () => {
     appendTradeStoryStep('Execution Rejected', data.reason || `${data.action || ''} ${data.symbol || ''}`.trim(), 'reject');
   });
 
+
+  // Target Exit visual timeline: CT1/CT2/CT3 and the actual target exit.
+  // These events come from TargetExitManager's canonical closed-candle path,
+  // so the chart never invents a confirmation stage locally.
+  socket.on('bot:target', (data) => {
+    if (!data || data.instanceId !== instanceId) return;
+    if (!window.NovaBotChartManager || typeof window.NovaBotChartManager.addTargetMarker !== 'function') return;
+    if (!window.NovaExecutionMarkers || typeof window.NovaExecutionMarkers.makeTargetMarker !== 'function') return;
+    try {
+      const marker = window.NovaExecutionMarkers.makeTargetMarker(data, data.side);
+      if (marker) window.NovaBotChartManager.addTargetMarker(marker);
+    } catch (err) {
+      console.error('[CHART] Target marker update failed:', err);
+    }
+  });
+
   socket.on('bot:execution', (data) => {
 
     if (!data || data.instanceId !== instanceId) {

@@ -102,5 +102,13 @@ class ChartManager {
   clearPatternMarkers() {
     this.markerManager.clearPatternMarkers();
   }
+
+  loadTargetMarkers(markers) {
+    this.markerManager.setTargetMarkers(markers);
+  }
+
+  addTargetMarker(marker) {
+    this.markerManager.addTargetMarker(marker);
+  }
 }
 window.ChartManager = ChartManager;
