@@ -10,7 +10,6 @@ const { getUsableRecentHistory } = require('../marketData/usableHistoryQuery');
 const riskEngine = require('../riskEngine/RiskEngine');
 const executionRouter = require('../execution/ExecutionRouter');
 const recordingService = require('../recording/RecordingService');
-const targetExitManager = require('../TargetExitManager');
 const { validateTradeCommand } = require('../../bot-models/TradeCommandSchema');
 const { newInstanceId } = require('../../utils/ids');
 const logger = require('../../utils/logger');
@@ -25,7 +24,6 @@ const {
 } = require('../../utils/activeTimeframe');
 
 const { applyLevelTouch, clearLevelTouchState } = require('../../utils/levelTouchState');
-const { TARGET_TIMEFRAME, normalizeTargetExitInput } = require('../../utils/targetExit');
 // PART 11: how many recent CLOSED candles to hydrate a newly-started
 // instance with. patternEngine.js requires >= 50 (50-period EMA is the
 // binding requirement); a small justified buffer is added on top so a
@@ -41,10 +39,10 @@ const HYDRATION_MIN_CANDLES = 60;
 // "no timeframe configured on this instance" fallback is defined. Reused
 // here so timeframe routing (below) works generically for ANY bot model
 // instance that receives candle updates, not only MODEL_001.
-const { DEFAULT_PARAMETERS, TIMEFRAMES_MS } = require('../../bot-models/model-001/config');
+const { DEFAULT_TIMEFRAME, TIMEFRAMES_MS } = require('../../utils/timeframes');
 const {
   validateLevels, validateTargets, validateSizing, validateLeverage,
-} = require('../../bot-models/model-001/configContract');
+} = require('../../utils/botConfigValidators');
 const {
   validateTrend: validateModel002Trend, validateLevelArray: validateModel002LevelArray,
 } = require('../../bot-models/model-002/validators');
@@ -222,7 +220,7 @@ class BotManager {
       }
     }
     const resolvedParameters = Object.assign(
-      { timeframe: DEFAULT_PARAMETERS.timeframe },
+      { timeframe: DEFAULT_TIMEFRAME },
       parameters,
     );
 
@@ -645,7 +643,7 @@ class BotManager {
     const recentTrades = await Trade.find({ instanceId: dbInstance.instanceId, environment: dbInstance.environment })
       .sort({ closedAt: -1 })
       .limit(50)
-      .select('realizedPnl closedAt')
+      .select('realizedPnl closedAt entryLevelKey reason')
       .lean();
 
     // Seed dedup with EVERY trade loaded in this lookback window, regardless
@@ -687,15 +685,10 @@ class BotManager {
    * recovered state can never drift from what live processing would have
    * produced for the identical trade sequence.
    *
-   * No unbounded-growth risk: MAX_SUCCESSFUL_TRADES_PER_BOT=1 means a bot
-   * permanently stops trading after its first win, and
-   * MAX_LAYERS*MAX_LOSSES_PER_LAYER=6 bounds the loss-only case — so a
-   * MODEL_002 bot's real trade history for this instance/environment is
-   * always small (at most ~13 trades, ever) once this safety system is in
-   * effect. No `.limit()` is applied — a real cap would be the wrong fix
-   * for the wrong problem (it would silently break replay determinism if
-   * a bot ever accumulated more history than the cap), and the trade
-   * count is bounded by the state machine itself, not by this query.
+   * A successful trade permanently stops the bot. Losses are attributed to
+   * the entry level stored on each MODEL_002 Trade; old trades without an
+   * entryLevelKey are replayed but do not increment a level counter. No
+   * `.limit()` is applied because replay must remain deterministic.
    */
   async _recoverLayerSafetyState(dbInstance, modelInstance) {
     if (typeof modelInstance.restoreLayerSafetyState !== 'function') return;
@@ -705,12 +698,12 @@ class BotManager {
 
     const trades = await Trade.find({ instanceId: dbInstance.instanceId, environment: dbInstance.environment })
       .sort({ closedAt: 1 })
-      .select('realizedPnl closedAt')
+      .select('realizedPnl closedAt entryLevelKey reason')
       .lean();
 
     const replay = new LayerSafety();
     for (const trade of trades) {
-      replay.recordTradeOutcome(trade._id, trade.realizedPnl);
+      replay.recordTradeOutcome(trade._id, trade.realizedPnl, trade.entryLevelKey, trade.reason);
     }
 
     const state = replay.getState();
@@ -859,7 +852,7 @@ class BotManager {
     // MODEL_002 validation rules (validateTrend/validateLevelArray from
     // bot-models/model-002/validators.js) — no new rules invented here.
     // Restricted to MODEL_002 instances only, so this can never silently
-    // affect a MODEL_001 bot's configuration. Same RUNNING guard as every
+    // affect a legacy bot's configuration. Same RUNNING guard as every
     // other strategy-sensitive field on this instance (timeframe/levels/
     // targets/sizing/leverage) — enforces the required Pause/Stop -> edit
     // -> Save -> Restart workflow; a running model instance can never have
@@ -1002,124 +995,6 @@ class BotManager {
     return dbInstance;
   }
 
-  /**
-   * Activate the user-defined 4-target exit plan on an EXISTING open position.
-   * This is deliberately separate from updateConfiguration: configuring
-   * targets is position management, not bot creation/configuration.
-   */
-  async activateTargetExit(instanceId, planInput) {
-    return this._withLock(instanceId, async () => {
-      const dbInstance = await BotInstance.findOne({ instanceId });
-      if (!dbInstance) throw new AppError('Bot instance not found', 404);
-      if (dbInstance.status !== 'RUNNING') {
-        throw new AppError('Bot must be RUNNING to activate Target Exit. The bot will not be paused.', 409);
-      }
-
-      const Position = require('../../models/Position');
-      const position = await Position.findOne({
-        instanceId,
-        environment: dbInstance.environment,
-        symbol: dbInstance.symbol,
-        status: 'OPEN',
-      });
-      if (!position) throw new AppError('Target Exit can only be configured after a position is OPEN', 409);
-      if (position.targetExitPlan && position.targetExitPlan.enabled) {
-        throw new AppError('Target Exit is already active for this position', 409);
-      }
-
-      const configuredTimeframe = dbInstance.parameters && dbInstance.parameters.timeframe;
-      const currentActiveTimeframe = getActiveTimeframe(dbInstance) || configuredTimeframe;
-      const plan = normalizeTargetExitInput(
-        planInput,
-        position.side,
-        position.entryPrice,
-        position.quantity,
-        currentActiveTimeframe
-      );
-
-      position.targetExitPlan = plan;
-      // Reuse the existing target ledger for exact partial quantities/order
-      // accounting, but mark the position as a Target Exit position so the
-      // legacy price-tick executor can never act on it.
-      position.targets = plan.targets.map((t) => ({
-        rMultiple: t.index,
-        price: t.price,
-        quantity: t.quantity,
-        hit: false,
-        hitAt: null,
-      }));
-      await position.save();
-
-      const params = Object.assign({}, dbInstance.parameters || {}, {
-        targetExitActive: true,
-        targetExitTimeframe: TARGET_TIMEFRAME,
-        targetExitOriginalActiveTimeframe: currentActiveTimeframe,
-        targetExitActivatedAt: Date.now(),
-        activeTimeframe: TARGET_TIMEFRAME,
-      });
-      dbInstance.parameters = params;
-      dbInstance.markModified('parameters');
-      await dbInstance.save();
-      recordingService.updateTargetPlan(instanceId, position.targetExitPlan);
-
-      // The bot is already running. Update only the runtime model's
-      // timeframe so the next 3m candle is accepted; no stop/restart/pause.
-      const live = this.liveInstances.get(instanceId);
-      if (live && live.modelInstance && live.modelInstance.params) {
-        live.modelInstance.params.timeframe = TARGET_TIMEFRAME;
-      }
-
-      try {
-        require('../marketData/CandlePersistenceService').invalidateSymbol(dbInstance.symbol);
-      } catch (err) {
-        await logger.warn('BOT', `Could not refresh candle routing after Target Exit activation for ${instanceId}: ${err.message}`);
-      }
-
-      this._broadcastStatus(dbInstance);
-      return { instance: dbInstance, position: position.toObject() };
-    });
-  }
-
-  emitTargetExitUpdate(instanceId, position, event = null) {
-    if (!this.ioRef) return;
-    this.ioRef.to(`bot:${instanceId}`).emit('target:updated', {
-      instanceId,
-      position: position || null,
-      event,
-    });
-  }
-
-  /** Restore the bot's pre-target active timeframe after the target position closes. */
-  async deactivateTargetExit(instanceId) {
-    return this._withLock(instanceId, async () => {
-      const dbInstance = await BotInstance.findOne({ instanceId });
-      if (!dbInstance) return null;
-      const previous = (dbInstance.parameters && dbInstance.parameters.targetExitOriginalActiveTimeframe)
-        || (dbInstance.parameters && dbInstance.parameters.timeframe)
-        || '3m';
-      const params = Object.assign({}, dbInstance.parameters || {}, {
-        targetExitActive: false,
-        targetExitTimeframe: null,
-        activeTimeframe: previous,
-        targetExitOriginalActiveTimeframe: null,
-        targetExitActivatedAt: null,
-      });
-      dbInstance.parameters = params;
-      dbInstance.markModified('parameters');
-      await dbInstance.save();
-
-      const live = this.liveInstances.get(instanceId);
-      if (live && live.modelInstance && live.modelInstance.params) {
-        live.modelInstance.params.timeframe = previous;
-      }
-      try {
-        require('../marketData/CandlePersistenceService').invalidateSymbol(dbInstance.symbol);
-      } catch (_) {}
-      this._broadcastStatus(dbInstance);
-      return dbInstance;
-    });
-  }
-
   /** Stops every RUNNING instance. Does NOT close any positions. */
   async stopAllInstances() {
     const running = await BotInstance.find({ status: 'RUNNING' });
@@ -1183,15 +1058,6 @@ class BotManager {
           marketUpdate.data && marketUpdate.data.price,
           marketUpdate.timestamp
         );
-        try {
-          await targetExitManager.handlePriceTick(
-            instanceId,
-            marketUpdate.data && marketUpdate.data.price,
-            marketUpdate.timestamp
-          );
-        } catch (err) {
-          await logger.error('TRADING', `Target Exit price processing failed for ${instanceId}: ${err.message}`);
-        }
       }
 
       if (marketUpdate.type === 'candle') {
@@ -1225,17 +1091,6 @@ class BotManager {
         // newly closed 1m candle — passes.
         const baselineMs = computeAnalysisBaselineMs(dbInstance);
         if (baselineMs !== null && marketUpdate.timestamp < baselineMs) continue;
-
-        if (marketUpdate.timeframe === '3m' && marketUpdate.data) {
-          try {
-            await targetExitManager.handleCandle(instanceId, {
-              ...marketUpdate.data,
-              timeframe: marketUpdate.timeframe,
-            });
-          } catch (err) {
-            await logger.error('TRADING', `Target Exit candle processing failed for ${instanceId}: ${err.message}`);
-          }
-        }
       }
 
       const Position = require('../../models/Position');
@@ -1249,7 +1104,7 @@ class BotManager {
       // closeReason — the exact same record PaperEngine/LiveEngine already
       // create on every close, see Trade.js) and hand it to the model via
       // an optional hook, exactly once per closed position. A model that
-      // doesn't define onPositionClosed is entirely unaffected (MODEL_001).
+      // doesn't define onPositionClosed is entirely unaffected.
       //
       // Position-close vs Trade-create race: PaperEngine.closePosition
       // writes Position + Trade inside one Mongo transaction, but
@@ -1322,13 +1177,6 @@ class BotManager {
             live.pendingClosedTradeLookup = null;
           }
           // else: still unresolved and within bounds — retried again on the next tick.
-        }
-      }
-      if (!positionContext && dbInstance.parameters && dbInstance.parameters.targetExitActive) {
-        try {
-          await this.deactivateTargetExit(instanceId);
-        } catch (err) {
-          await logger.error('BOT', `Failed to restore timeframe after Target Exit for ${instanceId}: ${err.message}`);
         }
       }
       live.wasPositionOpen = Boolean(positionContext);
@@ -1439,7 +1287,7 @@ class BotManager {
 
       if (this.ioRef) this.ioRef.to('room:bots').emit('bot:event', { instanceId, ...event });
 
-      // NOVA TRADE -- PART 8: real MODEL_001 decisions (see Model001._emitDecision)
+      // NOVA TRADE -- PART 8: real legacy decisions (see the model decision emitter)
       // additionally get a dedicated, per-bot socket event. Unlike the generic
       // bot:event above (broadcast to the shared room:bots for the fleet page),
       // bot:decision is sent ONLY to bot:<instanceId> — the bot-detail page's

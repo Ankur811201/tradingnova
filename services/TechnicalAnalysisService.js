@@ -78,71 +78,21 @@ class TechnicalAnalysisService {
   }
 
   /**
-   * Universal Strategy Evaluator Registry
-   * Evaluates current price action against assigned Bot Model logic
+   * Universal Strategy Evaluator Registry. MODEL_002 is the only active
+   * strategy model. This service remains telemetry/UI-only; authoritative
+   * trading decisions come from the registered bot model through BotManager.
    */
   evaluateModelStrategy(modelId, config, currentPrice, candles = []) {
-    switch (modelId) {
-      case 'Model001':
-        return this._evaluateModel001(config, currentPrice, candles);
-      case 'Model002':
-        return this._evaluateModel002(config, currentPrice, candles);
-      default:
-        return this._evaluateModel001(config, currentPrice, candles);
+    if (modelId === 'MODEL_002' || modelId === 'Model002') {
+      return this._evaluateModel002(config, currentPrice, candles);
     }
-  }
-
-  /**
-   * Strategy Logic for Model001 (Breakout & Trend Following)
-   */
-  _evaluateModel001(config, currentPrice, candles) {
-    // Default or mock checks if candle history array isn't fully hydrated
-    const emaVal = config.mockEma || currentPrice * 0.98;
-    const supportVal = config.mockSupport || currentPrice * 0.95;
-    const resistanceVal = config.mockResistance || currentPrice * 1.05;
-
-    const factors = {
-      trend: currentPrice > emaVal ? 'BULLISH' : 'BEARISH',
-      emaPass: currentPrice > emaVal,
-      supportPass: currentPrice > supportVal,
-      resistancePass: currentPrice < resistanceVal,
-      bodyRatioPass: true,
-      volumePass: config.mockVolumePass ?? true
-    };
-
-    // Decision Logic
-    let decision = 'WAIT';
-    let humanReason = 'Waiting for valid breakout confirmation.';
-
-    if (factors.emaPass && factors.supportPass && factors.volumePass) {
-      if (currentPrice >= resistanceVal) {
-        decision = 'BUY';
-        humanReason = `Bullish breakout confirmed above resistance level $${resistanceVal}.`;
-      }
-    } else if (!factors.emaPass && currentPrice <= supportVal) {
-      decision = 'SELL';
-      humanReason = `Bearish breakdown confirmed below support level $${supportVal}.`;
-    } else if (!factors.volumePass) {
-      decision = 'REJECTED';
-      humanReason = 'Signal rejected due to insufficient volume confirmation.';
-    }
-
-    // Default Take-Profit and Stop-Loss calculations (2% SL / 4% TP)
-    const sl = decision === 'BUY' ? currentPrice * 0.98 : currentPrice * 1.02;
-    const tp = decision === 'BUY' ? currentPrice * 1.04 : currentPrice * 0.96;
-
     return {
-      decision,
-      humanReason,
-      factors,
-      sl: Number(sl.toFixed(2)),
-      tp: Number(tp.toFixed(2))
+      decision: 'WAIT',
+      humanReason: 'No active technical-analysis evaluator is registered for this model.',
+      factors: {},
     };
   }
 
-  /**
-   * Strategy Logic Placeholder for Model002 (e.g. Mean Reversion)
-   */
   _evaluateModel002(config, currentPrice) {
     return {
       decision: 'WAIT',

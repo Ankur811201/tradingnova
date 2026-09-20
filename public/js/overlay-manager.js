@@ -91,33 +91,12 @@ class OverlayManager {
     }
   }
 
-  setTargetExitLines(position) {
-    const plan = position && position.targetExitPlan && position.targetExitPlan.enabled
-      ? position.targetExitPlan : null;
-    const targets = plan && Array.isArray(plan.targets) ? plan.targets : [];
-    for (let i = 1; i <= 4; i++) {
-      const t = targets.find(x => Number(x.index) === i);
-      this.setPriceLine(
-        `target-${i}`,
-        t && t.price,
-        i === 4 ? '#f43f5e' : '#f59e0b',
-        `T${i}${t && t.exitPercent != null ? ` ${Number(t.exitPercent).toFixed(2)}%` : ''}`,
-        0
-      );
-    }
-  }
-
-  clearTargetExitLines() {
-    for (let i = 1; i <= 4; i++) this.removePriceLine(`target-${i}`);
-  }
-
   syncPositionOverlays(position) {
-    if (!position || position.status === 'CLOSED' || position.status === 'LIQUIDATED' || position.side === 'NONE') {
+    if (!position || position.side === 'NONE') {
       this.removePriceLine('entry');
       this.removePriceLine('sl');
       this.removePriceLine('tp');
       this.removePriceLine('trailing');
-      this.clearTargetExitLines();
       return;
     }
 
@@ -127,7 +106,6 @@ class OverlayManager {
     if (position.trailingStop) {
       this.setPriceLine('trailing', position.trailingStop, '#f5c037', 'TRAILING SL', 1);
     }
-    this.setTargetExitLines(position);
   }
 }
 window.OverlayManager = OverlayManager;

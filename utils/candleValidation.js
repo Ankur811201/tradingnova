@@ -8,7 +8,7 @@
  * This is the single source of truth for candle validation — used by
  * MarketDataProvider implementations (services/marketData/) before ever
  * exposing a candle to the rest of Nova Trade, AND by Model 001
- * (bot-models/model-001/validators.js re-exports this) so both layers
+ * (the shared model-configuration validators re-exports this) so both layers
  * agree on exactly what counts as a well-formed candle.
  */
 function validateCandle(candle) {

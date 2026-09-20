@@ -7,6 +7,7 @@ const BotModelBase = require('../BotModelBase');
 // PHASE 1 is COMPLETE and APPROVED — these lines are now permanent
 // operational tracing, no longer a temporary Phase 1 diagnostic.
 const logger = require('../../utils/logger');
+const { computeNotional } = require('../../utils/pnl');
 const { validateCandle, validateAndMergeParameters } = require('./validators');
 const {
   findTouchedLevel, computeBuyStopLoss, computeSellStopLoss,
@@ -168,8 +169,8 @@ class Model002 extends BotModelBase {
     this.r1Calibrated = false;
     this.s1Calibrated = false;
 
-    // MODEL_002 safety is layer-based only: 2 losses per layer, 3 layers
-    // maximum, and 1 profitable trade stops the bot.
+    // MODEL_002 safety is level-based: each S1/S2/S3/R1/R2/R3 has its own
+    // two-loss allowance. One successful completed trade stops the bot.
     this.layerSafety = new LayerSafety();
 
     this.paused = false;
@@ -438,7 +439,7 @@ class Model002 extends BotModelBase {
   async onPositionClosed(trade) {
     // Only an actually executed and closed trade changes MODEL_002 safety.
     // Risk rejections never reach this hook.
-    const layerResult = this.layerSafety.recordTradeOutcome(trade._id, trade.realizedPnl);
+    const layerResult = this.layerSafety.recordTradeOutcome(trade._id, trade.realizedPnl, trade.entryLevelKey, trade.reason);
     if (layerResult.duplicate) {
       this.emitStrategyEvent('LAYER_SAFETY_DUPLICATE_TRADE_IGNORED', { tradeId: String(trade._id) });
       return;
@@ -450,19 +451,13 @@ class Model002 extends BotModelBase {
       closeReason: trade.reason,
       outcome: layerResult.outcome,
       transition: layerResult.transition,
-      currentLayer: layerResult.state.currentLayer,
-      layerLossCount: layerResult.state.layerLossCount,
+      entryLevelKey: layerResult.entryLevelKey,
+      levelLosses: layerResult.state.levelLosses,
       successfulTradeCount: layerResult.state.successfulTradeCount,
       safetyStatus: layerResult.state.safetyStatus,
     });
 
-    if (layerResult.transition === 'MAX_LAYER_STOPPED') {
-      this.emitStrategyEvent('BOT_SAFETY_STOP', {
-        reason: 'max_layer_reached',
-        currentLayer: layerResult.state.currentLayer,
-        layerLossCount: layerResult.state.layerLossCount,
-      });
-    } else if (layerResult.transition === 'SUCCESS_STOPPED') {
+    if (layerResult.transition === 'SUCCESS_STOPPED') {
       this.emitStrategyEvent('BOT_SAFETY_STOP', {
         reason: 'successful_trade_reached',
         successfulTradeCount: layerResult.state.successfulTradeCount,
@@ -479,8 +474,7 @@ class Model002 extends BotModelBase {
     this.layerSafety.restoreState(state);
     if (state && state.safetyStatus && state.safetyStatus !== 'NORMAL') {
       this.emitStrategyEvent('LAYER_SAFETY_STATE_RESTORED', {
-        currentLayer: state.currentLayer,
-        layerLossCount: state.layerLossCount,
+        levelLosses: state.levelLosses,
         successfulTradeCount: state.successfulTradeCount,
         safetyStatus: state.safetyStatus,
         note: 'Restart preserved an existing layer/success safety stop — bot remains stopped until explicit operator action.',
@@ -526,7 +520,7 @@ class Model002 extends BotModelBase {
     // stopped.
     if (this.layerSafety.safetyStatus !== 'NORMAL') {
       this._emitDecision('WAIT', {
-        reason: this.layerSafety.safetyStatus === 'SUCCESS_STOPPED' ? 'bot_success_stopped' : 'bot_max_layer_stopped',
+        reason: this.layerSafety.safetyStatus === 'SUCCESS_STOPPED' ? 'bot_success_stopped' : 'level_loss_limit_reached',
         layerSafety: this.layerSafety.getState(),
       }, candle);
       return;
@@ -1050,6 +1044,12 @@ class Model002 extends BotModelBase {
   /** Entry/SL/riskLength/LOT pipeline for a resolved (BUY/SELL) pattern — see sameSidePatternEngine.js for every formula. */
   async _confirmAndSubmit(candidate, boundaryResult, entryCandle) {
     const direction = candidate.direction;
+    const entryLevel = this._activeLevelFor(candidate);
+    if (!this.layerSafety.canOpenLevel(entryLevel)) {
+      this._emitDecision('WAIT', { reason: 'entry_level_loss_limit_reached', direction, activeLevel: entryLevel, layerSafety: this.layerSafety.getState() }, entryCandle);
+      this.patternCandidate = null;
+      return;
+    }
     const entryPrice = entryCandle.close;
     const stopLoss = direction === 'BUY' ? computeBuyStopLoss(candidate.candle1) : computeSellStopLoss(candidate.candle1);
     const riskLength = direction === 'BUY' ? computeBuyRiskLength(entryPrice, stopLoss) : computeSellRiskLength(entryPrice, stopLoss);
@@ -1076,6 +1076,7 @@ class Model002 extends BotModelBase {
     // computeQuantityFromLot — that conversion is a unit conversion, not
     // a capital-based cap, and is unaffected by the cap removal above.
     const finalQuantity = computeQuantityFromLot(lot);
+    const finalNotional = Number.isFinite(entryPrice) && Number.isFinite(finalQuantity) ? computeNotional(entryPrice, finalQuantity) : null;
     logger.info('DIAG', `MODEL002 OLD-engine sizing for ${direction} ${this.symbol}`, {
       instanceId: this.instanceId, direction, entryPrice, stopLoss, riskLength,
       lot, lotSizeBtc: LOT_SIZE_BTC, quantity: finalQuantity,
@@ -1085,9 +1086,11 @@ class Model002 extends BotModelBase {
 
     const ruleId = direction === 'BUY' ? RULE_ID_BUY : RULE_ID_SELL;
     const result = {
-      direction, entryPrice, stopLoss, riskLength, lot, finalQuantity,
+      direction, entryPrice, stopLoss, riskLength, lot, finalQuantity, finalNotional,
       maximumCapital: this.capitalAllocation, leverage: this.leverage,
-      activeLevel: this._activeLevelFor(candidate), ruleId,
+      activeLevel: this._activeLevelFor(candidate),
+      entryLevelKey: LayerSafety.normalizeLevelKey(this._activeLevelFor(candidate)),
+      ruleId,
       candle1: this._summarizeCandle(candidate.candle1),
       candle2: this._summarizeCandle(candidate.candle2),
       candle3: this._summarizeCandle(entryCandle),
@@ -1342,6 +1345,12 @@ class Model002 extends BotModelBase {
    */
   async _confirmAndSubmitNew(candidate, candleC) {
     const direction = candidate.direction;
+    const entryLevel = this._activeLevelFor(candidate);
+    if (!this.layerSafety.canOpenLevel(entryLevel)) {
+      this._emitDecision('WAIT', { reason: 'entry_level_loss_limit_reached', direction, activeLevel: entryLevel, layerSafety: this.layerSafety.getState() }, candleC);
+      this.patternCandidate = null;
+      return;
+    }
     // P4-H1 (reporting only): which evaluation candle actually triggered —
     // C3 if the very first candle after Candle 2 fired, otherwise C4, C5,
     // ... exactly as the WAIT branch already counts them. Used for the
@@ -1389,6 +1398,7 @@ class Model002 extends BotModelBase {
     // project rule: 1 lot = 0.001 BTC). That unit conversion is separate
     // from, and unaffected by, the removed capital x leverage cap.
     const finalQuantity = computeQuantityFromLot(lot);
+    const finalNotional = Number.isFinite(entryPrice) && Number.isFinite(finalQuantity) ? computeNotional(entryPrice, finalQuantity) : null;
     logger.info('DIAG', `MODEL002 NEW-engine sizing for ${direction} ${this.symbol}`, {
       instanceId: this.instanceId, direction, entryPrice, stopLoss, riskLength,
       lot, lotSizeBtc: LOT_SIZE_BTC, quantity: finalQuantity,
@@ -1398,9 +1408,11 @@ class Model002 extends BotModelBase {
 
     const ruleId = direction === 'BUY' ? RULE_ID_BUY : RULE_ID_SELL;
     const result = {
-      direction, entryPrice, stopLoss, riskLength, lot, finalQuantity,
+      direction, entryPrice, stopLoss, riskLength, lot, finalQuantity, finalNotional,
       maximumCapital: this.capitalAllocation, leverage: this.leverage,
-      activeLevel: this._activeLevelFor(candidate), ruleId,
+      activeLevel: this._activeLevelFor(candidate),
+      entryLevelKey: LayerSafety.normalizeLevelKey(this._activeLevelFor(candidate)),
+      ruleId,
       candle1: this._summarizeCandle(candidate.candle1),
       candle2: this._summarizeCandle(candidate.candle2),
       candle3: this._summarizeCandle(candleC),
@@ -1448,9 +1460,11 @@ class Model002 extends BotModelBase {
         ruleId: result.ruleId,
         timeframe: this.params.timeframe,
         activeLevel: result.activeLevel,
+        entryLevelKey: result.entryLevelKey || LayerSafety.normalizeLevelKey(result.activeLevel),
         riskLength: result.riskLength,
         lot: result.lot,
         finalQuantity: result.finalQuantity,
+        finalNotional: result.finalNotional,
         maximumCapital: result.maximumCapital,
         leverage: result.leverage,
       },
@@ -1517,6 +1531,7 @@ class Model002 extends BotModelBase {
       maxCapitalCapped: result.maxCapitalCapped !== undefined ? result.maxCapitalCapped : null,
       // MODEL_002 safety: layer/success state is the single source of truth.
       layerSafety: this.layerSafety.getState(),
+      levelLosses: this.layerSafety.getState().levelLosses,
       safetyStatus: this.layerSafety.getState().safetyStatus,
       // Shaped for public/js/renderers/model-thinking-registry.js's MODEL_002
       // renderer (Bot Detail "Decision Engine" panel). Every value here is
@@ -1558,6 +1573,7 @@ class Model002 extends BotModelBase {
         // stopped. Read-only copy of LayerSafety.getState(); the state
         // machine itself is untouched and nothing reads this back.
         layerSafety: this.layerSafety.getState(),
+        levelLosses: this.layerSafety.getState().levelLosses,
         entryPrice: result.entryPrice !== undefined ? result.entryPrice : null,
         stopLoss: result.stopLoss !== undefined ? result.stopLoss : null,
         riskLength: result.riskLength !== undefined ? result.riskLength : null,

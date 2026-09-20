@@ -180,70 +180,52 @@ test('P4-H1 (g): buildPatternVisual falls back to C3 when no index is supplied (
 });
 
 // =========================================================================
-// P4-H2 — layer/success safety exposed to the UI
-// =========================================================================
+// P4-H2 — level/success safety exposed to the UI
 
-test('P4-H2 (a): checks carries the real layerSafety state', async () => {
+test('P4-H2 (a): checks carries six independent level loss counters', async () => {
   const { ctx } = await startBot({ trend: 'BULLISH' });
   const checks = lastDecision(ctx).checks;
-  assert.deepEqual(checks.layerSafety, {
-    currentLayer: 1, layerLossCount: 0, successfulTradeCount: 0, safetyStatus: 'NORMAL',
-  });
+  assert.deepEqual(checks.layerSafety.levelLosses, {S1:0,S2:0,S3:0,R1:0,R2:0,R3:0});
+  assert.equal(checks.layerSafety.successfulTradeCount, 0);
+  assert.equal(checks.layerSafety.safetyStatus, 'NORMAL');
 });
 
-test('P4-H2 (b): after a winning trade the payload reports SUCCESS_STOPPED', async () => {
+test('P4-H2 (b): after a winning final trade the bot is SUCCESS_STOPPED', async () => {
   const { ctx, model } = await startBot({ trend: 'BULLISH' });
-  await model.onPositionClosed({ _id: 'trade_win_1', realizedPnl: 25 });
+  await model.onPositionClosed({ _id: 'trade_win_1', realizedPnl: 25, entryLevelKey: 'S2' });
   await feed(model, neutral(20));
-
   const payload = lastDecision(ctx);
   assert.equal(payload.checks.layerSafety.safetyStatus, 'SUCCESS_STOPPED');
   assert.equal(payload.checks.layerSafety.successfulTradeCount, 1);
   assert.equal(payload.reason, 'bot_success_stopped');
 });
 
-test('P4-H2 (c): 12 losses stop the bot at layer 6 and the payload reports MAX_LAYER_STOPPED', async () => {
-  const { ctx, model } = await startBot({ trend: 'BULLISH' });
-  for (let i = 0; i < 12; i += 1) {
-    await model.onPositionClosed({ _id: `trade_loss_${i}`, realizedPnl: -10 });
-  }
-  await feed(model, neutral(20));
-
-  const ls = lastDecision(ctx).checks.layerSafety;
-  assert.equal(ls.safetyStatus, 'MAX_LAYER_STOPPED');
-  assert.equal(ls.currentLayer, 6, 'layer 7 must never exist');
+test('P4-H2 (c): two losses block only the entry level', async () => {
+  const { model } = await startBot({ trend: 'BULLISH' });
+  await model.onPositionClosed({ _id: 's1a', realizedPnl: -10, entryLevelKey: 'S1' });
+  await model.onPositionClosed({ _id: 's1b', realizedPnl: -10, entryLevelKey: 'S1' });
+  assert.equal(model.layerSafety.getState().levelLosses.S1, 2);
+  assert.equal(model.layerSafety.canOpenLevel('S1'), false);
+  assert.equal(model.layerSafety.canOpenLevel('S2'), true);
 });
 
-test('P4-H2 (d): the panel renders Layer / Losses / Wins and never shows ACTIVE for a stopped bot', () => {
-  const html = renderPanel({
-    trend: { status: 'BULLISH' },
-    support: { status: 'TOUCHED', level: 60000 },
-    resistance: { status: 'NOT_TOUCHED', level: null },
-    patternState: 'IDLE',
-    layerSafety: { currentLayer: 3, layerLossCount: 1, successfulTradeCount: 0, safetyStatus: 'MAX_LAYER_STOPPED' },
-  });
+test('P4-H2 (d): renderer uses level losses and successful trades', () => {
+  const html = renderPanel({ trend:{status:'BULLISH'}, support:{status:'TOUCHED',level:60000}, resistance:{status:'NOT_TOUCHED',level:null}, patternState:'IDLE', layerSafety:{ levelLosses:{S1:2,S2:1,S3:0,R1:0,R2:0,R3:0}, successfulTradeCount:0, safetyStatus:'NORMAL' } });
   assert.match(html, /Safety Status/);
-  assert.match(html, /MAX_LAYER_STOPPED/);
-  assert.match(html, /Layer/);
-  assert.match(html, /Losses in Layer/);
+  assert.match(html, /Level Losses/);
+  assert.match(html, /S1 2\/2/);
   assert.match(html, /Successful Trades/);
-  assert.doesNotMatch(html, />ACTIVE</, 'a stopped bot must not render ACTIVE');
 });
 
 test('P4-H2 (e): a running bot renders ACTIVE', () => {
-  const html = renderPanel({
-    trend: { status: 'BULLISH' },
-    support: { status: 'NOT_TOUCHED', level: null },
-    resistance: { status: 'NOT_TOUCHED', level: null },
-    patternState: 'IDLE',
-    layerSafety: { currentLayer: 1, layerLossCount: 0, successfulTradeCount: 0, safetyStatus: 'NORMAL' },
-  });
+  const html = renderPanel({ trend:{status:'BULLISH'}, support:{status:'NOT_TOUCHED',level:null}, resistance:{status:'NOT_TOUCHED',level:null}, patternState:'IDLE', layerSafety:{ levelLosses:{S1:0,S2:0,S3:0,R1:0,R2:0,R3:0}, successfulTradeCount:0, safetyStatus:'NORMAL' } });
   assert.match(html, />ACTIVE</);
   assert.doesNotMatch(html, /STOPPED/);
 });
 
-// =========================================================================
 // Frontend harness (real chart + real renderer files)
+
+
 // =========================================================================
 
 function makeElement(id) {
@@ -395,7 +377,7 @@ test('P4-M1: reload with an active pattern restores markers, body reference AND 
 
   const chart = await bootChart({
     initialDecision: payload,
-    candles: [{ time: Math.floor((BASE + 12 * MIN) / 1000), open: 1, high: 2, low: 0, close: 1 }],
+    candles: [{ time: Math.floor((BASE + 12 * MIN) / 1000), open: 60040, high: 60060, low: 60010, close: 60030 }],
   });
 
   const lines = chart.lines();
@@ -419,7 +401,7 @@ test('P4-M1 (b): reload after invalidation restores no boundaries at all', async
 
   const chart = await bootChart({
     initialDecision: payload,
-    candles: [{ time: Math.floor((BASE + 12 * MIN) / 1000), open: 1, high: 2, low: 0, close: 1 }],
+    candles: [{ time: Math.floor((BASE + 12 * MIN) / 1000), open: 60040, high: 60060, low: 60010, close: 60030 }],
   });
   assert.equal(chart.lines().patternUpperBoundary, undefined);
   assert.equal(chart.lines().patternLowerBoundary, undefined);

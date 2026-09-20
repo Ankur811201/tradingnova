@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Maps Nova Trade timeframe strings (as used by Model 001 / bot-models/model-001/config.js
+ * Maps Nova Trade timeframe strings used by the platform
  * TIMEFRAMES_MS) to Delta Exchange's /v2/history/candles `resolution` values.
  *
  * Verified against official Delta documentation (Delta Exchange support article

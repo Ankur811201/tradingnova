@@ -57,7 +57,7 @@ const botInstanceSchema = new mongoose.Schema(
 
     // Canonical Top/Bottom Level (PHASE D — replaces the old "layer"
     // wording and the old parameters.topLevel/parameters.bottomLevel
-    // location for NEW writes). Model001.onStart still honors legacy
+    // location for NEW writes). the active model onStart still honors legacy
     // parameters.topLevel/bottomLevel when these are unset, for backward
     // compatibility with bots created before Part 13.
     levels: {

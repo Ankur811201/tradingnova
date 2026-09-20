@@ -13,7 +13,7 @@
  * Source of truth for markers is EXECUTION data only:
  *   - a Position document (authoritative open position -> entry marker)
  *   - a Trade document (authoritative closed round-trip -> entry + exit)
- * Never a MODEL_001 decision (bot:decision / StrategyEvent) and never
+ * Never a legacy decision (bot:decision / StrategyEvent) and never
  * BotEngineManager/TechnicalAnalysisService — see BotManager.js, which only
  * emits `bot:execution` strictly after ExecutionRouter has successfully
  * routed a command to PaperEngine/LiveEngine.
@@ -28,7 +28,7 @@
  * chart in this module is divided down to seconds before being returned.
  */
 
-// UI-only duplicate of bot-models/model-001/config.js TIMEFRAMES_MS. This is
+// UI-only duplicate of utils/timeframes.js TIMEFRAMES_MS. This is
 // NOT strategy logic and NOT authoritative — it exists purely so an
 // execution timestamp can be anchored to the candle it occurred within on
 // the chart. PART 12.2: no silent fallback — an unrecognized timeframe

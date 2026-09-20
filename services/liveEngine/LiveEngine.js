@@ -40,7 +40,7 @@ class LiveEngine {
     const {
       userId, symbol, productId, side, quantity, leverage = 1,
       stopLoss = null, takeProfit = null,
-      source = 'MANUAL', modelId = null, instanceId = null, commandId = null,
+      source = 'MANUAL', modelId = null, instanceId = null, commandId = null, entryLevelKey = null,
     } = params;
 
     if (!productId) throw new AppError('productId is required to place a live order (fetch via DeltaAdapter.getProductBySymbol)', 400);
@@ -62,6 +62,7 @@ class LiveEngine {
       side: deltaSide,
       type: 'market',
       quantity,
+      originalQuantity: quantity,
       leverage,
       stopLoss,
       takeProfit,
@@ -77,7 +78,10 @@ class LiveEngine {
         orderType: 'market_order',
         size: quantity,
         clientOrderId,
-        // No automatic exchange-side SL/TP orders. User-defined Target Exit is the explicit exit system.
+        // MODEL_002 stop-loss is enforced by the central server tick loop; no
+        // unverified Delta conditional-order payload is invented here.
+        stopLossOrder: null,
+        takeProfitOrder: null,
       });
     } catch (err) {
       orderRecord.status = 'ERROR';
@@ -103,6 +107,7 @@ class LiveEngine {
       user: userId,
       modelId,
       instanceId,
+      entryLevelKey: entryLevelKey || null,
       symbol,
       side,
       entryPrice: orderRecord.executedPrice || 0,
@@ -123,79 +128,6 @@ class LiveEngine {
     });
 
     return { order: orderRecord, position, deltaOrder };
-  }
-
-  /**
-   * Reduce a LIVE position by an exact quantity. Used only by the explicit
-   * user-defined Target Exit manager. The exchange market order is reduce-only
-   * so it cannot reverse/open a position accidentally.
-   */
-  async partialClosePosition({ positionId, productId, quantity, reason = 'TARGET_PARTIAL' }) {
-    this._assertConfigured();
-    const position = await Position.findById(positionId);
-    if (!position) throw new AppError('Position not found', 404);
-    if (position.environment !== 'LIVE' || position.status !== 'OPEN') {
-      throw new AppError('Position is not an open LIVE position', 400);
-    }
-    if (!productId) throw new AppError('productId is required for a live partial exit', 400);
-    const qty = Number(quantity);
-    if (!Number.isFinite(qty) || qty <= 0 || qty > Number(position.quantity)) {
-      throw new AppError('Invalid partial-exit quantity', 400);
-    }
-
-    const closingSide = position.side === 'LONG' ? 'sell' : 'buy';
-    let deltaOrder;
-    try {
-      deltaOrder = await deltaAdapter.placeOrder({
-        productId,
-        side: closingSide,
-        orderType: 'market_order',
-        size: qty,
-        reduceOnly: true,
-        clientOrderId: newOrderId(),
-      });
-    } catch (err) {
-      await logger.error('TRADING', `Live partial close failed for position ${positionId}: ${err.message}`);
-      throw new AppError(`Live partial close failed: ${err.message}`, err.status || 502, 'DELTA_ORDER_FAILED');
-    }
-
-    const exitPrice = deltaOrder.limit_price ? Number(deltaOrder.limit_price) : position.currentPrice;
-    const grossPnl = position.side === 'LONG'
-      ? (exitPrice - position.entryPrice) * qty
-      : (position.entryPrice - exitPrice) * qty;
-
-    // Only reduce the local mirror after Delta accepted the reduce-only order.
-    position.quantity = Math.max(0, Number(position.quantity) - qty);
-    position.currentPrice = exitPrice;
-    position.realizedPnl = Number(position.realizedPnl || 0) + grossPnl;
-    position.unrealizedPnl = 0;
-    if (position.quantity === 0) {
-      position.status = 'CLOSED';
-      position.closedAt = new Date();
-      position.closeReason = reason;
-    }
-    await position.save();
-
-    await Order.create({
-      internalOrderId: newOrderId(),
-      externalOrderId: String(deltaOrder.id),
-      environment: 'LIVE',
-      source: position.source,
-      user: position.user,
-      modelId: position.modelId,
-      instanceId: position.instanceId,
-      symbol: position.symbol,
-      side: closingSide,
-      type: 'market',
-      quantity: qty,
-      executedPrice: exitPrice,
-      status: 'FILLED',
-      relatedPosition: position._id,
-      submittedAt: new Date(),
-      filledAt: new Date(),
-    });
-
-    return { position, deltaOrder, quantity: qty, exitPrice, realizedPnl: grossPnl };
   }
 
   async closePosition({ positionId, productId, reason = 'MANUAL' }) {
@@ -231,7 +163,8 @@ class LiveEngine {
 
     position.status = 'CLOSED';
     position.currentPrice = exitPrice;
-    position.realizedPnl = grossPnl; // fees reconciled from Delta fills separately
+    const cumulativeRealizedPnl = Number(position.realizedPnl || 0) + grossPnl;
+    position.realizedPnl = cumulativeRealizedPnl; // include T1/T2/T3 partial exits
     position.closedAt = new Date();
     position.closeReason = reason;
     await position.save();
@@ -261,6 +194,7 @@ class LiveEngine {
       user: position.user,
       modelId: position.modelId,
       instanceId: position.instanceId,
+      entryLevelKey: position.entryLevelKey || null,
       position: position._id,
       symbol: position.symbol,
       side: position.side,
@@ -268,7 +202,7 @@ class LiveEngine {
       exitPrice,
       quantity: position.quantity,
       leverage: position.leverage,
-      realizedPnl: grossPnl,
+      realizedPnl: cumulativeRealizedPnl,
       fees: 0,
       reason,
       openedAt: position.openedAt,
@@ -278,6 +212,48 @@ class LiveEngine {
     await logger.info('TRADING', `LIVE position closed: ${position.side} ${position.quantity} ${position.symbol} @ ${exitPrice}`, { positionId });
 
     return { position, deltaOrder };
+  }
+
+  async closeStopLossPositions(symbol, currentPrice) {
+    const openPositions = await Position.find({ environment: 'LIVE', symbol, status: 'OPEN' }).select('_id side stopLoss');
+    const results = [];
+    for (const position of openPositions) {
+      const sl = Number(position.stopLoss);
+      if (!(sl > 0)) continue;
+      const hit = position.side === 'LONG' ? Number(currentPrice) <= sl : Number(currentPrice) >= sl;
+      if (!hit) continue;
+      try {
+        const product = await deltaAdapter.getProductBySymbol(symbol);
+        const result = await this.closePosition({ positionId: position._id, productId: product.id, reason: 'STOP_LOSS' });
+        results.push({ positionId: String(position._id), closed: true, result });
+      } catch (err) {
+        if (err && err.message === 'Position is not open') continue;
+        throw err;
+      }
+    }
+    return results;
+  }
+
+  async partialClosePosition({ positionId, productId, quantity, reason = 'TARGET' }) {
+    this._assertConfigured();
+    const position = await Position.findById(positionId);
+    if (!position || position.status !== 'OPEN') return null;
+    if (!productId) throw new AppError('productId is required to close a live position', 400);
+    const qty=Math.min(Number(quantity),Number(position.quantity));
+    if (!(qty>0)) return null;
+    const closingSide=position.side==='LONG'?'sell':'buy';
+    const deltaOrder=await deltaAdapter.placeOrder({productId,side:closingSide,orderType:'market_order',size:qty,reduceOnly:true,clientOrderId:newOrderId()});
+    const exitPrice=deltaOrder.limit_price?Number(deltaOrder.limit_price):position.currentPrice;
+    const grossPnl=position.side==='LONG'?(exitPrice-position.entryPrice)*qty:(position.entryPrice-exitPrice)*qty;
+    const remain=Math.max(0,Number(position.quantity)-qty);
+    position.quantity=remain;
+    position.margin=Math.max(0,Number(position.margin)-((position.entryPrice*qty)/Math.max(1,position.leverage)));
+    position.currentPrice=exitPrice;
+    position.realizedPnl=Number(position.realizedPnl||0)+grossPnl;
+    if (remain<=0) { position.status='CLOSED'; position.closedAt=new Date(); position.closeReason=reason; }
+    await position.save();
+    await Order.create({internalOrderId:newOrderId(),externalOrderId:String(deltaOrder.id),environment:'LIVE',source:position.source,user:position.user,modelId:position.modelId,instanceId:position.instanceId,symbol:position.symbol,side:closingSide,type:'market',quantity:qty,executedPrice:exitPrice,status:deltaOrder.state==='closed'?'FILLED':'SUBMITTED',relatedPosition:position._id,submittedAt:new Date(),filledAt:deltaOrder.state==='closed'?new Date():null});
+    return {position,deltaOrder,quantity:qty,exitPrice};
   }
 
   /** Closes every open LIVE position by iterating verified single-close calls. */

@@ -149,7 +149,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ExecutionRouter has successfully routed a command to
   // PaperEngine/LiveEngine (see BotManager._emitExecutionUpdate). It is
   // never emitted for a RiskEngine rejection and never derived from a
-  // MODEL_001 decision alone — a BUY/SELL decision must NOT change this
+  // legacy decision alone — a BUY/SELL decision must NOT change this
   // panel until execution actually succeeds.
   //
   // performanceState mirrors window.BOT_PERFORMANCE (server-computed on
@@ -182,18 +182,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const content = document.getElementById('position-card-content');
     if (!content) return;
 
-    if (!position || position.status === 'CLOSED' || position.status === 'LIQUIDATED') {
+    if (!position) {
       content.innerHTML =
         '<div id="position-card-empty" class="text-center py-6 text-gray-500 italic flex flex-col items-center gap-2">' +
         'No Active Open Position</div>';
       const pnlMirror = document.getElementById('pos-pnl-mirror');
       if (pnlMirror) pnlMirror.textContent = '--';
-      if (window.NovaBotChartManager && window.NovaBotChartManager.overlayManager) {
-        window.NovaBotChartManager.overlayManager.clearTargetExitLines();
-      }
-      if (typeof window.renderTargetExitForPosition === 'function') {
-        window.renderTargetExitForPosition(null);
-      }
       return;
     }
 
@@ -223,12 +217,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const pnlMirror = document.getElementById('pos-pnl-mirror');
     if (pnlMirror) {
       pnlMirror.innerHTML = `<span class="${pnlCls}">$${Number.isFinite(pnl) ? pnl.toFixed(2) : '0.00'}</span>`;
-    }
-    if (window.NovaBotChartManager && window.NovaBotChartManager.overlayManager) {
-      window.NovaBotChartManager.overlayManager.syncPositionOverlays(position);
-    }
-    if (typeof window.renderTargetExitForPosition === 'function') {
-      window.renderTargetExitForPosition(position);
     }
   }
 
@@ -437,12 +425,6 @@ document.addEventListener('DOMContentLoaded', () => {
     appendTradeStoryStep('Execution Rejected', data.reason || `${data.action || ''} ${data.symbol || ''}`.trim(), 'reject');
   });
 
-  socket.on('target:updated', (data) => {
-    if (!data || data.instanceId !== instanceId) return;
-    if (data.position) renderCurrentPosition(data.position);
-    else renderCurrentPosition(null);
-  });
-
   socket.on('bot:execution', (data) => {
 
     if (!data || data.instanceId !== instanceId) {
@@ -483,7 +465,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // PART 13.1 -- PHASE D: no '5m' fallback. A bot cannot be RUNNING
         // (and therefore cannot emit a real bot:execution event) unless it
         // already has an explicit configured timeframe (see
-        // bot-models/model-001/validators.js), so this is a defensive
+        // the shared model-configuration validators), so this is a defensive
         // bail-out only, never a guess.
         // ACTIVE analysis timeframe (one-time opposite-market switch): equals
         // BOT_CONFIG.timeframe unless this bot switched to 1m.
@@ -506,7 +488,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // (emitted by BotManager only when a real StrategyEvent of eventType
   // 'DECISION' is produced by whichever model is actually running — see
   // services/botManager/BotManager.js and each model's own
-  // onMarketData/_emitDecision, e.g. bot-models/model-001/Model001.js or
+  // onMarketData/_emitDecision, e.g. the active model implementation or
   // bot-models/model-002/Model002.js) is the ONLY source that writes to
   // the Decision Engine panel. This is called both for the server-rendered
   // initial decision on page load (window.BOT_INITIAL_DECISION) and for
@@ -657,7 +639,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // snake_case code (e.g. candle1_support_touch_awaiting_candle2) —
     // routed through the single shared formatter (model002-reason-map.js,
     // also used server-side for Decision History) so live and
-    // server-rendered text always match. MODEL_001's reason strings are
+    // server-rendered text always match. legacy model's reason strings are
     // already human-readable sentences and are left untouched.
     const reasonEl =
       document.getElementById('thinking-reason');
@@ -701,8 +683,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const el = document.getElementById(id);
       if (el && value != null) el.textContent = String(value);
     };
-    setText('layer-safety-layer', layerSafety.currentLayer);
-    setText('layer-safety-losses', layerSafety.layerLossCount);
+    const losses = layerSafety.levelLosses || {};
+    ['S1','S2','S3','R1','R2','R3'].forEach((level) => setText(`layer-safety-${level}`, losses[level]));
     setText('layer-safety-wins', layerSafety.successfulTradeCount);
 
     const status = layerSafety.safetyStatus;
@@ -777,7 +759,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // BotEngineManager/TechnicalAnalysisService mock (see services/
   // TechnicalAnalysisService.js — it literally computes checks from
   // currentPrice * 0.98/0.95/1.05). It must NEVER write to the Decision
-  // Engine panel again — the real MODEL_001 bot:decision handler above is
+  // Engine panel again — the real legacy bot:decision handler above is
   // the only writer. This listener is intentionally a no-op kept only so a
   // stale/legacy client wiring doesn't throw; remove entirely once nothing
   // else depends on bot:thinking being emitted at all.

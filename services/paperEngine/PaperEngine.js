@@ -10,7 +10,7 @@ const { getMarketDataProvider } = require('../marketData');
 const { newOrderId } = require('../../utils/ids');
 const logger = require('../../utils/logger');
 const { AppError } = require('../../utils/apiResponse');
-const { computeNotional, computeMargin, computeFee, computePnl } = require('../../utils/pnl');
+const { computeNotional, computeMargin, computeFee, computePnl, computeMultiTargets } = require('../../utils/pnl');
 
 /**
  * PaperEngine — complete virtual execution engine. Paper trades NEVER reach
@@ -60,7 +60,7 @@ class PaperEngine {
     const {
       userId, symbol, side, quantity, leverage = 1,
       stopLoss = null, takeProfit = null, autoTargets = true,
-      source = 'MANUAL', modelId = null, instanceId = null, commandId = null,
+      source = 'MANUAL', modelId = null, instanceId = null, commandId = null, entryLevelKey = null,
     } = params;
 
     if (!['LONG', 'SHORT'].includes(side)) throw new AppError('side must be LONG or SHORT', 400);
@@ -90,10 +90,6 @@ class PaperEngine {
     // no take-profit; it must remain open until its stop-loss or an
     // explicitly authorized close path. Other callers retain the existing
     // multi-target behavior by default.
-    // Automatic price-driven exits are intentionally disabled. Target Exit
-    // positions are managed only by TargetExitManager; other positions can
-    // still carry stopLoss metadata for strategy/risk calculations, but no
-    // PaperEngine tick path will close them automatically.
     const targets = [];
     const effectiveTakeProfit = null;
 
@@ -140,6 +136,7 @@ class PaperEngine {
             user: userId,
             modelId,
             instanceId,
+            entryLevelKey: entryLevelKey || null,
             symbol,
             side,
             entryPrice,
@@ -337,6 +334,7 @@ class PaperEngine {
             user: position.user,
             modelId: position.modelId,
             instanceId: position.instanceId,
+            entryLevelKey: position.entryLevelKey || null,
             position: position._id,
             symbol: position.symbol,
             side: position.side,
@@ -489,15 +487,13 @@ class PaperEngine {
    * exactly 0 in the same transaction, never left to trust cumulative
    * floating-point subtraction.
    */
-  async _applyPartialTargetFill(session, position, account, target, executionPrice = null) {
+  async _applyPartialTargetFill(session, position, account, target) {
     const sliceQuantity = target.quantity;
-    const fillPrice = executionPrice == null ? target.price : Number(executionPrice);
-    if (!Number.isFinite(fillPrice) || fillPrice <= 0) throw new AppError('Invalid partial-exit execution price', 400);
     const sliceNotionalAtEntry = computeNotional(position.entryPrice, sliceQuantity);
     const sliceMargin = computeMargin(sliceNotionalAtEntry, position.leverage);
-    const sliceNotionalAtExit = computeNotional(fillPrice, sliceQuantity);
+    const sliceNotionalAtExit = computeNotional(target.price, sliceQuantity);
     const sliceFee = computeFee(sliceNotionalAtExit, env.PAPER_TAKER_FEE_RATE);
-    const slicePnl = computePnl(position.side, position.entryPrice, fillPrice, sliceQuantity);
+    const slicePnl = computePnl(position.side, position.entryPrice, target.price, sliceQuantity);
 
     const claimed = await Position.findOneAndUpdate(
       { _id: position._id, targets: { $elemMatch: { rMultiple: target.rMultiple, hit: false } } },
@@ -558,8 +554,8 @@ class PaperEngine {
         side: position.side === 'LONG' ? 'sell' : 'buy',
         type: 'market',
         quantity: sliceQuantity,
-        requestedPrice: fillPrice,
-        executedPrice: fillPrice,
+        requestedPrice: target.price,
+        executedPrice: target.price,
         leverage: position.leverage,
         fees: sliceFee,
         status: 'FILLED',
@@ -579,64 +575,88 @@ class PaperEngine {
     return claimed;
   }
 
-  /**
-   * Execute one user-defined target slice at the supplied candle-close price.
-   * The legacy `targets` array is used only as an internal quantity ledger;
-   * refreshUnrealizedForSymbol explicitly skips positions with targetExitPlan.
-   */
-  async partialClosePosition({ positionId, targetIndex, quantity, executionPrice, reason = 'TARGET_PARTIAL' }) {
-    const position = await Position.findById(positionId);
-    if (!position || position.status !== 'OPEN') throw new AppError('Position is not open', 409);
-    const qty = Number(quantity);
-    const px = Number(executionPrice);
-    if (!Number.isFinite(qty) || qty <= 0 || qty > position.quantity) throw new AppError('Invalid target quantity', 400);
-    if (!Number.isFinite(px) || px <= 0) throw new AppError('Invalid target execution price', 400);
-
-    const ledgerTarget = (position.targets || []).find(t => Number(t.rMultiple) === Number(targetIndex) && !t.hit);
-    if (!ledgerTarget) throw new AppError(`Target T${targetIndex} is already executed or missing`, 409);
-
-    const account = await this.ensureAccount(position.user);
+  async partialClosePosition({ positionId, quantity, exitPrice = null, reason = 'TARGET' }) {
+    const peek = await Position.findById(positionId).select('symbol side entryPrice quantity leverage margin user environment status').lean();
+    if (!peek || peek.status !== 'OPEN') return null;
+    if (peek.environment !== 'PAPER') throw new AppError('Not a paper position', 400);
+    let price = exitPrice;
+    if (!Number.isFinite(Number(price)) || Number(price) <= 0) {
+      const info = await getMarketDataProvider().getPrice(peek.symbol); price = info.price;
+    }
+    const qty = Math.min(Number(quantity), Number(peek.quantity));
+    if (!(qty > 0)) return null;
     const session = await mongoose.startSession();
-    let claimed = null;
+    let result = null;
     try {
       await session.withTransaction(async () => {
-        claimed = await this._applyPartialTargetFill(
-          session,
-          position,
-          account,
-          ledgerTarget,
-          px
-        );
+        const position = await Position.findOne({_id:positionId,status:'OPEN'}).session(session);
+        if (!position) return;
+        const actualQty=Math.min(qty,Number(position.quantity));
+        if (!(actualQty>0)) return;
+        const sliceMargin=computeMargin(computeNotional(position.entryPrice,actualQty),position.leverage);
+        const grossPnl=computePnl(position.side,position.entryPrice,Number(price),actualQty);
+        const fee=computeFee(computeNotional(Number(price),actualQty),env.PAPER_TAKER_FEE_RATE);
+        const newQty=Math.max(0,Number(position.quantity)-actualQty);
+        const newMargin=Math.max(0,Number(position.margin)-sliceMargin);
+        const newRealized=Number(position.realizedPnl||0)+grossPnl-fee;
+        await PaperAccount.updateOne({_id:(await this.ensureAccount(position.user))._id},{$inc:{lockedMargin:-sliceMargin,availableBalance:sliceMargin+grossPnl-fee,totalRealizedPnl:grossPnl-fee,totalFeesPaid:fee}},{session});
+        await Position.updateOne({_id:position._id,status:'OPEN'},{$set:{quantity:newQty,margin:newMargin,currentPrice:Number(price),unrealizedPnl:0,realizedPnl:newRealized,feesPaid:Number(position.feesPaid||0)+fee}},{session});
+        await Order.create([{internalOrderId:newOrderId(),environment:'PAPER',source:position.source,user:position.user,modelId:position.modelId,instanceId:position.instanceId,symbol:position.symbol,side:position.side==='LONG'?'sell':'buy',type:'market',quantity:actualQty,requestedPrice:Number(price),executedPrice:Number(price),leverage:position.leverage,fees:fee,status:'FILLED',relatedPosition:position._id,submittedAt:new Date(),filledAt:new Date(),rejectionReason:reason}],{session});
+        result={quantity:actualQty,exitPrice:Number(price),remaining:newQty};
       });
-    } finally {
-      session.endSession();
-    }
+    } finally { session.endSession(); }
+    return result;
+  }
 
-    if (!claimed) throw new AppError(`Target T${targetIndex} was already executed`, 409);
-    const refreshed = await Position.findById(positionId);
-    if (refreshed && refreshed.quantity <= 0) {
-      await this.closePosition({ positionId, reason, exitPriceOverride: px });
+  async closeStopLossPositions(symbol, currentPrice) {
+    const openPositions = await Position.find({ environment: 'PAPER', symbol, status: 'OPEN' }).select('_id side stopLoss');
+    const results = [];
+    for (const position of openPositions) {
+      const sl = Number(position.stopLoss);
+      if (!(sl > 0)) continue;
+      const hit = position.side === 'LONG' ? Number(currentPrice) <= sl : Number(currentPrice) >= sl;
+      if (!hit) continue;
+      try {
+        const result = await this.closePosition({ positionId: position._id, reason: 'STOP_LOSS', exitPriceOverride: Number(currentPrice) });
+        results.push({ positionId: String(position._id), closed: true, result });
+      } catch (err) {
+        if (err && err.message === 'Position is not open') continue;
+        throw err;
+      }
     }
-    return { position: refreshed || claimed, quantity: qty, exitPrice: px };
+    return results;
   }
 
   /**
    * Refreshes unrealizedPnl for all open paper positions of a symbol using the
-   * latest market price. Called from a market-data subscription callback or
-   * on an interval. Also checks stop-loss / take-profit triggers.
+   * latest market price. Stop-loss is handled by closeStopLossPositions()
+   * from the central market-data tick loop so it produces one authoritative
+   * final Trade result for MODEL_002 safety accounting.
    */
   async refreshUnrealizedForSymbol(symbol, currentPrice) {
     const openPositions = await Position.find({ environment: 'PAPER', symbol, status: 'OPEN' });
     for (const position of openPositions) {
       const unrealizedPnl = computePnl(position.side, position.entryPrice, currentPrice, position.quantity);
 
-      // Price refresh is accounting/telemetry only. No automatic SL, TP, or
-      // legacy R-multiple exit is performed here. Explicit Target Exit is
-      // owned exclusively by TargetExitManager.
+      // Scoped update — touches ONLY currentPrice/unrealizedPnl, never the
+      // rest of the document. `position` here was loaded moments ago and
+      // may already be stale by the time this write lands (an overlapping
+      // tick's target-fill or finalization transaction can commit
+      // quantity/margin/targets.hit/realizedPnl changes in between). A
+      // plain position.save() risks writing back this now-stale in-memory
+      // snapshot's other fields; this update cannot, by construction —
+      // there is no way for it to touch anything but the two fields named
+      // here, regardless of what changed concurrently underneath it.
       await Position.updateOne(
         { _id: position._id, status: 'OPEN' },
         { $set: { currentPrice, unrealizedPnl } }
       );
+      position.currentPrice = currentPrice;
+      position.unrealizedPnl = unrealizedPnl;
+
+      // Target exits and stop-loss are processed by the central market-data
+      // tick loop before this unrealized-PnL refresh. Manual/BOT/Safety closes
+      // continue to work through closePosition().
     }
   }
 }

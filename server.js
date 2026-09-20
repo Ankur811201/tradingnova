@@ -9,11 +9,13 @@ const logger = require('./utils/logger');
 const botManager = require('./services/botManager/BotManager');
 const socketBus = require('./utils/socketBus');
 const paperEngine = require('./services/paperEngine/PaperEngine');
+const liveEngine = require('./services/liveEngine/LiveEngine');
 const { getMarketDataProvider } = require('./services/marketData');
 const SystemSetting = require('./models/SystemSetting');
 const botEngineManager = require('./services/BotEngineManager');
 const candlePersistenceService = require('./services/marketData/CandlePersistenceService');
 const recordingService = require('./services/recording/RecordingService');
+const { TargetExitManager } = require('./services/TargetExitManager');
 
 
 async function main() {
@@ -83,6 +85,13 @@ for (const symbol of env.RISK_ALLOWED_SYMBOLS) {
       for (const [instanceId] of recordingService.active) {
         recordingService.updatePrice(instanceId, symbol, price, timestamp);
       }
+
+      // Target Exit: raw price touches are evaluated continuously; this never pauses the bot.
+      try { await TargetExitManager.onTick(symbol, price, timestamp); } catch (err) { await logger.error('TRADING', `TargetExit tick failed for ${symbol}: ${err.message}`); }
+      try {
+        await paperEngine.closeStopLossPositions(symbol, price);
+        await liveEngine.closeStopLossPositions(symbol, price);
+      } catch (err) { await logger.error('TRADING', `Stop-loss processing failed for ${symbol}: ${err.message}`); }
 
       // 2. Update paper trading positions
       // =====================================================

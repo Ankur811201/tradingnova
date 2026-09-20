@@ -10,7 +10,7 @@ const signalSchema = new mongoose.Schema(
     botModel: {
       type: String,
       required: true,
-      default: 'Model001'
+      default: 'MODEL_002'
     },
     symbol: {
       type: String,

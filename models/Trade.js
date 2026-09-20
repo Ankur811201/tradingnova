@@ -14,6 +14,8 @@ const tradeSchema = new mongoose.Schema(
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     modelId: { type: String, default: null },
     instanceId: { type: String, default: null, index: true },
+    // MODEL_002: final trade outcome is attributed to the level that opened it.
+    entryLevelKey: { type: String, enum: ['S1','S2','S3','R1','R2','R3'], default: null, index: true },
 
     position: { type: mongoose.Schema.Types.ObjectId, ref: 'Position', required: true },
     symbol: { type: String, required: true, index: true },

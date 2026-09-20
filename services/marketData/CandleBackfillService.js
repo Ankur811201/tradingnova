@@ -1,7 +1,7 @@
 'use strict';
 
 const Candle = require('../../models/Candle');
-const { TIMEFRAMES_MS } = require('../../bot-models/model-001/config');
+const { TIMEFRAMES_MS } = require('../../utils/timeframes');
 const { validateCandle } = require('../../utils/candleValidation');
 const { getMarketDataProvider } = require('./index');
 const { getUsableRecentHistory } = require('./usableHistoryQuery');
@@ -19,7 +19,7 @@ const BACKFILL_OVERLAP = 10;
  * PART 12 — CandleBackfillService.
  *
  * Bridges the gap between "MongoDB doesn't have enough closed candles yet"
- * and "MODEL_001 is hydrated and READY", by fetching REAL historical OHLC
+ * and "the active model is hydrated and READY", by fetching REAL historical OHLC
  * from the already-configured MarketDataProvider (Delta in production) and
  * persisting it into the SAME canonical Candle collection the live tick
  * pipeline (CandlePersistenceService) writes to.

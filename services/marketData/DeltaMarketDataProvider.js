@@ -7,7 +7,7 @@ const DeltaWebSocketClient = require('./deltaWebSocketClient');
 const { novaToDeltaSymbol, UnsupportedSymbolError } = require('./symbolMap');
 const { mapTimeframe } = require('./timeframeMap');
 const { validateCandle } = require('../../utils/candleValidation');
-const { TIMEFRAMES_MS } = require('../../bot-models/model-001/config');
+const { TIMEFRAMES_MS } = require('../../utils/timeframes');
 const logger = require('../../utils/logger');
 
 /**

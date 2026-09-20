@@ -51,6 +51,7 @@ class ExecutionRouter {
         modelId: command.modelId,
         instanceId: command.instanceId,
         commandId: command.commandId,
+        entryLevelKey: command.metadata && command.metadata.entryLevelKey,
       });
     }
     if (command.action === 'CLOSE') {
@@ -90,6 +91,7 @@ class ExecutionRouter {
         modelId: command.modelId,
         instanceId: command.instanceId,
         commandId: command.commandId,
+        entryLevelKey: command.metadata && command.metadata.entryLevelKey,
       });
     }
     if (command.action === 'CLOSE') {

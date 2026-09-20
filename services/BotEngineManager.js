@@ -16,7 +16,7 @@ const PositionManager = require('./PositionManager');
 //   - no mutation of instance.currentPosition into a real position
 //
 // The ONLY path that may create a bot trade or position is:
-//   MODEL_001 -> submitTradeCommand() -> BotManager._handleTradeCommand()
+//   active model -> submitTradeCommand() -> BotManager._handleTradeCommand()
 //   -> RiskEngine -> ExecutionRouter -> PaperEngine/LiveEngine
 //   (see services/botManager/BotManager.js)
 //
@@ -88,7 +88,7 @@ class BotEngineManager extends EventEmitter {
 
         modelId:
           botDoc.modelId ||
-          'MODEL_001',
+          'MODEL_002',
 
         symbol,
 
@@ -514,7 +514,7 @@ class BotEngineManager extends EventEmitter {
     this.log(
       instance.instanceId,
       'INFO',
-      `[LEGACY] Trading action ignored (${evaluation.decision} @ $${price}); BotManager/MODEL_001 is authoritative`
+      `[LEGACY] Trading action ignored (${evaluation.decision} @ $${price}); BotManager/MODEL_002 is authoritative`
     );
   }
 

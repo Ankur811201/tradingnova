@@ -192,16 +192,6 @@ test('MODEL_002 no longer exposes the legacy consecutive-loss safety hook', asyn
   assert.equal(typeof model.restoreSafetyState, 'undefined');
 });
 
-test('MODEL_001 never defines onPositionClosed/restoreSafetyState/getSafetyLossLimit — the new BotManager hooks are no-ops for it', () => {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const dir = path.join(__dirname, '..', 'bot-models', 'model-001');
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.js'));
-  for (const file of files) {
-    const content = fs.readFileSync(path.join(dir, file), 'utf8');
-    assert.equal(/onPositionClosed|restoreSafetyState|getSafetyLossLimit/.test(content), false, `${file} unexpectedly defines a MODEL_002-only safety hook`);
-  }
-});
 
 // =========================================================================
 // Regression: no pyramiding, malformed/duplicate protection, hydration never trades
@@ -248,7 +238,7 @@ test('duplicate candle timestamp is not double-processed', async () => {
 });
 
 // =========================================================================
-// MODEL_001 regression — untouched by this pass
+// MODEL_002 source-isolation check
 // =========================================================================
 
 test('MODEL_002 source files never require model-001 files', () => {

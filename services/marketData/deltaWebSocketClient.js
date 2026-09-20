@@ -20,7 +20,7 @@ const WebSocket = require('ws');
  * official documentation during this build, and per Nova Trade's policy of
  * never inventing external message formats, this client deliberately stays
  * on the verified `v2/ticker` channel only. Model 001 already builds its own
- * candles from price ticks (see bot-models/model-001/candleAggregator.js),
+ * candles from price ticks through the shared market-data layer,
  * so ticker-only WebSocket data is sufficient — historical candles are
  * fetched via the verified REST /v2/history/candles endpoint instead.
  *

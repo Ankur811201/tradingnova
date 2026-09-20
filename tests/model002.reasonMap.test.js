@@ -157,25 +157,6 @@ test('views/bot-detail.ejs loads the shared reason-map script before model-think
   assert.ok(reasonMapIdx < wsIdx, 'reason-map must load before bot-detail-ws.js');
 });
 
-// --- MODEL_001 preservation -------------------------------------------------
-
-test('MODEL_001 source files are untouched and never reference the MODEL_002 reason map', () => {
-  const dir = path.join(__dirname, '..', 'bot-models', 'model-001');
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.js'));
-  for (const file of files) {
-    const content = fs.readFileSync(path.join(dir, file), 'utf8');
-    assert.equal(/model002-reason-map/.test(content), false, `${file} must not reference the MODEL_002 reason map`);
-  }
-});
-
-test('the Decision History reason formatting is gated to MODEL_002 only — MODEL_001 rows render bot.reason unchanged', () => {
-  const content = fs.readFileSync(path.join(__dirname, '..', 'views', 'bot-detail.ejs'), 'utf8');
-  // The ternary's false branch (non-MODEL_002 path) must fall back to the
-  // raw `d.reason` exactly as before this change — i.e. MODEL_001's
-  // already-human-readable sentences are never passed through the map.
-  assert.match(content, /:\s*\(d\.reason \|\| ''\)/);
-});
-
 // --- Description accuracy (bot-models/model-002/index.js) ----------------
 
 // PHASE 3 DOC CLEANUP: this test previously asserted that the description

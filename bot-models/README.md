@@ -1,50 +1,25 @@
-# Bot Models
+# Bot Models — Current Build
 
-This directory holds pluggable trading-strategy implementations ("Bot Models").
-Part 1 ships **no strategy logic** here — only the contract Part 3's Model 001
-must implement.
+The only active trading model in this build is **MODEL_002**. MODEL_001 is obsolete and removed.
 
-## Contract
+## MODEL_002 contract
 
-Extend `BotModelBase` (see `BotModelBase.js`):
+- User-provided trend: `BULLISH` / `BEARISH`
+- Exactly 3 Support levels: S1/S2/S3
+- Exactly 3 Resistance levels: R1/R2/R3
+- Timeframe: 1m or 3m
+- No EMA/Daily BOS/1H confirmation/automatic trend detection
+- A/B/C fixed-boundary pattern engine
+- Generic RiskEngine and ExecutionRouter remain outside the model
 
-```js
-const BotModelBase = require('./BotModelBase');
+## Safety
 
-class Model001 extends BotModelBase {
-  async onStart(instanceConfig) {
-    // one-time setup per bot instance
-  }
+Each entry is attributed to the Support/Resistance level that created it. Each level allows at most 2 losing completed trades. T1/T2/T3 partial exits do not count. T4 is the final successful close and stops the bot after the first success. Stop-loss is the final loss event and increments the entry level's counter.
 
-  async onMarketData(marketUpdate, positionContext) {
-    // strategy logic lives here — pattern detection, entries, exits.
-    // Call this.submitTradeCommand({...}) to request a trade.
-    // Call this.emitStrategyEvent(...) for playback/audit visibility.
-  }
+## Runtime flow
 
-  async onPause() {}
-  async onStop() {}
-}
-
-module.exports = {
-  modelId: 'model-001',
-  modelVersion: '1.0.0',
-  create: (ctx) => new Model001(ctx),
-};
+```text
+MODEL_002 → TradeCommand → RiskEngine → ExecutionRouter → Paper/Live
 ```
 
-## Registration
-
-Drop a folder under `bot-models/<model-id>/index.js` exporting
-`{ modelId, modelVersion, create }`. `BotManager.discoverModels()` (Part 1)
-scans this directory at startup and registers metadata in `BotModelMetadata`.
-
-## Rules enforced by the platform (not by the model itself)
-
-- A Bot Model never receives Delta credentials.
-- A Bot Model never writes to MongoDB directly.
-- A Bot Model never calls PaperEngine/LiveEngine/Delta directly.
-- Every `TradeCommand` is validated (`TradeCommandSchema.js`), then routed
-  through `BotManager -> RiskEngine -> ExecutionRouter -> Paper/LiveEngine`.
-- `commandId` must be unique per logical signal — RiskEngine uses it (plus a
-  time window) to reject duplicate signals.
+The model does not open a new position while one is already open.

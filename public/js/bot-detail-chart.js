@@ -178,7 +178,7 @@
       var isModel002 = cfg.modelId === 'MODEL_002';
 
       // NOVA TRADE -- CHART CLEANUP: Top/Bottom Level and Target Levels are
-      // obsolete MODEL_001-only overlays. The underlying infrastructure
+      // obsolete obsolete-model-only overlays. The underlying infrastructure
       // (OverlayManager.setPriceLine, window.BOT_CONFIG.levels/targets) is
       // left in place — other models/tests still depend on it — but the
       // active MODEL_002 chart must never draw these lines, regardless of
@@ -206,6 +206,21 @@
         om.setPriceLine('cfgResistance' + idx, price, '#f23645', 'R' + (idx + 1), 1);
       });
     })();
+
+    // User-defined Target Exit overlay. This is the SAME active trading chart;
+    // no timeframe is switched. Executed targets are removed by status sync.
+    window.NovaTargetOverlaySync = function (targets) {
+      var om = chartManager.overlayManager;
+      if (!om || typeof om.setPriceLine !== 'function') return;
+      for (var i=0;i<4;i++) {
+        var t = targets && targets[i];
+        if (t && t.status !== 'EXECUTED' && Number(t.price) > 0) {
+          om.setPriceLine('userTarget' + i, Number(t.price), '#f59e0b', 'T' + (i+1), 3);
+        } else if (typeof om.removePriceLine === 'function') {
+          om.removePriceLine('userTarget' + i);
+        }
+      }
+    };
 
     // -----------------------------------------------------------------
     // MODEL_002 same-side pattern overlay: Candle 2's fixed upper/lower

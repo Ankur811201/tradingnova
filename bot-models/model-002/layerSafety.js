@@ -1,115 +1,113 @@
 'use strict';
 
-const { MAX_LAYERS, MAX_LOSSES_PER_LAYER, MAX_SUCCESSFUL_TRADES_PER_BOT } = require('./config');
+const { MAX_LOSSES_PER_LEVEL, MAX_SUCCESSFUL_TRADES_PER_BOT } = require('./config');
 
 /**
- * MODEL_002 — PHASE 2 layer/success safety state machine (confirmed
- * requirements):
+ * MODEL_002 level-based trade safety.
  *
- *   1. Maximum 2 losing trades per layer (MAX_LOSSES_PER_LAYER).
- *   2. Maximum 3 layers (MAX_LAYERS) — layer 7 must never be created.
- *   3. Maximum 1 successful/winning trade per bot (MAX_SUCCESSFUL_TRADES_PER_BOT).
+ * Each configured Support/Resistance level has its own loss counter:
+ *   S1, S2, S3, R1, R2, R3
  *
- *  * Only an ACTUALLY EXECUTED AND CLOSED trade advances this state machine.
- * A RiskEngine rejection is never seen here at all (see Model002.js —
- * this class is only ever driven by onPositionClosed, which only fires
- * for a real closed Position/Trade — a rejected TradeCommand never
- * reaches that far). realizedPnl === 0 (BREAK_EVEN) is deliberately
- * treated as neither a loss nor a win — the confirmed requirement only
- * defines "loss" (closed trade, negative realizedPnl) and "success"
- * (closed trade, positive realizedPnl); a flat close matches neither
- * definition, so it does not advance the layer and does not consume the
- * one-time success allowance. BREAK_EVEN has no effect on layer/success safety.
+ * A trade is assigned permanently to the level that created its entry.
+ * T1/T2/T3 partial exits do not create Trade records and therefore never
+ * change these counters. The final position close is the only result event:
+ *   - reason TARGET_4 => SUCCESS and stop the bot (even if cumulative PnL is not positive)
+ *   - reason STOP_LOSS => +1 loss on the entry level
+ *   - other final closes fall back to realizedPnl classification
+ *   - zero => no change
  *
- * Whether a success would reset an in-progress layer/loss-count is
- * explicitly UNDEFINED by the confirmed requirements — and deliberately
- * left unimplemented rather than guessed (see PHASE 2 report). It is also
- * operationally moot: SUCCESS_STOPPED halts all further trading for the
- * bot forever, so no code path can ever observe what the layer/loss count
- * "would have been" after a success.
+ * A level is blocked once its loss counter reaches 2. Other levels remain
+ * eligible. The bot stops permanently after its first successful trade.
  */
 class LayerSafety {
   constructor(initialState) {
-    this.currentLayer = (initialState && Number.isFinite(initialState.currentLayer)) ? initialState.currentLayer : 1;
-    this.layerLossCount = (initialState && Number.isFinite(initialState.layerLossCount)) ? initialState.layerLossCount : 0;
-    this.successfulTradeCount = (initialState && Number.isFinite(initialState.successfulTradeCount)) ? initialState.successfulTradeCount : 0;
-    this.safetyStatus = (initialState && initialState.safetyStatus) || 'NORMAL'; // 'NORMAL' | 'MAX_LAYER_STOPPED' | 'SUCCESS_STOPPED'
+    this.levelLosses = { S1: 0, S2: 0, S3: 0, R1: 0, R2: 0, R3: 0 };
+    if (initialState && initialState.levelLosses && typeof initialState.levelLosses === 'object') {
+      for (const key of Object.keys(this.levelLosses)) {
+        const n = Number(initialState.levelLosses[key]);
+        if (Number.isFinite(n) && n >= 0) this.levelLosses[key] = Math.floor(n);
+      }
+    }
+    this.successfulTradeCount = Number.isFinite(initialState?.successfulTradeCount) ? initialState.successfulTradeCount : 0;
+    this.safetyStatus = initialState?.safetyStatus || 'NORMAL';
     this.processedTradeIds = new Set(
-      (initialState && Array.isArray(initialState.processedTradeIds)) ? initialState.processedTradeIds.map(String) : []
+      Array.isArray(initialState?.processedTradeIds) ? initialState.processedTradeIds.map(String) : []
     );
   }
 
-  /**
-   * @param {string} tradeId unique identifier of the closed trade (Trade._id)
-   * @param {number} realizedPnl the trade's actual realized PnL
-   * @returns {{outcome:'WIN'|'LOSS'|'BREAK_EVEN'|null, state:object, duplicate:boolean, transition:string|null}}
-   *   transition is one of: null (no layer/status change), 'LOSS_RECORDED',
-   *   'LAYER_ADVANCED', 'MAX_LAYER_STOPPED', 'SUCCESS_STOPPED' — for callers
-   *   that want to emit a specific telemetry event only on an actual change.
-   */
-  recordTradeOutcome(tradeId, realizedPnl) {
+  static normalizeLevelKey(entryLevel) {
+    if (typeof entryLevel === 'string') {
+      const key = entryLevel.toUpperCase();
+      return Object.prototype.hasOwnProperty.call({ S1:1,S2:1,S3:1,R1:1,R2:1,R3:1 }, key) ? key : null;
+    }
+    if (!entryLevel || typeof entryLevel !== 'object') return null;
+    const side = String(entryLevel.side || '').toUpperCase();
+    const index = Number(entryLevel.index);
+    if (!['SUPPORT','RESISTANCE'].includes(side) || !Number.isInteger(index) || index < 0 || index > 2) return null;
+    return `${side === 'SUPPORT' ? 'S' : 'R'}${index + 1}`;
+  }
+
+  canOpenLevel(entryLevel) {
+    if (this.safetyStatus !== 'NORMAL') return false;
+    const key = LayerSafety.normalizeLevelKey(entryLevel);
+    if (!key) return false;
+    return this.levelLosses[key] < MAX_LOSSES_PER_LEVEL;
+  }
+
+  recordTradeOutcome(tradeId, realizedPnl, entryLevel, closeReason = null) {
     const key = String(tradeId);
     if (this.processedTradeIds.has(key)) {
-      return { outcome: null, state: this.getState(), duplicate: true, transition: null };
+      return { outcome: null, state: this.getState(), duplicate: true, transition: null, entryLevelKey: null };
     }
     this.processedTradeIds.add(key);
 
-    // Once stopped, state is frozen — this bot will never submit another
-    // TradeCommand (see the onMarketData gate in Model002.js), so no
-    // further outcome should legally reach here. Recorded defensively
-    // (dedup still applies) but never mutates currentLayer/layerLossCount/
-    // successfulTradeCount past a stop.
-    if (this.safetyStatus !== 'NORMAL') {
-      const outcome = realizedPnl > 0 ? 'WIN' : realizedPnl < 0 ? 'LOSS' : 'BREAK_EVEN';
-      return { outcome, state: this.getState(), duplicate: false, transition: null };
-    }
-
+    const levelKey = LayerSafety.normalizeLevelKey(entryLevel);
     let outcome;
     let transition = null;
+    const forcedSuccess = String(closeReason || '').toUpperCase() === 'TARGET_4';
+    const forcedLoss = String(closeReason || '').toUpperCase() === 'STOP_LOSS';
 
-    if (realizedPnl > 0) {
+    if (forcedSuccess || (!forcedLoss && realizedPnl > 0)) {
       outcome = 'WIN';
-      this.successfulTradeCount += 1; // confirmed cap is 1; a second WIN can never reach here (SUCCESS_STOPPED already blocks new trades)
-      if (this.successfulTradeCount >= MAX_SUCCESSFUL_TRADES_PER_BOT) {
-        this.safetyStatus = 'SUCCESS_STOPPED';
-        transition = 'SUCCESS_STOPPED';
-      }
-    } else if (realizedPnl < 0) {
+      this.successfulTradeCount += 1;
+      this.safetyStatus = 'SUCCESS_STOPPED';
+      transition = 'SUCCESS_STOPPED';
+    } else if (forcedLoss || realizedPnl < 0) {
       outcome = 'LOSS';
-      this.layerLossCount += 1;
-      transition = 'LOSS_RECORDED';
-      if (this.layerLossCount >= MAX_LOSSES_PER_LAYER) {
-        if (this.currentLayer >= MAX_LAYERS) {
-          // Layer 3's 2nd loss — STOP. Layer 4 must never be created.
-          this.safetyStatus = 'MAX_LAYER_STOPPED';
-          transition = 'MAX_LAYER_STOPPED';
-        } else {
-          this.currentLayer += 1;
-          this.layerLossCount = 0;
-          transition = 'LAYER_ADVANCED';
-        }
+      if (levelKey) {
+        this.levelLosses[levelKey] += 1;
+        transition = this.levelLosses[levelKey] >= MAX_LOSSES_PER_LEVEL
+          ? 'LEVEL_BLOCKED'
+          : 'LOSS_RECORDED';
+      } else {
+        transition = 'LOSS_UNATTRIBUTED';
       }
     } else {
-      outcome = 'BREAK_EVEN'; // neither a loss nor a success — no state change (see class doc)
+      outcome = 'BREAK_EVEN';
+      transition = null;
     }
 
-    return { outcome, state: this.getState(), duplicate: false, transition };
+    return { outcome, state: this.getState(), duplicate: false, transition, entryLevelKey: levelKey };
   }
 
   getState() {
     return {
-      currentLayer: this.currentLayer,
-      layerLossCount: this.layerLossCount,
+      levelLosses: { ...this.levelLosses },
       successfulTradeCount: this.successfulTradeCount,
       safetyStatus: this.safetyStatus,
+      maxLossesPerLevel: MAX_LOSSES_PER_LEVEL,
+      maxSuccessfulTradesPerBot: MAX_SUCCESSFUL_TRADES_PER_BOT,
     };
   }
 
-  /** Restores state after a restart — see BotManager._recoverLayerSafetyState. */
   restoreState(state) {
     if (!state) return;
-    if (Number.isFinite(state.currentLayer)) this.currentLayer = state.currentLayer;
-    if (Number.isFinite(state.layerLossCount)) this.layerLossCount = state.layerLossCount;
+    if (state.levelLosses && typeof state.levelLosses === 'object') {
+      for (const key of Object.keys(this.levelLosses)) {
+        const n = Number(state.levelLosses[key]);
+        if (Number.isFinite(n) && n >= 0) this.levelLosses[key] = Math.floor(n);
+      }
+    }
     if (Number.isFinite(state.successfulTradeCount)) this.successfulTradeCount = state.successfulTradeCount;
     if (typeof state.safetyStatus === 'string') this.safetyStatus = state.safetyStatus;
     if (Array.isArray(state.processedTradeIds)) {
@@ -118,4 +116,4 @@ class LayerSafety {
   }
 }
 
-module.exports = { LayerSafety, MAX_LAYERS, MAX_LOSSES_PER_LAYER, MAX_SUCCESSFUL_TRADES_PER_BOT };
+module.exports = { LayerSafety, MAX_LOSSES_PER_LEVEL, MAX_SUCCESSFUL_TRADES_PER_BOT };

@@ -24,10 +24,9 @@ const DEFAULT_HISTORY_SIZE = 20; // small buffer: the active pattern only ever n
 // No higher-timeframe dependency — see comment above.
 const REQUIRED_TIMEFRAMES = [];
 
-// MODEL_002 safety: 3 layers, 2 losses per layer, 1 profitable trade.
-// There is no separate consecutive-loss pause for MODEL_002.
-const MAX_LAYERS = 3;
-const MAX_LOSSES_PER_LAYER = 2;
+// MODEL_002 safety: each S1/S2/S3/R1/R2/R3 level may have at most
+// 2 losing completed trades. One successful completed trade stops the bot.
+const MAX_LOSSES_PER_LEVEL = 2;
 const MAX_SUCCESSFUL_TRADES_PER_BOT = 1;
 
 /**
@@ -75,8 +74,7 @@ module.exports = {
   DEFAULT_TIMEFRAME,
   DEFAULT_HISTORY_SIZE,
   REQUIRED_TIMEFRAMES,
-  MAX_LAYERS,
-  MAX_LOSSES_PER_LAYER,
+  MAX_LOSSES_PER_LEVEL,
   MAX_SUCCESSFUL_TRADES_PER_BOT,
   DEFAULT_PARAMETERS,
 };

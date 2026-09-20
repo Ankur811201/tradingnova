@@ -43,6 +43,8 @@
     // once the bot has permanently stopped trading.
     bot_max_layer_stopped: 'Bot stopped — maximum layer (6) reached',
     bot_success_stopped: 'Bot stopped — successful trade already reached (max 1 per bot)',
+    level_loss_limit_reached: 'Entry blocked — this level has reached its maximum loss limit',
+    entry_level_loss_limit_reached: 'Entry blocked — this level has reached its maximum loss limit',
     // Same two stops, but as emitted on the BOT_SAFETY_STOP StrategyEvent
     // itself (Model002.js onPositionClosed) rather than the WAIT decision.
     max_layer_reached: 'Bot stopped — maximum layer (6) reached',

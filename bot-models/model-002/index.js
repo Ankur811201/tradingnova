@@ -7,8 +7,7 @@ const { DEFAULT_PARAMETERS, REQUIRED_TIMEFRAMES } = require('./config');
  * Registration entry point. BotManager.discoverModels() scans
  * bot-models/<folder>/index.js at startup and registers whatever this
  * exports into BotModelMetadata — identical, unmodified Part A/Part 1
- * discovery mechanism already used by MODEL_001 (see
- * bot-models/model-001/index.js). No BotManager changes were required.
+ * standard bot-model discovery mechanism. No model-specific discovery changes are required.
  *
  * CURRENT CONFIRMED SCOPE — client-driven custom-pattern model. Trend and
  * support/resistance levels are supplied by the user at bot-configuration
@@ -34,7 +33,7 @@ module.exports = {
     'The first S1 setup for BEARISH+SUPPORT and first R1 setup for BULLISH+RESISTANCE are ' +
     'one-time stop-hunt calibration patterns and never trade; after calibration, S1/S2/S3 and ' +
     'R1/R2/R3 all use the same normal NEW pattern. Level selection is first-match-wins. ' +
-    'Auto-pauses after 3 consecutive losses; layer/success safety limits apply per bot.',
+    'Blocks each Support/Resistance level after 2 losing completed trades; the first successful completed trade stops the bot.',
   author: 'Nova Trade',
   supportedSymbols: [], // empty = no model-level restriction; RiskEngine's allowed-symbol list still applies
   defaultParameters: DEFAULT_PARAMETERS,

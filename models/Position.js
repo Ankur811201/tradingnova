@@ -10,6 +10,9 @@ const positionSchema = new mongoose.Schema(
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     modelId: { type: String, default: null },
     instanceId: { type: String, default: null, index: true },
+    // MODEL_002: the Support/Resistance level that created this position.
+    // Immutable by workflow; used for level-specific loss accounting.
+    entryLevelKey: { type: String, enum: ['S1','S2','S3','R1','R2','R3'], default: null, index: true },
 
     symbol: { type: String, required: true, index: true },
     side: { type: String, enum: ['LONG', 'SHORT'], required: true },
@@ -23,47 +26,12 @@ const positionSchema = new mongoose.Schema(
     margin: { type: Number, required: true }, // REMAINING locked margin — reduced proportionally by each partial fill
 
     stopLoss: { type: Number, default: null }, // NEVER changes for a multi-target position — no breakeven, no trailing
-    takeProfit: { type: Number, default: null },
+    takeProfit: { type: Number, default: null }, // left null for multi-target positions — see `targets` instead
 
-    // User-defined 4-target exit plan. This is intentionally separate from
-    // the legacy R-multiple `targets` array so the new feature cannot trigger
-    // the old exit engine. It is attached only after a real position exists.
-    targetExitPlan: {
-      enabled: { type: Boolean, default: false },
-      confirmationTimeframe: { type: String, enum: ['3m'], default: '3m' },
-      originalTimeframe: { type: String, default: null },
-      activeTimeframe: { type: String, enum: ['3m'], default: '3m' },
-      targets: {
-        type: [{
-          index: { type: Number, required: true },
-          price: { type: Number, required: true },
-          exitPercent: { type: Number, required: true },
-          quantity: { type: Number, required: true },
-          triggered: { type: Boolean, default: false },
-          triggeredAt: { type: Date, default: null },
-          executed: { type: Boolean, default: false },
-          executedAt: { type: Date, default: null },
-        }],
-        default: [],
-      },
-      activatedAt: { type: Date, default: null },
-      completedAt: { type: Date, default: null },
-    },
-
-    // Multi-target exit plan (confirmed rules): up to 4 R-multiple targets,
-    // each closing 25% of originalQuantity. Empty array = no multi-target
-    // plan (stopLoss was not provided at open) — existing single-TP
-    // behavior applies unchanged for such positions.
-    targets: {
-      type: [{
-        rMultiple: { type: Number, required: true },
-        price: { type: Number, required: true },
-        quantity: { type: Number, required: true },
-        hit: { type: Boolean, default: false },
-        hitAt: { type: Date, default: null },
-      }],
-      default: [],
-    },
+    // User-defined 4-target exit plan. This is attached AFTER a position opens.
+    // T1-T3 share one global 3-candle confirmation window; T4 is immediate.
+    targetExit: { type: mongoose.Schema.Types.Mixed, default: null },
+    targets: { type: Array, default: [] },
 
     unrealizedPnl: { type: Number, default: 0 },
     realizedPnl: { type: Number, default: 0 }, // accumulates partial-fill PnL as targets hit; the final close adds the last slice on top

@@ -7,6 +7,7 @@ const { success, AppError } = require('../utils/apiResponse');
 const { getMarketDataProvider } = require('../services/marketData');
 const botEngineManager = require('../services/BotEngineManager');
 const { getActiveTimeframe } = require('../utils/activeTimeframe');
+const { TargetExitManager } = require('../services/TargetExitManager');
 
 const CANDLES_DEFAULT_LIMIT = 300;
 const CANDLES_MAX_LIMIT = 500;
@@ -94,7 +95,7 @@ async function getCandles(req, res, next) {
     const timeframe = getActiveTimeframe(instance);
     // PART 13.1 -- PHASE D: an existing bot with no configured timeframe
     // must not silently be shown/queried as if it were on the model's
-    // default timeframe (see bot-models/model-001/validators.js, which
+    // default timeframe (see the shared model-configuration validators, which
     // enforces the same rule at Start). Surface this as an explicit
     // configuration error instead of guessing.
     if (!timeframe) {
@@ -152,6 +153,21 @@ async function getCandles(req, res, next) {
   } catch (err) {
     return next(err);
   }
+}
+
+
+async function configureTargetExit(req, res, next) {
+  try {
+    const position = await TargetExitManager.configureForOpenPosition(req.params.instanceId, req.session.userId, req.body || {});
+    return success(res, position, 'Target Exit activated');
+  } catch (err) { return next(err); }
+}
+
+async function getTargetExit(req, res, next) {
+  try {
+    const data = await TargetExitManager.getStatus(req.params.instanceId, req.session.userId);
+    return success(res, data);
+  } catch (err) { return next(err); }
 }
 
 async function createInstance(req, res, next) {
@@ -267,26 +283,6 @@ async function updateConfig(req, res, next) {
   }
 }
 
-async function activateTargetExit(req, res, next) {
-  try {
-    await assertOwnership(req.params.instanceId, req.session.userId);
-    const result = await botManager.activateTargetExit(req.params.instanceId, req.body || {});
-    return success(res, result, 'Target Exit activated');
-  } catch (err) {
-    return next(err);
-  }
-}
-
-async function deactivateTargetExit(req, res, next) {
-  try {
-    await assertOwnership(req.params.instanceId, req.session.userId);
-    const result = await botManager.deactivateTargetExit(req.params.instanceId);
-    return success(res, result, 'Target Exit deactivated');
-  } catch (err) {
-    return next(err);
-  }
-}
-
 async function restartInstance(req, res, next) {
   try {
     await assertOwnership(req.params.instanceId, req.session.userId);
@@ -340,5 +336,5 @@ async function deleteInstance(req, res) {
 
 module.exports = {
   listInstances, getInstance, getCandles, createInstance,
-  startInstance, pauseInstance, stopInstance, restartInstance, updateConfig, activateTargetExit, deactivateTargetExit, deleteInstance,
+  startInstance, pauseInstance, stopInstance, restartInstance, updateConfig, deleteInstance, configureTargetExit, getTargetExit,
 };

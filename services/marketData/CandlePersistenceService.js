@@ -3,7 +3,7 @@
 const Candle = require('../../models/Candle');
 const BotInstance = require('../../models/BotInstance');
 const BotModelMetadata = require('../../models/BotModelMetadata');
-const { TIMEFRAMES_MS } = require('../../bot-models/model-001/config');
+const { TIMEFRAMES_MS } = require('../../utils/timeframes');
 const logger = require('../../utils/logger');
 const { getMarketDataProvider } = require('./index');
 // ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH: shared definition of a running
@@ -21,7 +21,7 @@ const IS_DEV = process.env.NODE_ENV !== 'production';
  * canonical candle state over Socket.IO to whichever bot-detail room(s)
  * actually care about it.
  *
- * This is intentionally independent of Model001/CandleAggregator: it does
+ * This is intentionally independent of model candle aggregation: it does
  * not change any strategy logic, it only persists/broadcasts what real
  * market data is already flowing through the tick pipeline, for whichever
  * (symbol, timeframe) pair an active BotInstance actually uses.
@@ -133,7 +133,7 @@ class CandlePersistenceService {
     for (const bot of running) {
       // PART 13.1 -- PHASE D: no fallback default. `status: 'RUNNING'` above
       // is only reachable after onStart succeeded, which now requires an
-      // explicit, valid timeframe (see bot-models/model-001/validators.js).
+      // explicit, valid timeframe (see the shared model-configuration validators).
       // A bot without one simply cannot appear in `running` with a usable
       // timeframe, so it's correctly skipped rather than being silently
       // persisted/routed as if it were on 5m.

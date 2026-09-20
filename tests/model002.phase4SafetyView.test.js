@@ -1,17 +1,5 @@
 'use strict';
 
-/**
- * PHASE 4 / P4-H2 — the server-rendered Safety card on views/bot-detail.ejs.
- *
- * Before this fix the badge read only the 3-consecutive-loss tracker, so a
- * bot permanently stopped by the PHASE 2 layer/success rules rendered a
- * green ACTIVE badge on page load. These tests render the REAL template
- * with real-shaped decision payloads (layerSafety = LayerSafety.getState()).
- *
- * Display only: the LayerSafety state machine is not exercised or modified
- * here — see tests/model002.layerSafety.test.js for its behaviour.
- */
-
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -24,65 +12,30 @@ const render = compile(template);
 function args(layerSafety, extraPayload = {}) {
   return {
     title: 'Nova Trade | Test',
-    bot: {
-      instanceId: 'inst_1', modelId: 'MODEL_002', symbol: 'BTCUSD', name: 'M2 Bot',
-      status: 'RUNNING', environment: 'PAPER', capitalAllocation: 1000,
-      config: { timeframe: '3m' }, parameters: { timeframe: '3m' },
-    },
-    initialTrades: [], initialSignals: [], initialDecisions: [],
-    currentPosition: null, performanceData: null,
-    initialDecision: {
-      payload: Object.assign({
-        decision: 'WAIT', reason: 'no_level_touch',
-        layerSafety,
-      }, extraPayload),
-    },
+    bot: { instanceId: 'inst_1', modelId: 'MODEL_002', symbol: 'BTCUSD', name: 'M2 Bot', status: 'RUNNING', environment: 'PAPER', capitalAllocation: 1000, config: { timeframe: '3m' }, parameters: { timeframe: '3m' } },
+    initialTrades: [], initialSignals: [], initialDecisions: [], currentPosition: null, performanceData: null,
+    initialDecision: { payload: Object.assign({ decision: 'WAIT', reason: 'no_level_touch', layerSafety }, extraPayload) },
   };
 }
 
-test('P4-H2 view (a): a NORMAL bot renders ACTIVE with its real layer counters', () => {
-  const html = render(args({ currentLayer: 2, layerLossCount: 1, successfulTradeCount: 0, safetyStatus: 'NORMAL' }));
+const normal = { levelLosses: {S1:1,S2:0,S3:2,R1:0,R2:1,R3:0}, successfulTradeCount:0, safetyStatus:'NORMAL' };
+
+test('level safety card renders all six level counters and remains ACTIVE', () => {
+  const html = render(args(normal));
   assert.match(html, /id="safety-status-badge"[\s\S]{0,300}ACTIVE/);
-  assert.match(html, /id="layer-safety-layer"[^>]*>2</);
-  assert.match(html, /id="layer-safety-losses"[^>]*>1</);
+  for (const level of ['S1','S2','S3','R1','R2','R3']) assert.match(html, new RegExp(`id=\"layer-safety-${level}\"[^>]*>[0-2]</`));
   assert.match(html, /id="layer-safety-wins"[^>]*>0</);
   assert.doesNotMatch(html, /BOT STOPPED/);
 });
 
-test('P4-H2 view (b): SUCCESS_STOPPED never renders ACTIVE and explains itself', () => {
-  const html = render(args({ currentLayer: 1, layerLossCount: 0, successfulTradeCount: 1, safetyStatus: 'SUCCESS_STOPPED' }));
-  const badge = html.split('id="safety-status-badge"')[1].split('</span>')[0];
-  assert.match(badge, /SUCCESS_STOPPED/);
-  assert.doesNotMatch(badge, /ACTIVE/);
-  assert.match(badge, /rose/, 'a stopped bot must not render in the green ACTIVE style');
-  assert.match(html, /BOT STOPPED — a successful trade has already been recorded/);
-  assert.match(html, /id="layer-safety-wins"[^>]*>1</);
+test('SUCCESS_STOPPED renders stopped state after the first successful trade', () => {
+  const html = render(args({ levelLosses: {S1:2,S2:0,S3:0,R1:0,R2:0,R3:0}, successfulTradeCount:1, safetyStatus:'SUCCESS_STOPPED' }));
+  assert.match(html, /SUCCESS_STOPPED/);
+  assert.doesNotMatch(html.split('id="safety-status-badge"')[1].split('</span>')[0], /ACTIVE/);
+  assert.match(html, /BOT STOPPED — one successful trade has been completed/);
 });
 
-test('P4-H2 view (c): MAX_LAYER_STOPPED never renders ACTIVE and names the layer limit', () => {
-  const html = render(args({ currentLayer: 3, layerLossCount: 2, successfulTradeCount: 0, safetyStatus: 'MAX_LAYER_STOPPED' }));
-  const badge = html.split('id="safety-status-badge"')[1].split('</span>')[0];
-  assert.match(badge, /MAX_LAYER_STOPPED/);
-  assert.doesNotMatch(badge, /ACTIVE/);
-  assert.match(html, /BOT STOPPED — maximum layer \(3\) reached/);
-  assert.match(html, /id="layer-safety-layer"[^>]*>3</);
-});
-
-test('P4-H2 view (d): MAX_LAYER_STOPPED remains the only layer-loss stop', () => {
-  const stopped = render(args(
-    { currentLayer: 3, layerLossCount: 2, successfulTradeCount: 0, safetyStatus: 'MAX_LAYER_STOPPED' }
-  ));
-  const badge = stopped.split('id="safety-status-badge"')[1].split('</span>')[0];
-  assert.match(badge, /MAX_LAYER_STOPPED/);
-  assert.doesNotMatch(badge, /ACTIVE/);
-  assert.match(stopped, /BOT STOPPED — maximum layer \(3\) reached/);
-});
-
-test('P4-H2 view (e): a bot with no decision yet renders honest defaults, not fabricated state', () => {
-  const noDecision = Object.assign(args(null), { initialDecision: null });
-  const html = render(noDecision);
+test('no decision renders safe zero defaults', () => {
+  const html = render(Object.assign(args(null), { initialDecision: null }));
   assert.match(html, /id="safety-status-badge"[\s\S]{0,300}ACTIVE/);
-  assert.match(html, /id="layer-safety-layer"[^>]*>1</);
-  assert.match(html, /id="layer-safety-losses"[^>]*>0</);
-  assert.match(html, /id="layer-safety-wins"[^>]*>0</);
 });

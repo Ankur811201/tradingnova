@@ -14,9 +14,9 @@ router.post('/:instanceId/start', botInstancesController.startInstance);
 router.post('/:instanceId/pause', botInstancesController.pauseInstance);
 router.post('/:instanceId/stop', botInstancesController.stopInstance);
 router.post('/:instanceId/restart', botInstancesController.restartInstance);
-router.post('/:instanceId/target-exit', botInstancesController.activateTargetExit);
-router.delete('/:instanceId/target-exit', botInstancesController.deactivateTargetExit);
 router.post('/:instanceId/config', botInstancesController.updateConfig);
+router.get('/:instanceId/target-exit', botInstancesController.getTargetExit);
+router.post('/:instanceId/target-exit', botInstancesController.configureTargetExit);
 router.delete('/:instanceId', botInstancesController.deleteInstance);
 
 module.exports = router;

@@ -60,13 +60,13 @@ function lastDecision(ctx) {
 // Leverage=1x, entry=$63,188, risk-calculated lot=10.
 async function runLot10Scenario(instanceOverrides) {
   const { ctx, model } = await startedModel(
-    { trend: 'BULLISH', support: [63132, 50, 25], resistance: [999000, 998000, 997000] },
+    { trend: 'BULLISH', support: [63145, 50, 25], resistance: [999000, 998000, 997000] },
     instanceOverrides,
   );
   await model.onHydrate(flat(20, 64000, BASE));
-  const c1 = { timestamp: BASE + 20 * MIN, open: 63182, high: 63192, low: 63132, close: 63172, volume: null }; // touches support 63132
-  const c2 = { timestamp: BASE + 21 * MIN, open: 63181, high: 63186, low: 63180.5, close: 63183, volume: null }; // touches Candle1 body-high(63182)
-  const breakout = { timestamp: BASE + 22 * MIN, open: 63184, high: 63192, low: 63183, close: 63188, volume: null }; // closes above 63186, entryPrice = 63188
+  const c1 = { timestamp: BASE + 20 * MIN, open: 63180, high: 63190, low: 63160, close: 63185, volume: null }; // A: body-high=63185
+  const c2 = { timestamp: BASE + 21 * MIN, open: 63170, high: 63191, low: 63145, close: 63190, volume: null }; // B: touches S1=63145; body-high=63190 > A body-high; BodyP is maximum
+  const breakout = { timestamp: BASE + 22 * MIN, open: 63190, high: 63196, low: 63145, close: 63195, volume: null }; // C touches fixed upper boundary; entryPrice=63196
 
   await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c1.timestamp, data: c1 }, null);
   await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c2.timestamp, data: c2 }, null);
@@ -80,7 +80,7 @@ test('LOT->BTC: lot=10 produces finalQuantity=0.010 (1 lot = 0.001 BTC), not 10'
   assert.equal(ctx.commands.length, 1, 'a valid risk-calculated lot must still produce a TradeCommand');
   const cmd = ctx.commands[0];
 
-  assert.equal(cmd.metadata.riskLength, 61); // 63188 - 63127
+  assert.equal(cmd.metadata.riskLength, 61); // 63196 - 63135
   assert.equal(cmd.metadata.lot, 10, 'riskLength 61 -> lot 10, per the natural-number lot table');
   assert.equal(cmd.metadata.finalQuantity, 0.010, 'finalQuantity must be lot * 0.001');
   assert.equal(cmd.quantity, 0.010, 'TradeCommand.quantity must carry the BTC-converted value downstream');
@@ -98,18 +98,18 @@ test('LOT->BTC: raw `lot` remains 10 (unconverted) in decision/audit data alongs
   assert.equal(decision.payload.finalQuantity, 0.010, 'DECISION payload.finalQuantity must be the BTC-converted value');
 });
 
-test('LOT->BTC: entry=63188, quantity=0.010 -> notional=$631.88 (utils/pnl.computeNotional, unmodified)', () => {
+test('LOT->BTC: entry=63196, quantity=0.010 -> notional=$631.96 (utils/pnl.computeNotional, unmodified)', () => {
   // Proves downstream notional math (RiskEngine/PaperEngine both call
   // utils/pnl.computeNotional / the equivalent price*quantity formula)
   // now produces the expected dollar notional once fed the corrected
   // BTC quantity -- no change was made to pnl.js itself.
-  const notional = computeNotional(63188, 0.010);
-  assert.equal(Math.round(notional * 100) / 100, 631.88);
+  const notional = computeNotional(63196, 0.010);
+  assert.equal(Math.round(notional * 100) / 100, 631.96);
 });
 
 test('LOT->BTC: finalNotional on the DECISION payload reflects the converted BTC quantity, not the raw lot', async () => {
   const { ctx } = await runLot10Scenario({ capitalAllocation: 1000, leverage: 1 });
   const decision = lastDecision(ctx);
-  // finalNotional = entryPrice(63188) * finalQuantity(0.010)
-  assert.equal(Math.round(decision.payload.finalNotional * 100) / 100, 631.88);
+  // finalNotional = entryPrice(63196) * finalQuantity(0.010)
+  assert.equal(Math.round(decision.payload.finalNotional * 100) / 100, 631.96);
 });

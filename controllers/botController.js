@@ -43,7 +43,7 @@ exports.renderBotDetail = async (req, res, next) => {
     // services/BotEngineManager.js, so `signals` is always empty in
     // practice). The real Decision Engine / Decision History data now comes
     // from `StrategyEvent` (eventType: 'DECISION'), written exclusively by
-    // MODEL_001 via BotManager -- see bot-models/model-001/Model001.js and
+    // the active model via BotManager -- see the active model implementation and
     // services/botManager/BotManager.js.
     //
     // NOVA TRADE -- PART 9: `currentPosition` and `perfTrades` are the new
@@ -116,7 +116,7 @@ exports.renderBotDetail = async (req, res, next) => {
       // queries (see utils/tradeStory.js).
       initialTradeStory: buildTradeStory({ decisionEvents, trades, currentPosition: currentPositionView }),
       // Passed as a function value (not pre-applied to the data) so the
-      // template can gate it to MODEL_002 only — MODEL_001's own `reason`
+      // template can gate it to MODEL_002 only — legacy model's own `reason`
       // strings are already human-readable sentences and must render
       // unchanged (see views/bot-detail.ejs Decision History).
       formatModel002Reason,
