@@ -29,7 +29,7 @@ const positionSchema = new mongoose.Schema(
     takeProfit: { type: Number, default: null }, // left null for multi-target positions — see `targets` instead
 
     // User-defined 4-target exit plan. This is attached AFTER a position opens.
-    // T1-T3 each have an independent 3-candle confirmation flow; T4 is immediate.
+    // Each T1-T3 has its own 3-candle confirmation sequence; T4 is immediate.
     targetExit: { type: mongoose.Schema.Types.Mixed, default: null },
     targets: { type: Array, default: [] },
 

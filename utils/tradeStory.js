@@ -39,8 +39,34 @@ function toTime(value) {
  *   markup convention (see views/bot-detail.ejs, previously `.reverse()`
  *   on initialSignals).
  */
-function buildTradeStory({ decisionEvents, trades, currentPosition } = {}, limit = 6) {
+function buildTradeStory({ decisionEvents, trades, currentPosition, positions } = {}, limit = 10) {
   const steps = [];
+
+  // Target Exit execution events are authoritative execution events.
+  // T1-T3 partial exits live on Position.targetExit.events because they do
+  // not create Trade documents; T4 is the final close and may also have a
+  // Trade record. Keep the event itself in the story so the user can see
+  // exactly which target executed and its realized PnL.
+  (positions || []).forEach((position) => {
+    const events = position && position.targetExit && Array.isArray(position.targetExit.events)
+      ? position.targetExit.events : [];
+    events.forEach((ev) => {
+      if (!ev || ev.type !== 'TARGET_EXIT') return;
+      const at = toTime(ev.recordedAt || ev.candleStart);
+      if (at === null) return;
+      const ti = Number(ev.targetIndex);
+      const pnl = Number(ev.realizedPnl);
+      const isFinal = ti === 4;
+      steps.push({
+        type: isFinal ? 'POSITION_CLOSED' : 'TARGET_PARTIAL_EXIT',
+        label: isFinal ? 'Position Closed' : 'Partial Exit',
+        detail: `TARGET_${ti} · ${Number.isFinite(pnl) ? `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}` : 'EXECUTED'}${!isFinal && ev.exitPercent != null ? ` · ${Number(ev.exitPercent)}% closed` : ''}`,
+        at,
+        tone: pnl >= 0 ? 'profit' : 'loss',
+        storyKey: `TARGET_EXIT:${position._id || position.positionId || ''}:${ti}`,
+      });
+    });
+  });
 
   (decisionEvents || []).forEach((ev) => {
     const payload = ev && ev.payload;
@@ -78,6 +104,7 @@ function buildTradeStory({ decisionEvents, trades, currentPosition } = {}, limit
         detail: `${trade.reason || 'CLOSE'} · ${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`,
         at: closedAt,
         tone: pnl >= 0 ? 'profit' : 'loss',
+        storyKey: trade.reason === 'TARGET_4' ? `TARGET_EXIT:${trade.position || ''}:4` : undefined,
       });
     }
   });
@@ -96,7 +123,15 @@ function buildTradeStory({ decisionEvents, trades, currentPosition } = {}, limit
   }
 
   steps.sort((a, b) => a.at - b.at);
-  return steps.slice(-limit);
+  const deduped = [];
+  const seen = new Set();
+  for (const step of steps) {
+    const key = step.storyKey || `${step.type}:${step.at}:${step.label}:${step.detail}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(step);
+  }
+  return deduped.slice(-limit);
 }
 
 module.exports = { buildTradeStory };

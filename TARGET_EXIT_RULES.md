@@ -2,11 +2,11 @@
 
 - Configure Target Exit only after an OPEN position exists.
 - No automatic timeframe switching. The chart and bot remain on the user's selected timeframe.
-- T1/T2/T3 each have an independent 3-candle confirmation flow.
-- A target starts its own flow when that target is newly touched.
-- Multiple targets may be confirming at the same time; each keeps its own CT1/CT2/CT3 state.
-- Confirmation uses the bot's canonical closed-candle stream; Target Exit does not build a second candle stream.
-- At CT3 close, that target's configured percentage is executed.
+- Each T1/T2/T3 has its own simple 3-candle confirmation sequence.
+- The candle in which a target is touched closes as CT1.
+- The next candle close is CT2.
+- The following candle close is CT3, then that target's configured percentage is exited.
+- Targets are independent: T1, T2 and T3 can be confirming at the same time without sharing a window.
 - T4 is independent: any touch exits all remaining quantity immediately, without waiting for candle close.
 - T1/T2/T3 percentages are freely configurable but their sum must be < 100%; T4 automatically receives the remaining percentage.
 - Target prices must be ahead of the current price at activation: LONG T1 > current price; SHORT T1 < current price.

@@ -3,7 +3,7 @@
 const Position = require('../models/Position');
 const BotInstance = require('../models/BotInstance');
 const { AppError } = require('../utils/apiResponse');
-const { getActiveTimeframe } = require('../utils/activeTimeframe');
+const { getMarketDataProvider } = require('./marketData');
 
 const TARGET_COUNT = 4;
 const CONFIRM_CANDLES = 3;
@@ -13,20 +13,7 @@ function finitePositive(v) {
   return Number.isFinite(n) && n > 0;
 }
 
-function tfMs(tf) {
-  const s = String(tf || '1m');
-  const n = parseInt(s, 10);
-  if (s.endsWith('m') && Number.isFinite(n)) return n * 60000;
-  if (s.endsWith('h') && Number.isFinite(n)) return n * 3600000;
-  return 60000;
-}
-
-function candleStart(timestamp, timeframe) {
-  const ms = tfMs(timeframe);
-  return Math.floor(Number(timestamp) / ms) * ms;
-}
-
-function validatePlan(raw, side) {
+function validatePlan(raw, side, entryPrice = null) {
   if (!raw || raw.enabled !== true) throw new AppError('Enable Target Exit before saving targets.', 400);
   const rows = Array.isArray(raw.targets) ? raw.targets : [];
   if (rows.length !== TARGET_COUNT) throw new AppError('Exactly 4 targets are required.', 400);
@@ -38,7 +25,6 @@ function validatePlan(raw, side) {
     status: 'WAITING',
     touchedAt: null,
     executedAt: null,
-    confirmation: null,
   }));
 
   if (targets.some(t => !finitePositive(t.price))) {
@@ -51,6 +37,8 @@ function validatePlan(raw, side) {
   }
 
   const sum = perc.reduce((a, b) => a + b, 0);
+  // T1-T3 are freely allocated; T4 receives the remaining percentage.
+  // The first three must leave a positive remainder for T4.
   if (!(sum < 100)) {
     throw new AppError('T1 + T2 + T3 must be less than 100%. T4 is the remaining percentage.', 400);
   }
@@ -72,9 +60,6 @@ function validatePlan(raw, side) {
     confirmCandles: CONFIRM_CANDLES,
     activationPrice: null,
     activatedAt: null,
-    // Kept only for backward compatibility with older documents/UI. The new
-    // implementation does NOT use a shared confirmation window.
-    window: { active: false, startCandle: null, candleCount: 0, stage: null, confirmations: [] },
     events: [],
     runtime: null,
     targets,
@@ -82,25 +67,20 @@ function validatePlan(raw, side) {
   };
 }
 
-/** True only for a NEW post-activation crossing between two raw ticks. */
-function targetCrossed(side, price, target, previousPrice) {
-  const p = Number(price);
-  const t = Number(target);
+// A target is considered touched only when price crosses it AFTER activation.
+// This prevents a target that was already behind/in front of the current price
+// when the plan was activated from firing immediately.
+function targetCrossed(side, candle, price, previousPrice) {
+  const target = Number(price);
   const prev = Number(previousPrice);
-  if (!Number.isFinite(p) || !Number.isFinite(prev) || !finitePositive(t)) return false;
-  if (side === 'LONG') return prev < t && p >= t;
-  return prev > t && p <= t;
+  if (!Number.isFinite(prev) || !finitePositive(target)) return false;
+  if (side === 'LONG') return prev < target && Number(candle.high) >= target;
+  return prev > target && Number(candle.low) <= target;
 }
 
 class TargetExitManager {
   constructor() {
     this.io = null;
-    // Only a cheap previous-tick cache. Candle construction is deliberately
-    // NOT done here. CandlePersistenceService is the single candle source.
-    this.lastPrices = new Map();
-    // Serialize target processing per symbol so overlapping websocket ticks
-    // cannot observe the same previous price and double-arm a target.
-    this.tickChains = new Map();
   }
 
   attachSocketServer(io) {
@@ -129,12 +109,26 @@ class TargetExitManager {
     });
     if (!position) throw new AppError('Open a position before configuring Target Exit.', 409);
 
-    const plan = validatePlan(raw, position.side);
-    const activationPrice = Number(position.currentPrice);
-    if (!finitePositive(activationPrice)) {
-      throw new AppError('Current position price is invalid; cannot activate Target Exit.', 409);
+    const plan = validatePlan(raw, position.side, position.entryPrice);
+
+    // Activation must use the ACTUAL current market price, not the position's
+    // last persisted currentPrice. That field can be stale between ticks.
+    let activationPrice;
+    try {
+      const provider = getMarketDataProvider();
+      const live = await provider.getPrice(position.symbol);
+      activationPrice = Number(live && live.price);
+      if (!finitePositive(activationPrice)) throw new Error('provider returned an invalid price');
+      if (typeof provider.isDataFresh === 'function' && !provider.isDataFresh(position.symbol)) {
+        throw new Error('market price is stale');
+      }
+    } catch (err) {
+      throw new AppError(`Current market price is unavailable; cannot activate Target Exit. ${err.message}`, 409);
     }
 
+    // Targets must be ahead of the CURRENT market price at activation.
+    // LONG: T1 < T2 < T3 < T4 and all are above current price.
+    // SHORT: T1 > T2 > T3 > T4 and all are below current price.
     if (position.side === 'LONG' && !(plan.targets[0].price > activationPrice)) {
       throw new AppError('For a LONG position, T1 must be above the current price.', 400);
     }
@@ -145,9 +139,9 @@ class TargetExitManager {
     plan.positionId = String(position._id);
     plan.activationPrice = activationPrice;
     plan.activatedAt = new Date();
+    plan.runtime = null;
     position.targetExit = plan;
     await position.save();
-    this.lastPrices.set(String(position._id), activationPrice);
     return position;
   }
 
@@ -166,176 +160,165 @@ class TargetExitManager {
     };
   }
 
-  /**
-   * Raw tick path: ONLY detects a new target crossing. It does not build or
-   * close candles and does not run CT1/CT2/CT3.
-   */
-  onTick(symbol, price, timestamp) {
-    if (!finitePositive(price)) return Promise.resolve();
-    const previous = this.tickChains.get(symbol) || Promise.resolve();
-    const run = previous.then(() => this._processTick(symbol, price, timestamp));
-    const queued = run.catch(() => {});
-    this.tickChains.set(symbol, queued);
-    return run.finally(() => {
-      if (this.tickChains.get(symbol) === queued) this.tickChains.delete(symbol);
-    });
-  }
+  async onTick(symbol, price, timestamp) {
+    if (!finitePositive(price)) return;
 
-  async _processTick(symbol, price, timestamp) {
     const positions = await Position.find({
       symbol,
       status: 'OPEN',
       'targetExit.enabled': true,
     });
 
-    const ts = Number(timestamp || Date.now());
-
     for (const position of positions) {
-      const id = String(position._id);
-      const previousPrice = this.lastPrices.has(id)
-        ? this.lastPrices.get(id)
-        : Number(position.targetExit?.activationPrice);
-      this.lastPrices.set(id, Number(price));
-
-      if (!finitePositive(previousPrice)) continue;
-
-      const side = position.side;
+      const ts = Number(timestamp || Date.now());
       const plan = position.targetExit;
+      const timeframe = await this._timeframe(position.instanceId);
+      const tfMs = this._tfMs(timeframe);
+      const previousPrice = plan.runtime && Number.isFinite(Number(plan.runtime.lastPrice))
+        ? Number(plan.runtime.lastPrice)
+        : Number(plan.activationPrice);
 
-      // T4 is immediate. It is independent of the CT flow.
+      // Keep only the last tick price. Target Exit does NOT build candles.
+      plan.runtime = { lastPrice: Number(price) };
+
+      // T4 is immediate on a NEW post-activation crossing.
       const t4 = plan.targets?.[3];
-      if (t4 && t4.status !== 'EXECUTED' && t4.status !== 'EXECUTING' &&
-          targetCrossed(side, price, t4.price, previousPrice)) {
-        await this._execute(position, [3], Number(price), 'TARGET_4', { tickTimestamp: ts });
+      if (
+        t4 &&
+        t4.status !== 'EXECUTED' &&
+        t4.status !== 'EXECUTING' &&
+        targetCrossed(position.side, { high: price, low: price }, t4.price, previousPrice)
+      ) {
+        plan.events = Array.isArray(plan.events) ? plan.events : [];
+        const t4TouchEvent = {
+          type: 'TARGET_TOUCHED',
+          stage: null,
+          targetIndex: 4,
+          candleStart: Math.floor(ts / tfMs) * tfMs,
+          price: Number(price),
+          recordedAt: new Date(ts),
+        };
+        plan.events.push(t4TouchEvent);
+        await Position.updateOne(
+          { _id: position._id, status: 'OPEN' },
+          { $set: { targetExit: plan } }
+        );
+        this._emitTargetEvent(position, t4TouchEvent);
+        await this._execute(position, [3], Number(t4.price), 'TARGET_4');
         continue;
       }
 
-      // T1-T3 each own their confirmation state. Multiple targets may be
-      // armed by the same tick and then confirm independently.
+      // T1/T2/T3: touching a target only arms that target.
+      // Each target has its own confirmation candle and counter.
+      let changed = false;
       for (let i = 0; i < 3; i += 1) {
         const target = plan.targets?.[i];
         if (!target || target.status !== 'WAITING') continue;
-        if (!targetCrossed(side, price, target.price, previousPrice)) continue;
 
-        const tf = await this._timeframe(position.instanceId);
-        const touchCandle = candleStart(ts, tf);
-        const claimed = await Position.findOneAndUpdate(
-          {
-            _id: position._id,
-            status: 'OPEN',
-            [`targetExit.targets.${i}.status`]: 'WAITING',
-          },
-          {
-            $set: {
-              [`targetExit.targets.${i}.status`]: 'CONFIRMING',
-              [`targetExit.targets.${i}.touchedAt`]: new Date(ts),
-              [`targetExit.targets.${i}.confirmation`]: {
-                touchCandle,
-                count: 0,
-                stage: null,
-              },
-            },
-          },
-          { new: true }
-        );
-
-        if (claimed) {
-          const event = {
+        if (targetCrossed(position.side, { high: price, low: price }, target.price, previousPrice)) {
+          target.status = 'ARMED';
+          target.touchedAt = new Date(ts);
+          target.confirmationCandle = Math.floor(ts / tfMs) * tfMs;
+          target.confirmationCount = 0;
+          plan.events = Array.isArray(plan.events) ? plan.events : [];
+          const touchEvent = {
             type: 'TARGET_TOUCHED',
             stage: null,
             targetIndex: i + 1,
-            candleStart: touchCandle,
+            candleStart: target.confirmationCandle,
             price: Number(price),
             recordedAt: new Date(ts),
           };
-          await this._appendEvent(claimed._id, event);
-          this._emitTargetEvent(claimed, event);
+          plan.events.push(touchEvent);
+          this._emitTargetEvent(position, touchEvent);
+          changed = true;
         }
+      }
+
+      if (changed) {
+        await Position.updateOne(
+          { _id: position._id, status: 'OPEN' },
+          { $set: { targetExit: plan } }
+        );
+      } else {
+        await Position.updateOne(
+          { _id: position._id, status: 'OPEN' },
+          { $set: { 'targetExit.runtime': plan.runtime } }
+        );
       }
     }
   }
 
   /**
-   * Canonical candle path: receives only CLOSED candles from
-   * CandlePersistenceService. This is the ONLY place CT1/CT2/CT3 advance.
+   * Receives the ONE canonical closed candle produced by CandlePersistenceService.
+   * Target Exit never creates its own candle. Each T1/T2/T3 has an independent
+   * confirmation counter: touch candle close = CT1, next close = CT2, next close = CT3.
    */
   async onClosedCandle(symbol, timeframe, candle) {
-    if (!candle || !candle.closed) return;
+    if (!candle || candle.closed !== true) return;
+
     const positions = await Position.find({
       symbol,
       status: 'OPEN',
       'targetExit.enabled': true,
     });
 
-    const start = Number(candle.timestamp);
-    const duration = tfMs(timeframe);
+    const tfMs = this._tfMs(timeframe);
+    const candleStart = Number(candle.timestamp);
+    if (!Number.isFinite(candleStart) || !tfMs) return;
 
     for (const position of positions) {
-      const bot = await BotInstance.findOne({ instanceId: position.instanceId })
-        .select('parameters activeTimeframe')
-        .lean();
-      if (!bot) continue;
-      const activeTf = getActiveTimeframe(bot);
-      if (activeTf !== timeframe) continue;
+      const plan = position.targetExit;
+      let changed = false;
+      const executeIndexes = [];
 
-      // Process each target independently. No shared window.
       for (let i = 0; i < 3; i += 1) {
-        const target = position.targetExit?.targets?.[i];
-        if (!target || target.status !== 'CONFIRMING' || !target.confirmation) continue;
+        const target = plan.targets?.[i];
+        if (!target || target.status !== 'ARMED') continue;
 
-        const touch = Number(target.confirmation.touchCandle);
-        const count = Math.floor((start - touch) / duration) + 1;
-        if (!Number.isFinite(count) || count < 1 || count > CONFIRM_CANDLES) continue;
+        const touchCandle = Number(target.confirmationCandle);
+        if (!Number.isFinite(touchCandle) || candleStart < touchCandle) continue;
 
-        // If the touch was recorded against a candle later than this closed
-        // candle, this event cannot confirm it.
-        if (start < touch) continue;
+        const count = Math.floor((candleStart - touchCandle) / tfMs) + 1;
+        const previousCount = Number(target.confirmationCount || 0);
+        if (count <= previousCount) continue;
 
-        const stage = `CT${count}`;
-        const claimed = await Position.findOneAndUpdate(
-          {
-            _id: position._id,
-            status: 'OPEN',
-            [`targetExit.targets.${i}.status`]: 'CONFIRMING',
-            [`targetExit.targets.${i}.confirmation.count`]: { $lt: count },
-          },
-          {
-            $set: {
-              [`targetExit.targets.${i}.confirmation.count`]: count,
-              [`targetExit.targets.${i}.confirmation.stage`]: stage,
-            },
-          },
-          { new: true }
-        );
-        if (!claimed) continue;
+        target.confirmationCount = count;
+        changed = true;
 
-        const event = {
-          type: 'TARGET_CONFIRMATION',
-          stage,
-          targetIndex: i + 1,
-          candleStart: start,
-          price: Number(candle.close),
-          candleHigh: Number(candle.high),
-          candleLow: Number(candle.low),
-          recordedAt: new Date(),
-        };
-        await this._appendEvent(claimed._id, event);
-        this._emitTargetEvent(claimed, event);
+        const stage = count === 1 ? 'CT1' : count === 2 ? 'CT2' : count === 3 ? 'CT3' : null;
+        if (stage) {
+          const event = {
+            type: 'TARGET_CONFIRMATION',
+            stage,
+            targetIndex: i + 1,
+            candleStart,
+            price: Number(candle.close),
+            recordedAt: new Date(),
+          };
+          plan.events = Array.isArray(plan.events) ? plan.events : [];
+          plan.events.push(event);
+          this._emitTargetEvent(position, event);
+        }
 
-        if (count === CONFIRM_CANDLES) {
-          // _execute has its own atomic claim. If another worker/tick already
-          // claimed this target, it simply does nothing.
-          await this._execute(claimed, [i], Number(candle.close), 'TARGET_WINDOW', { candleStart: start });
+        if (count >= CONFIRM_CANDLES) {
+          executeIndexes.push(i);
         }
       }
-    }
-  }
 
-  async _appendEvent(positionId, event) {
-    await Position.updateOne(
-      { _id: positionId, status: 'OPEN' },
-      { $push: { 'targetExit.events': event } }
-    );
+      // Save all CT state before starting exits. _execute then atomically claims
+      // each ARMED target, so duplicate delivery cannot double-close it.
+      if (changed) {
+        await Position.updateOne(
+          { _id: position._id, status: 'OPEN' },
+          { $set: { targetExit: plan } }
+        );
+      }
+
+      if (executeIndexes.length) {
+        await this._execute(position, executeIndexes, Number(candle.close), 'TARGET_WINDOW', { candleStart });
+      }
+    }
   }
 
   async _execute(position, indexes, exitPrice, reason, meta = null) {
@@ -345,8 +328,9 @@ class TargetExitManager {
     const unique = [...new Set(indexes)].filter(i => i >= 0 && i < 4);
     if (!unique.length) return;
 
-    // T4: immediate full remaining close.
+    // T4 is an all-remaining close. Never combine it with T1-T3.
     if (reason === 'TARGET_4' || unique.includes(3)) {
+      const realizedBefore = Number(fresh.realizedPnl || 0);
       const claimed = await Position.findOneAndUpdate(
         {
           _id: fresh._id,
@@ -360,49 +344,53 @@ class TargetExitManager {
 
       try {
         const { paperEngine, liveEngine } = this._engines();
-        if (claimed.environment === 'PAPER') {
-          await paperEngine.closePosition({ positionId: claimed._id, reason: 'TARGET_4', exitPriceOverride: exitPrice });
+        if (fresh.environment === 'PAPER') {
+          await paperEngine.closePosition({ positionId: fresh._id, reason: 'TARGET_4', exitPriceOverride: exitPrice });
         } else {
-          const product = await require('./delta/DeltaAdapter').getProductBySymbol(claimed.symbol);
-          await liveEngine.closePosition({ positionId: claimed._id, productId: product.id, reason: 'TARGET_4' });
+          const product = await require('./delta/DeltaAdapter').getProductBySymbol(fresh.symbol);
+          await liveEngine.closePosition({ positionId: fresh._id, productId: product.id, reason: 'TARGET_4' });
         }
       } catch (err) {
         await Position.updateOne(
-          { _id: claimed._id, status: 'OPEN', 'targetExit.targets': { $elemMatch: { index: 4, status: 'EXECUTING' } } },
+          { _id: fresh._id, status: 'OPEN', 'targetExit.targets': { $elemMatch: { index: 4, status: 'EXECUTING' } } },
           { $set: { 'targetExit.targets.$[t].status': 'WAITING' } },
           { arrayFilters: [{ 't.index': 4 }] }
         );
         throw err;
       }
 
-      const event = {
+      const t4Event = {
         type: 'TARGET_EXIT',
         stage: null,
         targetIndex: 4,
-        candleStart: meta && Number.isFinite(Number(meta.candleStart)) ? Number(meta.candleStart) : Date.now(),
+        candleStart: meta && Number.isFinite(Number(meta.candleStart))
+          ? Number(meta.candleStart)
+          : Date.now(),
         price: Number(exitPrice),
         exitPercent: 100,
+        realizedPnl: Number((Number(closedDoc && closedDoc.realizedPnl || 0) - realizedBefore).toFixed(8)),
         recordedAt: new Date(),
       };
-      const closedDoc = await Position.findById(claimed._id);
-      if (closedDoc?.targetExit) {
+      const closedDoc = await Position.findById(fresh._id);
+      if (closedDoc && closedDoc.targetExit) {
         closedDoc.targetExit.events = Array.isArray(closedDoc.targetExit.events) ? closedDoc.targetExit.events : [];
-        closedDoc.targetExit.events.push(event);
+        closedDoc.targetExit.events.push(t4Event);
         await closedDoc.save();
-        this._emitTargetEvent(closedDoc, event);
+        this._emitTargetEvent(closedDoc, t4Event);
       }
-      this.lastPrices.delete(String(fresh._id));
       return;
     }
 
     const { paperEngine, liveEngine } = this._engines();
+    const executedTargets = [];
+
     for (const i of unique) {
       const targetIndex = i + 1;
       const claimed = await Position.findOneAndUpdate(
         {
           _id: fresh._id,
           status: 'OPEN',
-          'targetExit.targets': { $elemMatch: { index: targetIndex, status: 'CONFIRMING' } },
+          'targetExit.targets': { $elemMatch: { index: targetIndex, status: 'ARMED' } },
         },
         { $set: { 'targetExit.targets.$[t].status': 'EXECUTING' } },
         { new: true, arrayFilters: [{ 't.index': targetIndex }] }
@@ -411,9 +399,13 @@ class TargetExitManager {
 
       try {
         const target = claimed.targetExit.targets.find(t => Number(t.index) === targetIndex);
+        const realizedBefore = Number(claimed.realizedPnl || 0);
         if (!target) continue;
+
         const originalQuantity = Number(claimed.originalQuantity) || Number(claimed.quantity);
         const qty = originalQuantity * (Number(target.exitPercent) / 100);
+        if (!(qty > 0)) throw new Error(`Invalid target quantity for T${targetIndex}`);
+
         const actualQty = Math.min(qty, Number(claimed.quantity));
         if (!(actualQty > 0)) throw new Error(`No remaining quantity for T${targetIndex}`);
 
@@ -435,40 +427,73 @@ class TargetExitManager {
         }
 
         await Position.updateOne(
-          { _id: claimed._id, status: 'OPEN', 'targetExit.targets': { $elemMatch: { index: targetIndex, status: 'EXECUTING' } } },
+          { _id: claimed._id, 'targetExit.targets': { $elemMatch: { index: targetIndex, status: 'EXECUTING' } } },
           {
             $set: {
               'targetExit.targets.$[t].status': 'EXECUTED',
               'targetExit.targets.$[t].executedAt': new Date(),
-              'targetExit.targets.$[t].confirmation': null,
             },
           },
           { arrayFilters: [{ 't.index': targetIndex }] }
         );
 
-        const event = {
-          type: 'TARGET_EXIT',
-          stage: null,
-          targetIndex,
-          candleStart: meta && Number.isFinite(Number(meta.candleStart)) ? Number(meta.candleStart) : Date.now(),
-          price: Number(exitPrice),
-          exitPercent: Number(target.exitPercent),
-          recordedAt: new Date(),
-        };
-        const after = await Position.findById(claimed._id);
-        if (after?.targetExit) {
-          after.targetExit.events = Array.isArray(after.targetExit.events) ? after.targetExit.events : [];
-          after.targetExit.events.push(event);
-          await after.save();
-          this._emitTargetEvent(after, event);
-        }
+        const afterTarget = await Position.findById(claimed._id).select('realizedPnl');
+        const realizedPnl = Number((Number(afterTarget && afterTarget.realizedPnl || 0) - realizedBefore).toFixed(8));
+
+        // Record the exit so the live graph gets a TARGET_EXIT marker for
+        // T1/T2/T3 too (previously only T4 emitted this — the window
+        // exit was silently invisible on the chart and lost on refresh).
+        executedTargets.push({ targetIndex, exitPercent: Number(target.exitPercent), realizedPnl });
       } catch (err) {
         await Position.updateOne(
           { _id: claimed._id, status: 'OPEN', 'targetExit.targets': { $elemMatch: { index: targetIndex, status: 'EXECUTING' } } },
-          { $set: { 'targetExit.targets.$[t].status': 'CONFIRMING' } },
+          { $set: { 'targetExit.targets.$[t].status': 'ARMED' } },
           { arrayFilters: [{ 't.index': targetIndex }] }
         );
         throw err;
+      }
+    }
+
+    const after = await Position.findById(fresh._id);
+    if (after && after.status === 'OPEN') {
+      const allDone = after.targetExit.targets.slice(0, 3).every(t => t.status === 'EXECUTED');
+      after.targetExit.runtime = null;
+
+      if (executedTargets.length) {
+        after.targetExit.events = Array.isArray(after.targetExit.events) ? after.targetExit.events : [];
+        for (const et of executedTargets) {
+          after.targetExit.events.push({
+            type: 'TARGET_EXIT',
+            stage: null,
+            targetIndex: et.targetIndex,
+            candleStart: meta && Number.isFinite(Number(meta.candleStart)) ? Number(meta.candleStart) : Date.now(),
+            price: Number(exitPrice),
+            exitPercent: et.exitPercent,
+            realizedPnl: et.realizedPnl,
+            recordedAt: new Date(),
+          });
+        }
+      }
+
+      await after.save();
+
+      if (executedTargets.length) {
+        for (const et of executedTargets) {
+          this._emitTargetEvent(after, {
+            type: 'TARGET_EXIT',
+            stage: null,
+            targetIndex: et.targetIndex,
+            candleStart: meta && Number.isFinite(Number(meta.candleStart)) ? Number(meta.candleStart) : Date.now(),
+            price: Number(exitPrice),
+            exitPercent: et.exitPercent,
+            realizedPnl: et.realizedPnl,
+            recordedAt: new Date(),
+          });
+        }
+      }
+
+      if (allDone && Number(after.quantity) > 0) {
+        // T4 remains the independent final remaining-percentage target.
       }
     }
   }
@@ -481,14 +506,17 @@ class TargetExitManager {
   }
 
   async _timeframe(instanceId) {
-    const b = await BotInstance.findOne({ instanceId }).select('parameters activeTimeframe').lean();
-    return getActiveTimeframe(b) || b?.parameters?.timeframe || '1m';
+    const b = await BotInstance.findOne({ instanceId }).select('parameters').lean();
+    return b?.parameters?.timeframe || '1m';
   }
+
+  _tfMs(tf) {
+    const n = parseInt(String(tf), 10);
+    if (String(tf).endsWith('m') && Number.isFinite(n)) return n * 60000;
+    if (String(tf).endsWith('h') && Number.isFinite(n)) return n * 3600000;
+    return 60000;
+  }
+
 }
 
-module.exports = {
-  TargetExitManager: new TargetExitManager(),
-  validatePlan,
-  targetCrossed,
-  CONFIRM_CANDLES,
-};
+module.exports = { TargetExitManager: new TargetExitManager(), validatePlan, targetCrossed, CONFIRM_CANDLES };

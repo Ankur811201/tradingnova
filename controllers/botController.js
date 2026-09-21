@@ -26,6 +26,34 @@ const { formatModel002Reason } = require('../public/js/renderers/model002-reason
 // of the app, but an unbounded query is avoided regardless.
 const PERFORMANCE_TRADES_LIMIT = 5000;
 
+function decisionHistoryKey(payload = {}) {
+  return JSON.stringify({
+    decision: payload.decision || null,
+    reason: payload.reason || null,
+    ruleId: payload.ruleId || null,
+    activeLevel: payload.activeLevel ?? null,
+  });
+}
+
+function compactDecisionHistory(events = []) {
+  const out = [];
+  for (const event of events) {
+    const payload = event.payload || {};
+    const key = event.historyKey || decisionHistoryKey(payload);
+    const previous = out[out.length - 1];
+    const same = previous && (previous.historyKey || decisionHistoryKey(previous.payload || {})) === key;
+    if (!same) {
+      out.push({ ...event, historyKey: key, firstSeenAt: event.firstSeenAt || event.at, lastSeenAt: event.lastSeenAt || event.at, occurrences: Math.max(1, Number(event.occurrences || 1)) });
+      continue;
+    }
+    previous.payload = payload;
+    previous.at = event.at;
+    previous.lastSeenAt = event.lastSeenAt || event.at;
+    previous.occurrences = Number(previous.occurrences || 1) + Number(event.occurrences || 1);
+  }
+  return out;
+}
+
 exports.renderBotDetail = async (req, res, next) => {
   try {
     const { instanceId } = req.params;
@@ -55,7 +83,7 @@ exports.renderBotDetail = async (req, res, next) => {
     // closed Trade for this instance, used to compute Total Profit/Win
     // Rate/Profit Factor/Today's Profit -- never derived from the legacy
     // runtime or from decision/signal data.
-    const [trades, signals, decisionEvents, currentPosition, perfTrades] = await Promise.all([
+    const [trades, signals, decisionEvents, currentPosition, perfTrades, storyPositions] = await Promise.all([
       Trade.find({ instanceId, environment: bot.environment }).sort({ createdAt: -1 }).limit(50).lean(),
       Signal.find({ instanceId }).sort({ createdAt: -1 }).limit(50).lean(),
       StrategyEvent.find({ instanceId, eventType: 'DECISION' }).sort({ at: -1 }).limit(200).lean(),
@@ -64,10 +92,16 @@ exports.renderBotDetail = async (req, res, next) => {
         .sort({ closedAt: -1 })
         .limit(PERFORMANCE_TRADES_LIMIT)
         .lean(),
+      Position.find({ instanceId, environment: bot.environment })
+        .sort({ updatedAt: -1 })
+        .limit(50)
+        .select('_id targetExit openedAt closedAt status')
+        .lean(),
     ]);
 
     const perf = computePerformance(perfTrades);
     const todayProfit = computeTodayProfit(perfTrades);
+    const compactedDecisionEvents = compactDecisionHistory(decisionEvents);
 
     // Current PnL / ROI-on-margin: both are real derived ratios of two
     // authoritative Position fields (unrealizedPnl, margin) -- not an
@@ -107,14 +141,14 @@ exports.renderBotDetail = async (req, res, next) => {
       // Newest first (as queried) for the Decision History tab; the most
       // recent one (decisionEvents[0]) is also the Decision Engine panel's
       // initial state.
-      initialDecisions: decisionEvents,
-      initialDecision: decisionEvents.length ? decisionEvents[0] : null,
+      initialDecisions: compactedDecisionEvents,
+      initialDecision: compactedDecisionEvents.length ? compactedDecisionEvents[0] : null,
       // NOVA TRADE -- PART 15 PHASE B/STEP 5: real "Live Trade Story"
       // timeline, replacing the dead `Signal`-backed one. Built purely from
       // `trades`, `decisionEvents`, and `currentPosition` -- all already
       // queried above for other panels -- so this adds zero new Mongo
       // queries (see utils/tradeStory.js).
-      initialTradeStory: buildTradeStory({ decisionEvents, trades, currentPosition: currentPositionView }),
+      initialTradeStory: buildTradeStory({ decisionEvents: compactedDecisionEvents, trades, currentPosition: currentPositionView, positions: storyPositions }),
       // Passed as a function value (not pre-applied to the data) so the
       // template can gate it to MODEL_002 only — legacy model's own `reason`
       // strings are already human-readable sentences and must render

@@ -12,6 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // =========================================================
 
   const socket = window.NovaBotSocket;
+  let lastDecisionUpdate = null;
 
 
   if (!socket) {
@@ -332,9 +333,19 @@ document.addEventListener('DOMContentLoaded', () => {
     reject: 'bg-amber-400',
   };
 
-  function appendTradeStoryStep(label, detail, tone) {
+  function appendTradeStoryStep(label, detail, tone, storyKey) {
     const track = document.getElementById('trade-timeline');
     if (!track) return;
+    if (storyKey) {
+      const existing = track.querySelector('[data-story-key=\"' + CSS.escape(String(storyKey)) + '\"]');
+      if (existing) {
+        const detailEl = existing.querySelector('[data-story-detail]');
+        const labelEl = existing.querySelector('[data-story-label]');
+        if (labelEl) labelEl.textContent = label;
+        if (detailEl) detailEl.textContent = detail || '';
+        return;
+      }
+    }
 
     const empty = track.querySelector('.italic');
     if (empty && track.children.length === 1) {
@@ -354,6 +365,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const wrap = document.createElement('div');
     wrap.className = 'relative flex items-center gap-2 sm:flex-1';
+    if (storyKey) wrap.setAttribute('data-story-key', String(storyKey));
 
     const dot = document.createElement('span');
     dot.className = `w-2.5 h-2.5 rounded-full shrink-0 -ml-6 sm:ml-0 ${TIMELINE_TONE_CLASS[tone] || 'bg-amber-400'}`;
@@ -362,9 +374,11 @@ document.addEventListener('DOMContentLoaded', () => {
     card.className = 'glass-tight rounded-lg px-3 py-2 flex-1';
     const labelEl = document.createElement('div');
     labelEl.className = 'text-gray-200 font-semibold';
+    labelEl.setAttribute('data-story-label', '1');
     labelEl.textContent = label;
     const detailEl = document.createElement('div');
     detailEl.className = 'text-gray-500 text-[10px] truncate max-w-[160px]';
+    detailEl.setAttribute('data-story-detail', '1');
     detailEl.textContent = detail || '';
     card.appendChild(labelEl);
     card.appendChild(detailEl);
@@ -392,13 +406,20 @@ document.addEventListener('DOMContentLoaded', () => {
   socket.on('position:closed', (data) => {
     if (!data || data.instanceId !== instanceId || !data.position) return;
     const p = data.position;
-    appendTradeStoryStep('Position Closed', p.closeReason || 'CLOSE', 'sell');
+    const reason = String(p.closeReason || 'CLOSE');
+    if (reason === 'TARGET_4') {
+      const pnl = Number(p.realizedPnl);
+      appendTradeStoryStep('Position Closed', `TARGET_4 · ${Number.isFinite(pnl) ? `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}` : ''}`, Number.isFinite(pnl) && pnl < 0 ? 'loss' : 'profit', `TARGET_EXIT:${p._id || p.positionId || ''}:4`);
+    } else {
+      appendTradeStoryStep('Position Closed', reason, 'sell');
+    }
   });
 
   socket.on('trade:created', (data) => {
     if (!data || data.instanceId !== instanceId || !data.trade) return;
     const t = data.trade;
     const pnl = Number(t.realizedPnl);
+    if (String(t.reason || '').toUpperCase() === 'TARGET_4') return;
     const pnlText = Number.isFinite(pnl) ? `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}` : '';
     appendTradeStoryStep('Trade Recorded', `${t.reason || 'CLOSE'} · ${pnlText}`, Number.isFinite(pnl) && pnl >= 0 ? 'profit' : 'loss');
   });
@@ -431,6 +452,22 @@ document.addEventListener('DOMContentLoaded', () => {
   // so the chart never invents a confirmation stage locally.
   socket.on('bot:target', (data) => {
     if (!data || data.instanceId !== instanceId) return;
+
+    // Live Trade Story records ONLY actual target executions. CT1/CT2/CT3
+    // remain chart/debug events and do not clutter the trade narrative.
+    if (data.type === 'TARGET_EXIT') {
+      const ti = Number(data.targetIndex);
+      const pnl = Number(data.realizedPnl);
+      const pnlText = Number.isFinite(pnl) ? `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}` : 'EXECUTED';
+      const isFinal = ti === 4;
+      appendTradeStoryStep(
+        isFinal ? 'Position Closed' : 'Partial Exit',
+        `TARGET_${ti} · ${pnlText}${!isFinal && data.exitPercent != null ? ` · ${Number(data.exitPercent)}% closed` : ''}`,
+        Number.isFinite(pnl) && pnl < 0 ? 'loss' : 'profit',
+        `TARGET_EXIT:${data.positionId || ''}:${ti}`
+      );
+    }
+
     if (!window.NovaBotChartManager || typeof window.NovaBotChartManager.addTargetMarker !== 'function') return;
     if (!window.NovaExecutionMarkers || typeof window.NovaExecutionMarkers.makeTargetMarker !== 'function') return;
     try {
@@ -668,7 +705,7 @@ document.addEventListener('DOMContentLoaded', () => {
       reasonEl.textContent = formattedReason || 'Monitoring market conditions...';
     }
 
-    prependDecisionHistoryRow(data);
+    upsertDecisionHistoryRow(data);
 
     // PART 15 PHASE B/STEP 5: BUY/SELL decisions are also a Live Trade
     // Story beat. Reuses this existing bot:decision handler rather than
@@ -713,26 +750,37 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function prependDecisionHistoryRow(data) {
+  function upsertDecisionHistoryRow(data) {
     const container = document.getElementById('signal-history-container');
     if (!container) return;
 
-    // Clear the "no decisions yet" empty state, if present.
-    const empty = container.querySelector('.italic');
-    if (empty && container.children.length === 1) {
-      container.innerHTML = '';
+    const history = data.history || {};
+    const historyId = history.id ? String(history.id) : null;
+    let row = historyId ? container.querySelector(`[data-history-id="${historyId}"]`) : null;
+
+    if (!row) {
+      const empty = container.querySelector('.italic');
+      if (empty && container.children.length === 1) container.innerHTML = '';
+
+      row = document.createElement('div');
+      row.className = 'flex justify-between items-center py-2 px-2 rounded-lg hover:bg-white/[0.03] border-b border-white/5 gap-2';
+      if (historyId) row.dataset.historyId = historyId;
+      container.insertBefore(row, container.firstChild);
     }
 
-    const row = document.createElement('div');
-    row.className = 'flex justify-between items-center py-2 px-2 rounded-lg hover:bg-white/[0.03] border-b border-white/5';
+    row.innerHTML = '';
 
     const decisionColor = data.decision === 'BUY' ? 'text-emerald-400'
       : data.decision === 'SELL' ? 'text-rose-400'
       : 'text-amber-400';
 
+    const firstAt = history.firstSeenAt ? new Date(history.firstSeenAt) : null;
+    const lastAt = history.lastSeenAt ? new Date(history.lastSeenAt) : new Date();
     const time = document.createElement('span');
     time.className = 'text-gray-500 shrink-0';
-    time.textContent = new Date().toLocaleTimeString();
+    time.textContent = firstAt && firstAt.getTime() !== lastAt.getTime()
+      ? `${firstAt.toLocaleTimeString()} - ${lastAt.toLocaleTimeString()}`
+      : lastAt.toLocaleTimeString();
 
     const decisionSpan = document.createElement('span');
     decisionSpan.className = 'font-bold ' + decisionColor + ' shrink-0';
@@ -748,7 +796,13 @@ document.addEventListener('DOMContentLoaded', () => {
     row.appendChild(decisionSpan);
     row.appendChild(reasonSpan);
 
-    container.insertBefore(row, container.firstChild);
+    const count = Number(history.occurrences || 1);
+    if (count > 1) {
+      const countSpan = document.createElement('span');
+      countSpan.className = 'text-[9px] text-gray-600 shrink-0';
+      countSpan.textContent = `${count}×`;
+      row.appendChild(countSpan);
+    }
   }
 
   // Render the server-loaded latest real decision immediately (Phase E) —

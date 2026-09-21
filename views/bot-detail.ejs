@@ -613,6 +613,19 @@
           <button id="target-activate-btn" type="button" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-blue-500/10 border border-blue-500/25 text-blue-400 hover:bg-blue-500/20 transition">Activate Target Exit</button>
         </div>
         <div id="target-error" class="hidden mt-3 text-[11px] text-rose-400"></div>
+
+        <!-- Live Target Exit state: explicit trigger/confirmation/execution visibility. -->
+        <div id="target-live-status" class="mt-4 border-t border-white/5 pt-3">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Live Target Status</span>
+            <span id="target-live-last-event" class="text-[9px] text-gray-600 font-mono">No events yet</span>
+          </div>
+          <div id="target-live-cards" class="grid grid-cols-2 lg:grid-cols-4 gap-2"></div>
+          <div class="mt-3">
+            <div class="text-[9px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Target Event Log</div>
+            <div id="target-event-log" class="max-h-40 overflow-auto space-y-1 text-[10px] font-mono"></div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -748,11 +761,12 @@
         <div class="tab-panel" data-tab="decisions" data-active="false">
           <div class="max-h-[420px] overflow-y-auto scrollbar-thin space-y-1 font-mono text-[11px]" id="signal-history-container">
             <% if (typeof initialDecisions !== 'undefined' && initialDecisions && initialDecisions.length) { %>
-              <% initialDecisions.forEach(function(ev) { var d = ev.payload || {}; %>
-                <div class="flex justify-between items-center py-2 px-2 rounded-lg hover:bg-white/[0.03] border-b border-white/5">
-                  <span class="text-gray-500 shrink-0"><%= new Date(ev.at).toLocaleTimeString() %></span>
+              <% initialDecisions.forEach(function(ev) { var d = ev.payload || {}; var firstAt = ev.firstSeenAt || ev.at; var lastAt = ev.lastSeenAt || ev.at; var count = Number(ev.occurrences || 1); %>
+                <div class="flex justify-between items-center py-2 px-2 rounded-lg hover:bg-white/[0.03] border-b border-white/5 gap-2" data-history-id="<%= ev._id || '' %>">
+                  <span class="text-gray-500 shrink-0"><%= new Date(firstAt).toLocaleTimeString() %><%= new Date(firstAt).getTime() !== new Date(lastAt).getTime() ? ' - ' + new Date(lastAt).toLocaleTimeString() : '' %></span>
                   <span class="font-bold <%= d.decision === 'BUY' ? 'text-emerald-400' : d.decision === 'SELL' ? 'text-rose-400' : 'text-amber-400' %> shrink-0"><%= d.decision || '--' %></span>
                   <span class="text-gray-400 truncate max-w-[280px] text-right"><%= (bot.modelId === 'MODEL_002' && typeof formatModel002Reason === 'function') ? formatModel002Reason(d.reason) : (d.reason || '') %></span>
+                  <% if (count > 1) { %><span class="text-[9px] text-gray-600 shrink-0"><%= count %>×</span><% } %>
                 </div>
               <% }) %>
             <% } else { %>
@@ -960,7 +974,16 @@
   // bot-detail-ws.js renders this immediately on page load so the Decision
   // Engine panel shows the bot's last real decision without waiting for the
   // next closed candle. Null when the bot has never produced a decision yet.
-  window.BOT_INITIAL_DECISION = <%- JSON.stringify(typeof initialDecision !== 'undefined' && initialDecision ? initialDecision.payload : null) %>;
+  window.BOT_INITIAL_DECISION = <%- JSON.stringify(typeof initialDecision !== 'undefined' && initialDecision ? {
+    ...(initialDecision.payload || {}),
+    history: {
+      id: String(initialDecision._id || ''),
+      firstSeenAt: initialDecision.firstSeenAt || initialDecision.at,
+      lastSeenAt: initialDecision.lastSeenAt || initialDecision.at,
+      occurrences: Number(initialDecision.occurrences || 1),
+      updated: Number(initialDecision.occurrences || 1) > 1
+    }
+  } : null) %>;
 
   // NOVA TRADE -- PART 9: authoritative execution-state bootstrap.
   // BOT_INITIAL_POSITION is a real Position document (or null); BOT_PERFORMANCE
@@ -1456,7 +1479,59 @@
   var side = <%- JSON.stringify((typeof currentPosition !== 'undefined' && currentPosition) ? currentPosition.side : null) %>;
   var wrap=document.getElementById('target-form-wrap'), noPos=document.getElementById('target-no-position');
   var btn=document.getElementById('target-activate-btn'), err=document.getElementById('target-error'), status=document.getElementById('target-exit-status');
+  var liveCards=document.getElementById('target-live-cards'), eventLog=document.getElementById('target-event-log'), lastEventEl=document.getElementById('target-live-last-event');
+  var liveEvents=[];
+  var currentPlan=null;
   function showError(m){ if(!err)return; err.textContent=m||''; err.classList.toggle('hidden',!m); }
+  function targetStateLabel(t){
+    var st=String(t&&t.status||'WAITING').toUpperCase();
+    var n=Number(t&&t.confirmationCount||0);
+    if(st==='EXECUTED') return 'EXITED';
+    if(st==='EXECUTING') return 'EXITING';
+    if(st==='ARMED') return n>0 ? ('CT'+Math.min(n,3)+' COMPLETE') : 'TRIGGERED';
+    return 'WAITING';
+  }
+  function targetStateClass(label){
+    if(label==='EXITED') return 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5';
+    if(label==='EXITING') return 'text-amber-400 border-amber-500/20 bg-amber-500/5';
+    if(label==='TRIGGERED'||label.indexOf('CT')===0) return 'text-blue-400 border-blue-500/20 bg-blue-500/5';
+    return 'text-gray-500 border-white/10 bg-white/[0.02]';
+  }
+  function eventLabel(ev){
+    var type=String(ev&&ev.type||'');
+    var ti=Number(ev&&ev.targetIndex||0);
+    if(type==='TARGET_TOUCHED') return 'T'+ti+' TOUCHED';
+    if(type==='TARGET_CONFIRMATION') return (ev.stage||'CT')+' T'+ti;
+    if(type==='TARGET_EXIT') return 'T'+ti+' EXIT EXECUTED';
+    return type||'TARGET EVENT';
+  }
+  function renderTargetLiveStatus(plan){
+    if(!liveCards||!eventLog) return;
+    if(plan) currentPlan=plan;
+    var sourcePlan=currentPlan;
+    var targets=sourcePlan&&Array.isArray(sourcePlan.targets)?sourcePlan.targets:[];
+    liveCards.innerHTML=targets.map(function(t){
+      var label=targetStateLabel(t);
+      var count=Number(t.confirmationCount||0);
+      var pct=t.exitPercent!=null?Number(t.exitPercent):0;
+      return '<div class=\"rounded-lg border px-2.5 py-2 '+targetStateClass(label)+'\">' +
+        '<div class=\"flex items-center justify-between gap-2\"><span class=\"font-bold\">T'+Number(t.index)+'</span><span class=\"text-[9px] uppercase\">'+label+'</span></div>' +
+        '<div class=\"mt-1 text-[9px] text-gray-500\">$'+Number(t.price).toFixed(2)+' · '+pct.toFixed(2)+'%'+(Number(t.index)<4?' · '+count+'/3':'')+'</div>' +
+        '</div>';
+    }).join('');
+    var combined=(Array.isArray(sourcePlan&&sourcePlan.events)?sourcePlan.events:[]).concat(liveEvents);
+    var seen={};
+    combined=combined.filter(function(ev){
+      var key=[ev.type,ev.targetIndex,ev.stage,ev.candleStart,ev.recordedAt].join(':');
+      if(seen[key]) return false; seen[key]=true; return true;
+    }).sort(function(a,b){return new Date(b.recordedAt||0)-new Date(a.recordedAt||0);}).slice(0,12);
+    eventLog.innerHTML=combined.length?combined.map(function(ev){
+      var label=eventLabel(ev);
+      var time=ev.recordedAt?new Date(ev.recordedAt).toLocaleTimeString():'';
+      return '<div class=\"flex items-center justify-between gap-2 rounded-md border border-white/5 bg-black/20 px-2 py-1.5\"><span class=\"text-gray-300\">'+label+'</span><span class=\"text-gray-600\">'+time+(ev.price!=null?' · '+Number(ev.price).toFixed(2):'')+'</span></div>';
+    }).join(''):'<div class=\"text-gray-600\">No target events yet.</div>';
+    if(combined.length && lastEventEl){ var e=combined[0]; lastEventEl.textContent=eventLabel(e)+(e.recordedAt?' · '+new Date(e.recordedAt).toLocaleTimeString():''); }
+  }
   function pctSum(){ return [1,2,3].reduce(function(s,i){return s+Number(document.getElementById('target-percent-'+i)?.value||0);},0); }
   [1,2,3].forEach(function(i){ var el=document.getElementById('target-percent-'+i); if(el) el.addEventListener('input',function(){ var rem=document.getElementById('target-t4-remaining'); var sum=pctSum(); if(rem) rem.textContent=(sum<100 ? (100-sum) : 0)+'%'; }); });
   function refresh(){
@@ -1465,7 +1540,7 @@
       var d=body.data||{}; var pos=d.position; var plan=d.plan;
       var has=!!pos;
       if(wrap) wrap.classList.toggle('hidden',!has); if(noPos) noPos.classList.toggle('hidden',has);
-      if(!has){ if(status) status.textContent='No open position'; return; }
+      if(!has){ if(status) status.textContent='No open position'; if(liveCards) liveCards.innerHTML=''; if(eventLog) eventLog.innerHTML='<div class=\"text-gray-600\">No open position.</div>'; return; }
       if(plan && plan.targets){
         if(status) status.textContent=plan.enabled?'ACTIVE · 3-CANDLE WINDOW':'No active plan';
         plan.targets.forEach(function(t,i){ var st=document.getElementById('target-state-'+(i+1)); if(st) st.textContent=(t.status||'WAITING').replace('_',' '); var inp=document.getElementById('target-price-'+(i+1)); if(inp && document.activeElement!==inp) inp.value=t.price; if(i<3){var p=document.getElementById('target-percent-'+(i+1));if(p&&document.activeElement!==p)p.value=t.exitPercent;} });
@@ -1473,7 +1548,8 @@
         if(btn) btn.disabled=!!plan.enabled;
         for(var li=1;li<=4;li++){var pi=document.getElementById('target-price-'+li);if(pi)pi.disabled=!!plan.enabled; if(li<4){var ei=document.getElementById('target-percent-'+li);if(ei)ei.disabled=!!plan.enabled;}}
         if(window.NovaTargetOverlaySync) window.NovaTargetOverlaySync(plan.targets);
-      } else { if(status) status.textContent='No active plan'; if(btn) btn.disabled=false; }
+        renderTargetLiveStatus(plan);
+      } else { currentPlan=null; liveEvents=[]; if(status) status.textContent='No active plan'; if(btn) btn.disabled=false; renderTargetLiveStatus(null); }
     }).catch(function(){});
   }
   if(btn) btn.addEventListener('click',function(){
@@ -1485,6 +1561,14 @@
     btn.disabled=true; btn.textContent='Activating…';
     fetch('/api/bot-instances/'+encodeURIComponent(instanceId)+'/target-exit',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify(payload)}).then(function(r){return r.json().then(function(b){if(!r.ok||!b.success)throw new Error(b.message||'Unable to activate target exit');return b;});}).then(function(){refresh();}).catch(function(e){showError(e.message);btn.disabled=false;}).finally(function(){btn.innerHTML='<i data-lucide="target" class="w-3.5 h-3.5"></i> Activate Target Exit'; if(window.lucide)window.lucide.createIcons();});
   });
+  if(window.NovaBotSocket){
+    window.NovaBotSocket.on('bot:target', function(data){
+      if(!data || data.instanceId!==instanceId) return;
+      liveEvents.push(data);
+      renderTargetLiveStatus(currentPlan || {targets:[],events:[]});
+      setTimeout(refresh, 50);
+    });
+  }
   refresh(); setInterval(refresh,2000);
 })();
 </script>

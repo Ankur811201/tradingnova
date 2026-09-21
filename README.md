@@ -155,15 +155,25 @@ Current MODEL_002 trades therefore recover their S1/S2/S3/R1/R2/R3 loss counters
 
 ## 9. Target Exit
 
-Target Exit supports T1–T4. T1–T3 use independent 3-candle confirmation flows:
+Target Exit supports T1–T4. Each T1–T3 target has its own simple 3-candle confirmation sequence:
 
-- A raw tick detects a new target touch.
-- The target's touch candle is CT1 when that canonical candle closes.
-- The next canonical candle close is CT2.
-- The following canonical candle close is CT3, then that target's configured percentage is exited.
-- T1, T2 and T3 may be confirming independently at the same time.
-- T4 remains immediate on a new crossing.
-- Target Exit never builds a second candle stream; it consumes the same canonical closed candles used by the bot.
+```text
+Target touched → touch candle closes = CT1
+Next candle closes                = CT2
+Following candle closes           = CT3 → that target exits
+```
+
+T1, T2 and T3 are independent and can confirm at the same time. Target Exit consumes the same canonical closed candle produced by CandlePersistenceService; it does not build a second candle stream.
+
+T4 is independent and immediate:
+
+```text
+T4 touched → close all remaining quantity immediately
+```
+
+T1–T3 percentages are freely configurable but must total less than 100%; T4 automatically receives the remaining percentage.
+
+Target Exit uses the bot's configured timeframe and does not switch the chart timeframe.
 
 ## 10. Source-of-truth files
 

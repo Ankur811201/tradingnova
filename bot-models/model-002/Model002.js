@@ -463,6 +463,11 @@ class Model002 extends BotModelBase {
         successfulTradeCount: layerResult.state.successfulTradeCount,
       });
     }
+
+    // Return the authoritative transition to BotManager.  The manager owns
+    // the persisted bot lifecycle, so it can pause the running instance
+    // atomically after the successful close without creating a nested lock.
+    return layerResult;
   }
 
   /**

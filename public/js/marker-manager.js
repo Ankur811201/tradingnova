@@ -72,9 +72,14 @@ class MarkerManager {
   }
 
 
-  /** Target confirmation/exit markers (CT1/CT2/CT3/Tn EXIT). */
+  /**
+   * Historical Target confirmation/exit markers (CT1/CT2/CT3/Tn EXIT).
+   *
+   * IMPORTANT: this is a MERGE, not a replace. Historical candle loading is
+   * asynchronous. A live bot:target event can arrive while that request is
+   * in flight; replacing the map here would silently erase that live marker.
+   */
   setTargetMarkers(markers) {
-    this.targetMarkersById.clear();
     (markers || []).forEach((marker) => {
       if (!marker || !marker.id || !Number.isFinite(marker.time)) return;
       this.targetMarkersById.set(marker.id, marker);

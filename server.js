@@ -176,12 +176,8 @@ for (const symbol of env.RISK_ALLOWED_SYMBOLS) {
       for (const event of candleEvents) {
         if (!event.candle.closed) continue;
 
-        console.log(
-          `[BOT] Dispatching canonical ${event.symbol} ${event.timeframe} candle to BotManager`
-        );
-
-        // Target Exit consumes the SAME canonical closed candle as MODEL_002.
-        // It never builds its own candle or counts ticks as candles.
+        // Target Exit consumes the SAME canonical closed candle used by the
+        // bot engine. It never builds a second candle stream.
         try {
           await TargetExitManager.onClosedCandle(
             event.symbol,
@@ -194,6 +190,10 @@ for (const symbol of env.RISK_ALLOWED_SYMBOLS) {
             `TargetExit closed-candle processing failed for ${event.symbol} ${event.timeframe}: ${err.message}`
           );
         }
+
+        console.log(
+          `[BOT] Dispatching canonical ${event.symbol} ${event.timeframe} candle to BotManager`
+        );
 
         try {
           await botManager.dispatchMarketData({

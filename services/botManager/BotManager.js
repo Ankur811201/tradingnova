@@ -47,6 +47,15 @@ const {
   validateTrend: validateModel002Trend, validateLevelArray: validateModel002LevelArray,
 } = require('../../bot-models/model-002/validators');
 
+function decisionHistoryKey(payload = {}) {
+  return JSON.stringify({
+    decision: payload.decision || null,
+    reason: payload.reason || null,
+    ruleId: payload.ruleId || null,
+    activeLevel: payload.activeLevel ?? null,
+  });
+}
+
 // PHASE Q — strategy-sensitive configuration fields cannot be changed while
 // an instance is RUNNING (same policy already applied to `timeframe` before
 // Part 13). Require PAUSE/STOP, save, then Start/Restart. Chosen because
@@ -1160,7 +1169,19 @@ class BotManager {
           if (closedTrade) {
             live.pendingClosedTradeLookup = null;
             try {
-              await live.modelInstance.onPositionClosed(closedTrade);
+              const safetyResult = await live.modelInstance.onPositionClosed(closedTrade);
+
+              // MODEL_002's first successful completed trade transitions its
+              // safety state to SUCCESS_STOPPED.  Pause the actual running
+              // model immediately as well, so no further market-data work is
+              // processed between the safety transition and the lifecycle
+              // update.  This is intentionally done here (inside the existing
+              // BotManager instance lock) rather than calling public
+              // pauseInstance(), which would attempt to acquire the same lock.
+              if (safetyResult && safetyResult.transition === 'SUCCESS_STOPPED') {
+                await this._pauseInstanceUnlocked(instanceId);
+                await logger.info('BOT', `Bot instance paused after SUCCESS_STOPPED: ${instanceId}`);
+              }
             } catch (err) {
               await logger.error('BOT', `Bot instance ${instanceId} errored in onPositionClosed: ${err.message}`);
             }
@@ -1199,11 +1220,37 @@ class BotManager {
     if (!dbInstance) return;
 
     if (event.kind === 'StrategyEvent') {
-      await StrategyEvent.create({
-        instanceId, modelId: dbInstance.modelId, symbol: dbInstance.symbol,
-        eventType: event.eventType, payload: event.payload, at: new Date(event.at),
-      });
-      dbInstance.lastSignalAt = new Date();
+      let persistedStrategyEvent = null;
+      const eventAt = new Date(event.at);
+
+      // Decision History is a state/history feed, not a raw market-data log.
+      // Consecutive identical decisions are folded into the latest record.
+      if (event.eventType === 'DECISION') {
+        const repeatKey = decisionHistoryKey(event.payload || {});
+        const latest = await StrategyEvent.findOne({
+          instanceId, eventType: 'DECISION',
+        }).sort({ at: -1 });
+
+        if (latest && latest.historyKey === repeatKey) {
+          latest.payload = event.payload || {};
+          latest.at = eventAt;
+          latest.lastSeenAt = eventAt;
+          latest.occurrences = Math.max(1, Number(latest.occurrences || 1)) + 1;
+          persistedStrategyEvent = await latest.save();
+        } else {
+          persistedStrategyEvent = await StrategyEvent.create({
+            instanceId, modelId: dbInstance.modelId, symbol: dbInstance.symbol,
+            eventType: event.eventType, payload: event.payload, at: eventAt,
+            firstSeenAt: eventAt, lastSeenAt: eventAt, occurrences: 1, historyKey: repeatKey,
+          });
+        }
+      } else {
+        persistedStrategyEvent = await StrategyEvent.create({
+          instanceId, modelId: dbInstance.modelId, symbol: dbInstance.symbol,
+          eventType: event.eventType, payload: event.payload, at: eventAt,
+        });
+      }
+      dbInstance.lastSignalAt = eventAt;
 
       // PERSISTENT LEVEL-TOUCH STATE (persistence side) — identical
       // additive pattern to the timeframe switch below: the model detected
@@ -1299,6 +1346,13 @@ class BotManager {
           instanceId,
           modelId: dbInstance.modelId,
           ...event.payload,
+          history: persistedStrategyEvent ? {
+            id: String(persistedStrategyEvent._id),
+            firstSeenAt: persistedStrategyEvent.firstSeenAt || persistedStrategyEvent.at,
+            lastSeenAt: persistedStrategyEvent.lastSeenAt || persistedStrategyEvent.at,
+            occurrences: Number(persistedStrategyEvent.occurrences || 1),
+            updated: Number(persistedStrategyEvent.occurrences || 1) > 1,
+          } : null,
         });
       }
     } else if (event.kind === 'StatusUpdate') {

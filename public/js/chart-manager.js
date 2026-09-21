@@ -104,6 +104,8 @@ class ChartManager {
   }
 
   loadTargetMarkers(markers) {
+    // Historical target events are merged so an event received live during
+    // asynchronous history loading can never be erased on hydration.
     this.markerManager.setTargetMarkers(markers);
   }
 
