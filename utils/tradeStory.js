@@ -22,6 +22,18 @@
  * timestamp is dropped, not guessed.
  */
 
+const LOT_SIZE_BTC = 0.001;
+
+function quantityToLots(quantity) {
+  const q = Number(quantity);
+  return Number.isFinite(q) ? Number((q / LOT_SIZE_BTC).toFixed(8)) : null;
+}
+
+function formatLots(quantity, explicitLots) {
+  const lots = Number.isFinite(Number(explicitLots)) ? Number(explicitLots) : quantityToLots(quantity);
+  return Number.isFinite(lots) ? `${lots} LOT` : null;
+}
+
 function toTime(value) {
   if (!value) return null;
   const ms = new Date(value).getTime();
@@ -60,7 +72,7 @@ function buildTradeStory({ decisionEvents, trades, currentPosition, positions } 
       steps.push({
         type: isFinal ? 'POSITION_CLOSED' : 'TARGET_PARTIAL_EXIT',
         label: isFinal ? 'Position Closed' : 'Partial Exit',
-        detail: `TARGET_${ti} · ${Number.isFinite(pnl) ? `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}` : 'EXECUTED'}${!isFinal && ev.exitPercent != null ? ` · ${Number(ev.exitPercent)}% closed` : ''}`,
+        detail: `TARGET_${ti} · ${Number.isFinite(pnl) ? `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}` : 'EXECUTED'}${formatLots(ev.quantity, ev.lots) ? ` · ${formatLots(ev.quantity, ev.lots)}` : ''}${!isFinal && ev.exitPercent != null ? ` · ${Number(ev.exitPercent)}% closed` : ''}`,
         at,
         tone: pnl >= 0 ? 'profit' : 'loss',
         storyKey: `TARGET_EXIT:${position._id || position.positionId || ''}:${ti}`,
@@ -90,7 +102,7 @@ function buildTradeStory({ decisionEvents, trades, currentPosition, positions } 
       steps.push({
         type: 'POSITION_OPENED',
         label: 'Position Open',
-        detail: `${trade.side} @ $${trade.entryPrice}`,
+        detail: `${trade.side} @ $${trade.entryPrice}${formatLots(trade.quantity) ? ` · ${formatLots(trade.quantity)}` : ''}`,
         at: openedAt,
         tone: trade.side === 'LONG' ? 'buy' : 'sell',
       });
@@ -115,7 +127,7 @@ function buildTradeStory({ decisionEvents, trades, currentPosition, positions } 
       steps.push({
         type: 'POSITION_OPENED',
         label: 'Position Open',
-        detail: `${currentPosition.side} @ $${currentPosition.entryPrice} (open)`,
+        detail: `${currentPosition.side} @ $${currentPosition.entryPrice}${formatLots(currentPosition.quantity) ? ` · ${formatLots(currentPosition.quantity)}` : ''} (open)`,
         at: openedAt,
         tone: currentPosition.side === 'LONG' ? 'buy' : 'sell',
       });

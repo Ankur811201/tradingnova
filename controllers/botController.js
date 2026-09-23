@@ -95,7 +95,7 @@ exports.renderBotDetail = async (req, res, next) => {
       Position.find({ instanceId, environment: bot.environment })
         .sort({ updatedAt: -1 })
         .limit(50)
-        .select('_id targetExit openedAt closedAt status')
+        .select('_id targetExit openedAt closedAt status side symbol')
         .lean(),
     ]);
 
@@ -149,6 +149,7 @@ exports.renderBotDetail = async (req, res, next) => {
       // queried above for other panels -- so this adds zero new Mongo
       // queries (see utils/tradeStory.js).
       initialTradeStory: buildTradeStory({ decisionEvents: compactedDecisionEvents, trades, currentPosition: currentPositionView, positions: storyPositions }),
+      initialTargetPositions: storyPositions,
       // Passed as a function value (not pre-applied to the data) so the
       // template can gate it to MODEL_002 only — legacy model's own `reason`
       // strings are already human-readable sentences and must render

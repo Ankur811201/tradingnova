@@ -157,6 +157,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // page load) and is updated in place as new authoritative closed trades
   // arrive, so the Performance tab/quick-stats stay correct without
   // requiring a page reload (Test K).
+  const LOT_SIZE_BTC = 0.001;
+  function quantityToLots(quantity) {
+    const q = Number(quantity);
+    return Number.isFinite(q) ? Number((q / LOT_SIZE_BTC).toFixed(8)) : null;
+  }
+  function formatPositionLots(quantity) {
+    const lots = quantityToLots(quantity);
+    return Number.isFinite(lots) ? `${lots} LOT` : '--';
+  }
+
   const performanceState = window.BOT_PERFORMANCE
     ? Object.assign({}, window.BOT_PERFORMANCE)
     : {
@@ -202,7 +212,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <span class="font-bold ${position.side === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}">${position.side} ${position.leverage}x</span>
       </div>
       <div class="flex justify-between"><span class="text-gray-400">Symbol</span><span class="font-mono">${position.symbol}</span></div>
-      <div class="flex justify-between"><span class="text-gray-400">Quantity</span><span class="font-mono">${position.quantity}</span></div>
+      <div class="flex justify-between"><span class="text-gray-400">Quantity</span><span class="font-mono">${formatPositionLots(position.quantity)} <span class="text-gray-500">(${position.quantity} BTC)</span></span></div>
       <div class="flex justify-between"><span class="text-gray-400">Entry Price</span><span class="font-mono">$${position.entryPrice}</span></div>
       <div class="flex justify-between"><span class="text-gray-400">Current Price</span><span id="pos-current-price" class="font-mono">$${position.currentPrice}</span></div>
       <div class="flex justify-between"><span class="text-gray-400">Unrealized PnL</span>
@@ -400,7 +410,7 @@ document.addEventListener('DOMContentLoaded', () => {
   socket.on('position:opened', (data) => {
     if (!data || data.instanceId !== instanceId || !data.position) return;
     const p = data.position;
-    appendTradeStoryStep('Position Open', `${p.side} @ $${p.entryPrice}`, p.side === 'LONG' ? 'buy' : 'sell');
+    appendTradeStoryStep('Position Open', `${p.side} @ $${p.entryPrice} · ${formatPositionLots(p.quantity)}${p.quantity != null ? ` (${p.quantity} BTC)` : ''}`, p.side === 'LONG' ? 'buy' : 'sell');
   });
 
   socket.on('position:closed', (data) => {

@@ -345,7 +345,7 @@
               </div>
               <div class="flex justify-between">
                 <span class="text-gray-400">Quantity</span>
-                <span class="font-mono"><%= currentPosition.quantity %></span>
+                <span class="font-mono"><%= Number(currentPosition.quantity / 0.001).toFixed(8).replace(/\.0+$/, '') %> LOT <span class="text-gray-500">(<%= currentPosition.quantity %> BTC)</span></span>
               </div>
               <div class="flex justify-between">
                 <span class="text-gray-400">Entry Price</span>
@@ -999,6 +999,7 @@
   // -- no separate markers endpoint. Consumed by bot-detail-chart.js to
   // reconstruct real historical BUY/SELL/EXIT markers on page load.
   window.BOT_INITIAL_TRADES = <%- JSON.stringify(typeof initialTrades !== 'undefined' ? initialTrades : []) %>;
+  window.BOT_INITIAL_TARGET_POSITIONS = <%- JSON.stringify(typeof initialTargetPositions !== 'undefined' ? initialTargetPositions : []) %>;
 </script>
 
 <!-- New UI wiring: tabs, control center, mirrors, icons. Does not touch bot-detail-ws.js logic. -->

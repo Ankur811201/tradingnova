@@ -7,6 +7,20 @@ const { getMarketDataProvider } = require('./marketData');
 
 const TARGET_COUNT = 4;
 const CONFIRM_CANDLES = 3;
+const LOT_SIZE_BTC = 0.001; // 1 BTCUSD lot = 0.001 BTC
+
+function quantityToLots(quantity) {
+  const q = Number(quantity);
+  return Number.isFinite(q) && q >= 0 ? Number((q / LOT_SIZE_BTC).toFixed(8)) : null;
+}
+
+function candleTouchesTarget(side, candle, targetPrice) {
+  const target = Number(targetPrice);
+  const high = Number(candle && candle.high);
+  const low = Number(candle && candle.low);
+  if (!Number.isFinite(target) || !Number.isFinite(high) || !Number.isFinite(low)) return false;
+  return side === 'LONG' ? high >= target : low <= target;
+}
 
 function finitePositive(v) {
   const n = Number(v);
@@ -272,6 +286,39 @@ class TargetExitManager {
       let changed = false;
       const executeIndexes = [];
 
+      // Canonical candle wick is authoritative for T1-T3 touch detection.
+      // If raw ticks did not arm a target (for example because the provider
+      // emitted candle OHLC without every intrabar tick), a wick touch still
+      // makes THIS candle the touch candle and therefore CT1.
+      plan.events = Array.isArray(plan.events) ? plan.events : [];
+      for (let i = 0; i < 3; i += 1) {
+        const target = plan.targets?.[i];
+        if (!target || target.status !== 'WAITING') continue;
+        if (!candleTouchesTarget(position.side, candle, target.price)) continue;
+
+        target.status = 'ARMED';
+        target.touchedAt = new Date();
+        target.confirmationCandle = candleStart;
+        target.confirmationCount = 0;
+        plan.events.push({
+          type: 'TARGET_TOUCHED',
+          stage: null,
+          targetIndex: i + 1,
+          candleStart,
+          price: Number(target.price),
+          recordedAt: new Date(),
+        });
+        this._emitTargetEvent(position, {
+          type: 'TARGET_TOUCHED',
+          stage: null,
+          targetIndex: i + 1,
+          candleStart,
+          price: Number(target.price),
+          recordedAt: new Date(),
+        });
+        changed = true;
+      }
+
       for (let i = 0; i < 3; i += 1) {
         const target = plan.targets?.[i];
         if (!target || target.status !== 'ARMED') continue;
@@ -342,6 +389,8 @@ class TargetExitManager {
       );
       if (!claimed) return;
 
+      const t4Quantity = Number(fresh.quantity);
+      const t4Lots = quantityToLots(t4Quantity);
       try {
         const { paperEngine, liveEngine } = this._engines();
         if (fresh.environment === 'PAPER') {
@@ -359,6 +408,7 @@ class TargetExitManager {
         throw err;
       }
 
+      const closedDoc = await Position.findById(fresh._id);
       const t4Event = {
         type: 'TARGET_EXIT',
         stage: null,
@@ -368,10 +418,11 @@ class TargetExitManager {
           : Date.now(),
         price: Number(exitPrice),
         exitPercent: 100,
+        quantity: t4Quantity,
+        lots: t4Lots,
         realizedPnl: Number((Number(closedDoc && closedDoc.realizedPnl || 0) - realizedBefore).toFixed(8)),
         recordedAt: new Date(),
       };
-      const closedDoc = await Position.findById(fresh._id);
       if (closedDoc && closedDoc.targetExit) {
         closedDoc.targetExit.events = Array.isArray(closedDoc.targetExit.events) ? closedDoc.targetExit.events : [];
         closedDoc.targetExit.events.push(t4Event);
@@ -443,7 +494,7 @@ class TargetExitManager {
         // Record the exit so the live graph gets a TARGET_EXIT marker for
         // T1/T2/T3 too (previously only T4 emitted this — the window
         // exit was silently invisible on the chart and lost on refresh).
-        executedTargets.push({ targetIndex, exitPercent: Number(target.exitPercent), realizedPnl });
+        executedTargets.push({ targetIndex, exitPercent: Number(target.exitPercent), quantity: actualQty, lots: quantityToLots(actualQty), realizedPnl });
       } catch (err) {
         await Position.updateOne(
           { _id: claimed._id, status: 'OPEN', 'targetExit.targets': { $elemMatch: { index: targetIndex, status: 'EXECUTING' } } },
@@ -469,6 +520,8 @@ class TargetExitManager {
             candleStart: meta && Number.isFinite(Number(meta.candleStart)) ? Number(meta.candleStart) : Date.now(),
             price: Number(exitPrice),
             exitPercent: et.exitPercent,
+            quantity: et.quantity,
+            lots: et.lots,
             realizedPnl: et.realizedPnl,
             recordedAt: new Date(),
           });
@@ -486,6 +539,8 @@ class TargetExitManager {
             candleStart: meta && Number.isFinite(Number(meta.candleStart)) ? Number(meta.candleStart) : Date.now(),
             price: Number(exitPrice),
             exitPercent: et.exitPercent,
+            quantity: et.quantity,
+            lots: et.lots,
             realizedPnl: et.realizedPnl,
             recordedAt: new Date(),
           });
@@ -519,4 +574,4 @@ class TargetExitManager {
 
 }
 
-module.exports = { TargetExitManager: new TargetExitManager(), validatePlan, targetCrossed, CONFIRM_CANDLES };
+module.exports = { TargetExitManager: new TargetExitManager(), validatePlan, targetCrossed, candleTouchesTarget, quantityToLots, CONFIRM_CANDLES, LOT_SIZE_BTC };

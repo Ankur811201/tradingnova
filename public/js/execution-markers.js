@@ -46,6 +46,12 @@ function timeframeSeconds(timeframe) {
   return TIMEFRAME_SECONDS[timeframe]; // undefined for unrecognized/missing — never silently 5m
 }
 
+var LOT_SIZE_BTC = 0.001;
+function quantityToLots(quantity) {
+  var q = Number(quantity);
+  return Number.isFinite(q) ? Number((q / LOT_SIZE_BTC).toFixed(8)) : null;
+}
+
 /** Converts a Date / ISO string / epoch-ms number to Unix seconds. Returns null if invalid. */
 function toUnixSeconds(value) {
   if (value === null || value === undefined) return null;
@@ -102,7 +108,7 @@ function makeEntryMarkerFromPosition(position, timeframe) {
     position: isLong ? 'belowBar' : 'aboveBar',
     color: isLong ? '#089981' : '#f23645',
     shape: isLong ? 'arrowUp' : 'arrowDown',
-    text: (isLong ? 'BUY' : 'SELL') + ' @ ' + position.entryPrice,
+    text: (isLong ? 'BUY' : 'SELL') + ' · ' + (quantityToLots(position.quantity) != null ? quantityToLots(position.quantity) + ' LOT' : 'ENTRY') + ' @ ' + position.entryPrice,
   };
 }
 
@@ -131,7 +137,7 @@ function makeEntryMarkerFromTrade(trade, timeframe) {
     position: isLong ? 'belowBar' : 'aboveBar',
     color: isLong ? '#089981' : '#f23645',
     shape: isLong ? 'arrowUp' : 'arrowDown',
-    text: (isLong ? 'BUY' : 'SELL') + ' @ ' + trade.entryPrice,
+    text: (isLong ? 'BUY' : 'SELL') + ' · ' + (quantityToLots(trade.quantity) != null ? quantityToLots(trade.quantity) + ' LOT' : 'ENTRY') + ' @ ' + trade.entryPrice,
   };
 }
 
@@ -224,19 +230,20 @@ function makeTargetMarker(event, side) {
   var targetIndex = Number(event.targetIndex);
   if (!Number.isFinite(targetIndex) || targetIndex < 1 || targetIndex > 4) return null;
   var isExit = event.type === 'TARGET_EXIT';
+  var isTouch = event.type === 'TARGET_TOUCHED';
   var stage = event.stage || null;
-  var text = isExit ? ('T' + targetIndex + ' EXIT') : ((stage || 'CT') + ' T' + targetIndex);
+  var text = isExit ? ('T' + targetIndex + ' EXIT') : (isTouch ? ('T' + targetIndex + ' TOUCH') : ((stage || 'CT') + ' T' + targetIndex));
   var isLong = side === 'LONG';
   return {
     id: 'target:' + (event.positionId || '') + ':' + (event.type || '') + ':' + targetIndex + ':' + (stage || '') + ':' + time,
-    type: isExit ? 'TARGET_EXIT' : 'TARGET_CONFIRMATION',
+    type: isExit ? 'TARGET_EXIT' : (isTouch ? 'TARGET_TOUCHED' : 'TARGET_CONFIRMATION'),
     targetIndex: targetIndex,
     stage: stage,
     time: time,
     price: Number(event.price),
     position: isLong ? 'belowBar' : 'aboveBar',
-    color: isExit ? '#f59e0b' : '#2962ff',
-    shape: isExit ? 'arrowDown' : 'circle',
+    color: isExit ? '#f59e0b' : (isTouch ? '#a78bfa' : '#2962ff'),
+    shape: isExit ? 'arrowDown' : (isTouch ? 'diamond' : 'circle'),
     text: text,
   };
 }

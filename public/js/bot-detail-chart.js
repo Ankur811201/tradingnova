@@ -515,14 +515,20 @@
 
     chartManager.loadExecutionMarkers(markers);
 
-    // Target Exit confirmation markers persisted on the active position.
-    if (window.NovaExecutionMarkers && typeof window.NovaExecutionMarkers.buildTargetMarkers === 'function' &&
-        window.BOT_INITIAL_POSITION && window.BOT_INITIAL_POSITION.targetExit) {
-      var targetEvents = window.BOT_INITIAL_POSITION.targetExit.events || [];
-      var targetMarkers = window.NovaExecutionMarkers.buildTargetMarkers(
-        targetEvents,
-        window.BOT_INITIAL_POSITION.side
-      );
+    // Target Exit markers are persisted on Position documents. Load recent
+    // positions, not only the currently-open position, so T1/T2/T3 partial
+    // exits remain visible after T4 closes the position and the page reloads.
+    if (window.NovaExecutionMarkers && typeof window.NovaExecutionMarkers.buildTargetMarkers === 'function') {
+      var targetPositions = Array.isArray(window.BOT_INITIAL_TARGET_POSITIONS)
+        ? window.BOT_INITIAL_TARGET_POSITIONS
+        : (window.BOT_INITIAL_POSITION ? [window.BOT_INITIAL_POSITION] : []);
+      var targetMarkers = [];
+      targetPositions.forEach(function (pos) {
+        if (!pos || !pos.targetExit) return;
+        targetMarkers = targetMarkers.concat(
+          window.NovaExecutionMarkers.buildTargetMarkers(pos.targetExit.events || [], pos.side)
+        );
+      });
       if (typeof chartManager.loadTargetMarkers === 'function') chartManager.loadTargetMarkers(targetMarkers);
     }
   }
