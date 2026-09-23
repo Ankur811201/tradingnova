@@ -632,6 +632,21 @@
         setChartState(null);
         loadInitialExecutionMarkers(candles);
 
+        // REST/bootstrap path: bot:execution is not guaranteed to fire again
+        // after a browser reload. Restore the authoritative OPEN position
+        // overlays immediately so ENTRY/SL remain visible across reloads.
+        // When the position is closed BOT_INITIAL_POSITION is null, so this
+        // also guarantees that stale SL/ENTRY lines are not recreated.
+        if (window.NovaBotChartManager &&
+            window.NovaBotChartManager.overlayManager &&
+            typeof window.NovaBotChartManager.overlayManager.syncPositionOverlays === 'function') {
+          try {
+            window.NovaBotChartManager.overlayManager.syncPositionOverlays(window.BOT_INITIAL_POSITION || null);
+          } catch (err) {
+            console.error('[CHART] Initial position overlay restore failed:', err);
+          }
+        }
+
         // If the server-rendered initial decision already contains a live
         // MODEL_002 A/B/C pattern, draw its role markers now that the chart
         // and historical candles are ready. bot-detail-ws.js also handles

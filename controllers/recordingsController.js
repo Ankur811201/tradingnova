@@ -4,6 +4,38 @@ const BotInstance = require('../models/BotInstance');
 const Trade = require('../models/Trade');
 const StrategyEvent = require('../models/StrategyEvent');
 const recordingService = require('../services/recording/RecordingService');
+const path = require('path');
+const fs = require('fs');
+
+async function resolveRecording(instanceId, recordingId) {
+  const Recording = require('../models/TradeRecording');
+  const stored = await Recording.findOne({ recordingId, instanceId }).lean();
+  if (stored) return stored;
+
+  // Recover orphaned videos directly from the recording storage folder.
+  const recordingsRoot = path.resolve(__dirname, '..', 'storage', 'recordings');
+  const candidates = [
+    `${recordingId}.webm`, `${recordingId}.mp4`, `${recordingId}.mkv`,
+  ];
+  for (const name of candidates) {
+    const filePath = path.join(recordingsRoot, name);
+    if (!filePath.startsWith(recordingsRoot + path.sep) || !fs.existsSync(filePath)) continue;
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size <= 0) continue;
+    const BotInstance = require('../models/BotInstance');
+    const bot = await BotInstance.findOne({ instanceId }).lean();
+    return {
+      recordingId, instanceId, botName: bot?.name || '', symbol: bot?.symbol || 'UNKNOWN',
+      timeframe: bot?.parameters?.timeframe || 'UNKNOWN', environment: bot?.environment || 'PAPER',
+      direction: 'UNKNOWN', level: null, triggerTime: new Date(stat.birthtimeMs || stat.mtimeMs),
+      chunkIndex: 1, chunkStartedAt: new Date(stat.birthtimeMs || stat.mtimeMs), chunkEndedAt: new Date(stat.mtimeMs),
+      durationSeconds: null, frameRate: 0.5, status: 'READY', fileName: name,
+      filePath: path.relative(path.join(__dirname, '..'), filePath).replace(/\\/g, '/'),
+      triggerReason: 'Recovered from video storage', recoveredFromStorage: true,
+    };
+  }
+  return null;
+}
 
 
 async function startRecording(req, res, next) {
@@ -54,13 +86,12 @@ async function getRecording(req, res, next) {
     const bot = await BotInstance.findOne({ instanceId, user: req.session.userId }).lean();
     if (!bot) return res.status(404).json({ ok: false, error: 'Bot instance not found' });
 
-    const Recording = require('../models/TradeRecording');
-    const recording = await Recording.findOne({ recordingId, instanceId }).lean();
+    const recording = await resolveRecording(instanceId, recordingId);
     if (!recording || recording.status !== 'READY' || !recording.filePath) {
       return res.status(404).json({ ok: false, error: 'Recording not found' });
     }
 
-    return res.sendFile(require('path').resolve(__dirname, '..', recording.filePath));
+    return res.sendFile(path.resolve(__dirname, '..', recording.filePath));
   } catch (err) {
     return next(err);
   }
@@ -74,8 +105,7 @@ async function renderRecordingPlayer(req, res, next) {
     const bot = await BotInstance.findOne({ instanceId, user: req.session.userId }).lean();
     if (!bot) return res.status(404).render('404', { title: 'Bot Instance Not Found' });
 
-    const Recording = require('../models/TradeRecording');
-    const recording = await Recording.findOne({ recordingId, instanceId }).lean();
+    const recording = await resolveRecording(instanceId, recordingId);
     if (!recording || recording.status !== 'READY' || !recording.filePath) {
       return res.status(404).render('404', { title: 'Recording Not Found' });
     }
@@ -155,23 +185,22 @@ async function deleteRecording(req, res, next) {
     if (!bot) return res.status(404).json({ ok: false, error: 'Bot instance not found' });
 
     const Recording = require('../models/TradeRecording');
-    const recording = await Recording.findOne({ recordingId, instanceId });
+    const recording = await resolveRecording(instanceId, recordingId);
     if (!recording) return res.status(404).json({ ok: false, error: 'Recording not found' });
     if (recording.status !== 'READY' || !recording.filePath) {
       return res.status(409).json({ ok: false, error: 'Recording is not ready for deletion' });
     }
 
-    const filePath = require('path').resolve(__dirname, '..', recording.filePath);
-    const root = require('path').resolve(__dirname, '..', 'storage', 'recordings');
-    if (!filePath.startsWith(root + require('path').sep)) {
+    const filePath = path.resolve(__dirname, '..', recording.filePath);
+    const root = path.resolve(__dirname, '..', 'storage', 'recordings');
+    if (!filePath.startsWith(root + path.sep)) {
       return res.status(400).json({ ok: false, error: 'Invalid recording path' });
     }
 
-    const fs = require('fs');
     try { fs.rmSync(filePath, { force: true }); } catch (err) {
       return next(err);
     }
-    await recording.deleteOne();
+    if (!recording.recoveredFromStorage) await Recording.deleteOne({ recordingId, instanceId });
     return res.json({ ok: true, recordingId });
   } catch (err) {
     return next(err);

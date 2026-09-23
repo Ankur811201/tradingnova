@@ -72,13 +72,18 @@ function touchesResistance(candle, level) {
   return candle.high >= level;
 }
 
-/** Returns the first configured level (in given order) touched by `candle` for the given direction, or null. */
+/** Returns the LAST configured label touched by `candle` for the given direction.
+ * Layer attribution is based on the most recently touched configured label,
+ * never on the entry-price zone. When one OHLC candle spans multiple labels,
+ * the configured order is used as the deterministic fallback because OHLC
+ * alone cannot reveal intrabar touch order. Live ticks can refine the state. */
 function findTouchedLevel(levels, candle, direction) {
   const test = direction === 'BUY' ? touchesSupport : touchesResistance;
+  let matched = null;
   for (let i = 0; i < levels.length; i += 1) {
-    if (test(candle, levels[i])) return { index: i + 1, price: levels[i] };
+    if (test(candle, levels[i])) matched = { index: i + 1, price: levels[i] };
   }
-  return null;
+  return matched;
 }
 
 // --- A/B body validation --------------------------------------------------

@@ -4,6 +4,8 @@ const Position = require('../models/Position');
 const BotInstance = require('../models/BotInstance');
 const { AppError } = require('../utils/apiResponse');
 const { getMarketDataProvider } = require('./marketData');
+const recordingService = require('./recording/RecordingService');
+const whatsappNotifications = require('./whatsapp/WhatsAppNotificationService');
 
 const TARGET_COUNT = 4;
 const CONFIRM_CANDLES = 3;
@@ -102,14 +104,26 @@ class TargetExitManager {
   }
 
   _emitTargetEvent(position, event) {
-    if (!this.io || !position || !position.instanceId) return;
-    this.io.to(`bot:${position.instanceId}`).emit('bot:target', {
+    if (!position || !position.instanceId) return;
+
+    const payload = {
       instanceId: position.instanceId,
       positionId: String(position._id),
       symbol: position.symbol,
       side: position.side,
       ...event,
-    });
+    };
+
+    // Mirror authoritative target events into the server-side recorder.
+    // The live chart receives bot:target directly, but the recorder renders
+    // its own SVG frames and therefore cannot see browser-only chart markers.
+    // TARGET_EXIT must be converted into a recorder execution marker here.
+    if (recordingService && typeof recordingService.updateTargetEvent === 'function') {
+      try { recordingService.updateTargetEvent(position.instanceId, payload); }
+      catch (err) { console.error(`[RECORDING] target event mirror failed: ${err.message}`); }
+    }
+
+    if (this.io) this.io.to(`bot:${position.instanceId}`).emit('bot:target', payload);
   }
 
   async configureForOpenPosition(instanceId, userId, raw) {
@@ -532,6 +546,10 @@ class TargetExitManager {
 
       if (executedTargets.length) {
         for (const et of executedTargets) {
+          whatsappNotifications.notify(`TARGET_${et.targetIndex}_EXIT`, {
+            instanceId: String(after.instanceId), symbol: after.symbol, side: after.side,
+            quantity: et.quantity, price: Number(exitPrice), realizedPnl: et.realizedPnl,
+          });
           this._emitTargetEvent(after, {
             type: 'TARGET_EXIT',
             stage: null,

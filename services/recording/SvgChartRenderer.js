@@ -360,18 +360,63 @@ function svgExecutionMarkers(geo, state, candles) {
     if (idx < 0) return;
     const candle = candles[idx];
     const x = geo.xCenter(idx);
-    const isExit = marker.type === 'EXIT';
+    const isExit = marker.type === 'EXIT' || marker.type === 'TARGET_EXIT';
+    const isTarget = marker.type === 'TARGET_EXIT' || /^T\d+ EXIT/.test(String(marker.text || ''));
     const isBuy = marker.side === 'LONG' || marker.text === 'BUY';
-    const color = isExit ? '#f59e0b' : (isBuy ? '#089981' : '#f23645');
+    const color = isExit ? '#f23645' : (isBuy ? '#089981' : '#f23645');
     const yBase = isExit ? geo.yPrice(candle.high) : geo.yPrice(candle.low);
     if (yBase == null) return;
-    const y = isExit ? yBase - 20 : yBase + 20;
+    const y = isExit ? yBase - 24 : yBase + 24;
     const label = esc(marker.text || (isExit ? 'EXIT' : (isBuy ? 'BUY' : 'SELL')));
-    parts.push(`<line x1="${x.toFixed(1)}" y1="${(isExit ? y + 4 : y - 4).toFixed(1)}" x2="${x.toFixed(1)}" y2="${yBase.toFixed(1)}" stroke="${color}" stroke-width="1.2"/>`);
-    parts.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5" fill="${color}"/>`);
+    const arrow = isExit
+      ? `<polygon points="${x.toFixed(1)},${yBase.toFixed(1)} ${(x-6).toFixed(1)},${(yBase-10).toFixed(1)} ${(x+6).toFixed(1)},${(yBase-10).toFixed(1)}" fill="${color}"/>`
+      : `<polygon points="${x.toFixed(1)},${yBase.toFixed(1)} ${(x-6).toFixed(1)},${(yBase+10).toFixed(1)} ${(x+6).toFixed(1)},${(yBase+10).toFixed(1)}" fill="${color}"/>`;
+    parts.push(`<line x1="${x.toFixed(1)}" y1="${(isExit ? y + 4 : y - 4).toFixed(1)}" x2="${x.toFixed(1)}" y2="${yBase.toFixed(1)}" stroke="${color}" stroke-width="1.4"/>`);
+    parts.push(arrow);
     parts.push(`<text x="${x.toFixed(1)}" y="${(isExit ? y - 8 : y + 15).toFixed(1)}" font-family="DejaVu Sans Mono" font-size="9" font-weight="700" fill="${color}" text-anchor="middle">${label}</text>`);
   });
   return parts.join('\n');
+}
+
+/** Active position overlays, kept visually consistent with OverlayManager.syncPositionOverlays. */
+function svgPositionOverlays(geo, state) {
+  const p = state.position;
+  if (!p || String(p.side || '').toUpperCase() === 'NONE') return '';
+  const parts = [];
+  const draw = (price, color, label, style='0') => {
+    if (!geo.inRange(price)) return;
+    const y = geo.yPrice(price);
+    parts.push(`<line x1="${geo.plotX}" y1="${y.toFixed(1)}" x2="${geo.plotX + geo.plotW}" y2="${y.toFixed(1)}" stroke="${color}" stroke-width="1.4" stroke-dasharray="${style === '0' ? '' : '6,4'}"/>`);
+    parts.push(`<rect x="${(geo.plotX + 3).toFixed(1)}" y="${(y - 9).toFixed(1)}" width="88" height="16" rx="3" fill="${color}" opacity="0.95"/>`);
+    parts.push(`<text x="${(geo.plotX + 47).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-family="DejaVu Sans Mono" font-size="9" font-weight="700" fill="#ffffff" text-anchor="middle">${esc(label)}</text>`);
+  };
+  draw(p.entryPrice, '#2962ff', 'ENTRY', '0');
+  draw(p.stopLoss, '#f23645', 'STOP LOSS', '2');
+  if (p.takeProfit != null) draw(p.takeProfit, '#089981', 'TAKE PROFIT', '2');
+  if (p.trailingStop != null) draw(p.trailingStop, '#f5c037', 'TRAILING SL', '1');
+  const targets = p.targetExit && Array.isArray(p.targetExit.targets) ? p.targetExit.targets : [];
+  targets.forEach((t, idx) => {
+    if (!t || t.status === 'EXECUTED') return;
+    const price = num(t.price);
+    if (price == null || !geo.inRange(price)) return;
+    const y = geo.yPrice(price);
+    parts.push(`<line x1="${geo.plotX}" y1="${y.toFixed(1)}" x2="${geo.plotX + geo.plotW}" y2="${y.toFixed(1)}" stroke="#f59e0b" stroke-width="1" stroke-dasharray="2,4"/>`);
+    parts.push(`<text x="${(geo.plotX + geo.plotW - 5).toFixed(1)}" y="${(y - 3).toFixed(1)}" font-family="DejaVu Sans Mono" font-size="9" font-weight="700" fill="#f59e0b" text-anchor="end">T${idx + 1} ${fmtPrice(price)}</text>`);
+  });
+  return parts.join('\n');
+}
+
+function svgHeaderLabels(state) {
+  const bot = state.botName || 'NOVA TRADE';
+  const trend = state.trend ? String(state.trend).toUpperCase() : '--';
+  const side = state.position && state.position.side ? String(state.position.side).toUpperCase() : (state.direction && state.direction !== 'MANUAL' ? String(state.direction).toUpperCase() : '--');
+  const qty = state.position && state.position.quantity != null ? `${Math.ceil(Number(state.position.quantity) * 1000) / 1000} BTC` : '';
+  const left = `${bot}  ·  ${state.symbol || '--'}  ·  ${state.timeframe || '--'}`;
+  const right = `TREND: ${trend}  ·  ${side}${qty ? `  ·  ${qty}` : ''}`;
+  return [
+    `<text x="${CHART_X + 14}" y="18" font-family="DejaVu Sans Mono" font-size="12" font-weight="700" fill="#ffffff">${esc(left)}</text>`,
+    `<text x="${CHART_X + CHART_W - 14}" y="18" font-family="DejaVu Sans Mono" font-size="11" font-weight="700" fill="#cbd5e1" text-anchor="end">${esc(right)}</text>`,
+  ].join('\n');
 }
 
 /** Current price axis label, matches chart-price-label.js. */
@@ -428,6 +473,7 @@ function renderChartFrame(state) {
     ? [
       svgGridAndAxes(geo, candles),
       svgLevelLines(geo, state),
+      svgPositionOverlays(geo, state),
       svgBoundaries(geo, checks),
       svgBodyReference(geo, checks, candles),
       svgCandles(geo, candles),
@@ -439,6 +485,7 @@ function renderChartFrame(state) {
 
   return `<svg viewBox="0 0 ${CANVAS_W} ${CANVAS_H}" width="${CANVAS_W}" height="${CANVAS_H}" xmlns="http://www.w3.org/2000/svg">
 <rect x="0" y="0" width="${CANVAS_W}" height="${CANVAS_H}" fill="#05060a"/>
+${svgHeaderLabels(state)}
 ${svgChartPanelBg()}
 <clipPath id="chartClip"><rect x="${CHART_X}" y="${CHART_Y}" width="${CHART_W}" height="${CHART_H}" rx="16"/></clipPath>
 <g clip-path="url(#chartClip)">
@@ -533,6 +580,8 @@ class SvgChartRenderer {
       resistance: (Array.isArray(session.resistance) ? session.resistance : []).map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0),
       level: session.level || null,
       trend: session.trend || '',
+      botName: session.botName || '',
+      position: session.position || null,
       decision: session.decision || {},
       executionMarkers: Array.isArray(session.executionMarkers) ? session.executionMarkers.slice(-20) : [],
       candles,

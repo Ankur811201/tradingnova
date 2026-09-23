@@ -16,6 +16,7 @@ const botEngineManager = require('./services/BotEngineManager');
 const candlePersistenceService = require('./services/marketData/CandlePersistenceService');
 const recordingService = require('./services/recording/RecordingService');
 const { TargetExitManager } = require('./services/TargetExitManager');
+const whatsappClient = require('./services/whatsapp/WhatsAppClient');
 
 
 async function main() {
@@ -38,6 +39,9 @@ async function main() {
   TargetExitManager.attachSocketServer(io);
   socketBus.attachIO(io);
   botEngineManager.init(io);
+
+  // WhatsApp runs server-side. The browser is only a control/QR UI; closing it does not stop notifications.
+  whatsappClient.connect().catch((err) => logger.error('WHATSAPP', `Startup connection failed: ${err.message}`));
 
   await botManager.discoverModels();
 

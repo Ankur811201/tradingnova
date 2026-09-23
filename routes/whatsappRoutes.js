@@ -1,0 +1,10 @@
+'use strict';
+const express = require('express');
+const controller = require('../controllers/whatsappController');
+const { requireAuth } = require('../middleware/auth');
+const router = express.Router();
+router.use(requireAuth);
+router.get('/status', controller.status);
+router.post('/settings', controller.saveSettings);
+router.post('/logout', controller.logout);
+module.exports = router;

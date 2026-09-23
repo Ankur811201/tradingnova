@@ -52,6 +52,15 @@ function quantityToLots(quantity) {
   return Number.isFinite(q) ? Number((q / LOT_SIZE_BTC).toFixed(8)) : null;
 }
 
+// Graph display only: ceiling to the nearest 0.01 LOT. This never changes
+// the stored or executed quantity.
+function formatGraphLots(quantity) {
+  var lots = quantityToLots(quantity);
+  if (!Number.isFinite(lots)) return null;
+  var roundedUp = Math.ceil((lots - 1e-12) * 100) / 100;
+  return roundedUp.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1') + ' LOT';
+}
+
 /** Converts a Date / ISO string / epoch-ms number to Unix seconds. Returns null if invalid. */
 function toUnixSeconds(value) {
   if (value === null || value === undefined) return null;
@@ -108,7 +117,7 @@ function makeEntryMarkerFromPosition(position, timeframe) {
     position: isLong ? 'belowBar' : 'aboveBar',
     color: isLong ? '#089981' : '#f23645',
     shape: isLong ? 'arrowUp' : 'arrowDown',
-    text: (isLong ? 'BUY' : 'SELL') + ' · ' + (quantityToLots(position.quantity) != null ? quantityToLots(position.quantity) + ' LOT' : 'ENTRY') + ' @ ' + position.entryPrice,
+    text: (isLong ? 'BUY' : 'SELL') + (formatGraphLots(position.quantity) ? ' · ' + formatGraphLots(position.quantity) : '') + ' @ ' + position.entryPrice,
   };
 }
 
@@ -137,7 +146,7 @@ function makeEntryMarkerFromTrade(trade, timeframe) {
     position: isLong ? 'belowBar' : 'aboveBar',
     color: isLong ? '#089981' : '#f23645',
     shape: isLong ? 'arrowUp' : 'arrowDown',
-    text: (isLong ? 'BUY' : 'SELL') + ' · ' + (quantityToLots(trade.quantity) != null ? quantityToLots(trade.quantity) + ' LOT' : 'ENTRY') + ' @ ' + trade.entryPrice,
+    text: (isLong ? 'BUY' : 'SELL') + (formatGraphLots(trade.quantity) ? ' · ' + formatGraphLots(trade.quantity) : '') + ' @ ' + trade.entryPrice,
   };
 }
 
@@ -222,29 +231,29 @@ function deriveLiveMarkers(executionPayload, timeframe) {
 
 
 function makeTargetMarker(event, side) {
-  if (!event || !event.type || !Number.isFinite(Number(event.candleStart))) return null;
+  // Only actual target execution is rendered on the trading graph.
+  // TARGET_TOUCHED and TARGET_CONFIRMATION (CT1/CT2/CT3) remain available
+  // to backend/status/history but are intentionally hidden here.
+  if (!event || event.type !== 'TARGET_EXIT' || !Number.isFinite(Number(event.candleStart))) return null;
   var time = Number(event.candleStart);
-  // TargetExitManager stores candleStart in epoch milliseconds; Lightweight
-  // Charts expects Unix seconds. Accept either form for compatibility.
   if (time > 100000000000) time = Math.floor(time / 1000);
   var targetIndex = Number(event.targetIndex);
   if (!Number.isFinite(targetIndex) || targetIndex < 1 || targetIndex > 4) return null;
-  var isExit = event.type === 'TARGET_EXIT';
-  var isTouch = event.type === 'TARGET_TOUCHED';
-  var stage = event.stage || null;
-  var text = isExit ? ('T' + targetIndex + ' EXIT') : (isTouch ? ('T' + targetIndex + ' TOUCH') : ((stage || 'CT') + ' T' + targetIndex));
   var isLong = side === 'LONG';
+  var lotsText = formatGraphLots(event.quantity);
   return {
-    id: 'target:' + (event.positionId || '') + ':' + (event.type || '') + ':' + targetIndex + ':' + (stage || '') + ':' + time,
-    type: isExit ? 'TARGET_EXIT' : (isTouch ? 'TARGET_TOUCHED' : 'TARGET_CONFIRMATION'),
+    id: 'target:' + (event.positionId || '') + ':TARGET_EXIT:' + targetIndex + ':' + time,
+    type: 'TARGET_EXIT',
     targetIndex: targetIndex,
-    stage: stage,
+    stage: null,
     time: time,
     price: Number(event.price),
-    position: isLong ? 'belowBar' : 'aboveBar',
-    color: isExit ? '#f59e0b' : (isTouch ? '#a78bfa' : '#2962ff'),
-    shape: isExit ? 'arrowDown' : (isTouch ? 'diamond' : 'circle'),
-    text: text,
+    // A target exit is a real CLOSE execution. Render it like the existing
+    // red close/exit marker, not like an entry or target-touch marker.
+    position: isLong ? 'aboveBar' : 'belowBar',
+    color: '#f23645',
+    shape: isLong ? 'arrowDown' : 'arrowUp',
+    text: 'T' + targetIndex + ' EXIT' + (lotsText ? ' · ' + lotsText : ''),
   };
 }
 

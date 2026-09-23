@@ -1,5 +1,7 @@
 'use strict';
 
+const whatsappNotifications = require('../whatsapp/WhatsAppNotificationService');
+
 const fs = require('fs');
 const path = require('path');
 const BotInstance = require('../../models/BotInstance');
@@ -1298,6 +1300,15 @@ class BotManager {
       // MODEL_002 recording: reuse the existing LEVEL_TOUCHED event. Only
       // S1/R1 (index 1) starts a server-side 1 FPS recording. This is
       // monitoring only and never participates in trading/risk/execution.
+      if (event.eventType === 'LEVEL_TOUCHED') {
+        await whatsappNotifications.notify('LAYER_TOUCH', {
+          instanceId,
+          symbol: dbInstance.symbol,
+          level: `${event.payload?.side === 'SUPPORT' ? 'S' : 'R'}${event.payload?.index ?? ''}`,
+          price: event.payload?.price,
+        });
+      }
+
       if (dbInstance.modelId === 'MODEL_002' && event.eventType === 'LEVEL_TOUCHED') {
         try {
           await recordingService.startFromLevelTouch({
@@ -1451,10 +1462,21 @@ class BotManager {
 
     if ((normalizedCommand.action === 'LONG' || normalizedCommand.action === 'SHORT') && executionResult.position) {
       this.ioRef.to(room).emit('position:opened', { instanceId, position: executionResult.position });
+      const opened = executionResult.position;
+      whatsappNotifications.notify('TRADE_OPEN', {
+        instanceId, symbol: opened.symbol, side: opened.side, quantity: opened.quantity,
+        entryPrice: opened.entryPrice, stopLoss: opened.stopLoss,
+      });
     }
 
     if (normalizedCommand.action === 'CLOSE' && executionResult.position) {
       this.ioRef.to(room).emit('position:closed', { instanceId, position: executionResult.position });
+      const closed = executionResult.position;
+      const closeReason = String(normalizedCommand.reason || '').toUpperCase();
+      if (closeReason.includes('STOP_LOSS')) {
+        whatsappNotifications.notify('STOP_LOSS', { instanceId, symbol: closed.symbol, side: closed.side, price: closed.currentPrice || closed.exitPrice || closed.entryPrice });
+      }
+      whatsappNotifications.notify('TRADE_CLOSED', { instanceId, symbol: closed.symbol, realizedPnl: closed.realizedPnl });
 
       const Trade = require('../../models/Trade');
       Trade.findOne({ instanceId, environment: normalizedCommand.environment })

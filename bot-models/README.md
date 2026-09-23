@@ -1,6 +1,6 @@
 # Bot Models — Current Build
 
-The only active trading model in this build is **MODEL_002**. MODEL_001 is obsolete and removed.
+**MODEL_001** is retained and registered for compatibility. **MODEL_002** is the current strategy model.
 
 ## MODEL_002 contract
 

@@ -46,7 +46,7 @@
       const chunk = Number(r.chunkIndex || 1);
       const start = r.chunkStartedAt ? new Date(r.chunkStartedAt).toLocaleTimeString() : time;
       const end = r.chunkEndedAt ? new Date(r.chunkEndedAt).toLocaleTimeString() : '--';
-      const directionClass = r.direction === 'SELL' ? 'text-rose-400' : 'text-emerald-400';
+      const directionClass = r.direction === 'SELL' ? 'text-rose-400' : r.direction === 'BUY' ? 'text-emerald-400' : 'text-gray-400';
       const playerUrl = `/bots/${encodeURIComponent(config.instanceId)}/recordings/${encodeURIComponent(r.recordingId)}`;
       return `
         <div class="glass-tight rounded-xl p-3 flex flex-col sm:flex-row sm:items-center gap-3">
@@ -55,6 +55,7 @@
               <span class="font-bold ${directionClass}">${escapeHtml(r.direction || '--')}</span>
               <span class="text-gray-500">•</span>
               <span class="text-gray-300">${escapeHtml(level)}</span>
+              ${r.recoveredFromStorage ? '<span class="text-amber-400">• RECOVERED</span>' : ''}
               <span class="text-gray-600">•</span>
               <span class="text-gray-500">${escapeHtml(time)}</span>
             </div>

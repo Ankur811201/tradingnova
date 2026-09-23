@@ -1,0 +1,27 @@
+<%- include('partials/head', { title: title }) %>
+<body>
+<div class="app-shell"><%- include('partials/sidebar', { activeNav: activeNav }) %><div class="main"><%- include('partials/topbar', { title: title }) %><div class="content">
+  <div class="grid grid-2">
+    <div class="card"><div class="card-header"><h2>WhatsApp Connection</h2></div>
+      <div id="waStatus" class="stat-value text-sm mb-16">Checking…</div>
+      <div id="waQr" class="text-center mb-16"></div>
+      <div id="waUser" class="text-sm muted mb-16"></div>
+      <button class="btn btn-danger" id="waLogout">Logout WhatsApp</button>
+    </div>
+    <div class="card"><div class="card-header"><h2>Notification Settings</h2></div>
+      <div class="field"><label for="waRecipient">Notify Number</label><input id="waRecipient" type="text" placeholder="919876543210" /></div>
+      <div class="text-sm muted mb-16">Use country code. Example: 919876543210</div>
+      <label class="field"><span><input type="checkbox" id="waLayerTouch"> Layer Touch</span></label>
+      <label class="field"><span><input type="checkbox" id="waTradeOpen"> Trade Open</span></label>
+      <label class="field"><span><input type="checkbox" id="waT1"> Target 1 Exit</span></label>
+      <label class="field"><span><input type="checkbox" id="waT2"> Target 2 Exit</span></label>
+      <label class="field"><span><input type="checkbox" id="waT3"> Target 3 Exit</span></label>
+      <label class="field"><span><input type="checkbox" id="waSL"> Stop Loss</span></label>
+      <label class="field"><span><input type="checkbox" id="waClosed"> Trade Closed</span></label>
+      <button class="btn btn-primary" id="waSave">Save Settings</button><div id="waMessage" class="text-sm muted mt-16"></div>
+    </div>
+  </div>
+</div></div></div>
+<%- include('partials/scripts') %>
+<script src="/js/whatsapp.js"></script>
+</body></html>

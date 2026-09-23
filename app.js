@@ -29,7 +29,8 @@ const safetyRoutes = require('./routes/safetyRoutes');
 const healthRoutes = require('./routes/healthRoutes');
 const recordingsRoutes = require('./routes/recordingsRoutes');
 const viewRoutes = require('./routes/viewRoutes');
-const botRoutes = require('./routes/botRoutes')
+const botRoutes = require('./routes/botRoutes');
+const whatsappRoutes = require('./routes/whatsappRoutes');
 
 /**
  * CORS origin resolver. If CORS_ALLOWED_ORIGIN is set (comma-separated), only
@@ -145,13 +146,11 @@ console.log("=================================");
   app.use('/api/safety', safetyRoutes);
   app.use('/api/health', healthRoutes);
   app.use('/api/recordings', recordingsRoutes);
+  app.use('/api/whatsapp', whatsappRoutes);
  
 
   // --- Frontend page routes (Part 2) ---
   
-  const viewRoutes = require('./routes/viewRoutes');
-const botRoutes = require('./routes/botRoutes');
-
 /* HTML Pages */
 app.use('/', viewRoutes);
 

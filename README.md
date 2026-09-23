@@ -1,11 +1,11 @@
 # Nova Trade — MODEL_002 Current Build
 
 This README documents the **current active trading workflow** in this build.
-MODEL_001 is obsolete and is not part of this project. Do not use old MODEL_001 documentation to describe current trading behavior.
+MODEL_001 is retained for compatibility and registration. Current trading behavior described in this build is MODEL_002.
 
 ## 1. Active model
 
-The only active strategy model is **MODEL_002**.
+**MODEL_001** is retained for compatibility; **MODEL_002** is the current strategy model.
 
 MODEL_002 is user-driven and rule-based:
 

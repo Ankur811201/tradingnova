@@ -537,6 +537,12 @@ class Model002 extends BotModelBase {
       return;
     }
 
+    // Layer attribution is based on the LAST configured label touched, not
+    // on the entry-price zone. Update the per-side last-touch state on every
+    // eligible closed candle, even while a position is open, so the next
+    // trade inherits the actual latest label touch.
+    this._recordLatestConfiguredTouches(candle);
+
     if (positionContext) {
       // Confirmed: no pyramiding, no new entry while a position is open.
       this._emitDecision('WAIT', { reason: 'position_already_open' }, candle);
@@ -947,6 +953,21 @@ class Model002 extends BotModelBase {
    * direction rather than re-derived from OHLC (which could disagree with
    * MODEL_002's own touch rules).
    */
+  /**
+   * Records the latest configured label touched on EACH side. This is the
+   * layer-selection source of truth: entry price is never used to infer S1/
+   * S2/S3/R1/R2/R3. If a candle spans multiple labels, the touch resolver
+   * deterministically returns the last configured label it intersects; live
+   * tick state can refine intrabar order separately.
+   */
+  _recordLatestConfiguredTouches(candle) {
+    const supportTouch = reversalEngine.findTouchedLevel(this.params.support || [], candle, 'BUY');
+    if (supportTouch) this._recordLevelTouch('BUY', supportTouch, candle);
+
+    const resistanceTouch = reversalEngine.findTouchedLevel(this.params.resistance || [], candle, 'SELL');
+    if (resistanceTouch) this._recordLevelTouch('SELL', resistanceTouch, candle);
+  }
+
   _recordLevelTouch(direction, matchedLevel, candle) {
     const side = direction === 'BUY' ? 'SUPPORT' : 'RESISTANCE';
     const key = side === 'SUPPORT' ? 'support' : 'resistance';
@@ -1038,7 +1059,13 @@ class Model002 extends BotModelBase {
   }
 
   _activeLevelFor(candidate) {
-    return { side: candidate.direction === 'BUY' ? 'SUPPORT' : 'RESISTANCE', index: candidate.matchedLevel.index, price: candidate.matchedLevel.price };
+    const side = candidate.direction === 'BUY' ? 'SUPPORT' : 'RESISTANCE';
+    const key = side === 'SUPPORT' ? 'support' : 'resistance';
+    const latest = this.levelTouch && this.levelTouch[key];
+    if (latest && latest.touched && Number.isInteger(latest.index) && Number.isFinite(latest.level)) {
+      return { side, index: latest.index, price: latest.level };
+    }
+    return { side, index: candidate.matchedLevel.index, price: candidate.matchedLevel.price };
   }
 
   _summarizeCandle(candle) {

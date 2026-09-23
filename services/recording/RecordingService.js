@@ -184,6 +184,7 @@ class RecordingService {
       renderer: null,
       capturePromise: Promise.resolve(),
       executionMarkers: [],
+      position: null,
     };
 
     // Register the session BEFORE the first database read. The trading
@@ -228,6 +229,16 @@ class RecordingService {
       }
     } catch (err) {
       console.warn(`[RECORDING] history load failed for ${id}: ${err.message}`);
+    }
+
+    // Capture the authoritative OPEN position at recording start so ENTRY/SL/TP
+    // and active target overlays match the live graph from the first frame.
+    try {
+      const Position = require('../../models/Position');
+      const openPosition = await Position.findOne({ instanceId, environment: bot.environment, status: 'OPEN' }).lean();
+      if (openPosition) session.position = openPosition;
+    } catch (err) {
+      console.warn(`[RECORDING] initial position load failed ${id}: ${err.message}`);
     }
 
     // Server-side SVG->PNG chart renderer. No browser process is launched:
@@ -341,9 +352,52 @@ class RecordingService {
     }
   }
 
+  updateTargetEvent(instanceId, event) {
+    const session = this.active.get(instanceId);
+    if (!session || !event || String(event.type || '').toUpperCase() !== 'TARGET_EXIT') return;
+    // Partial target exits change live position quantity and target status even
+    // though the position remains OPEN. Refresh the authoritative position so
+    // the next SVG frame mirrors those live-chart changes.
+    try {
+      const Position = require('../../models/Position');
+      Position.findById(event.positionId).lean().then((p) => {
+        const current = this.active.get(instanceId);
+        if (current && current.id === session.id) current.position = p || null;
+      }).catch(() => {});
+    } catch (_) {}
+
+    const price = num(event.price);
+    if (price == null || price <= 0) return;
+
+    const recordedAt = event.recordedAt ? new Date(event.recordedAt).getTime() : Date.now();
+    const candleStart = num(event.candleStart, recordedAt);
+    const markerMs = Number.isFinite(candleStart) ? candleStart : recordedAt;
+    const bucket = Math.floor(markerMs / this._timeframeMs(session.timeframe)) * this._timeframeMs(session.timeframe);
+    const targetIndex = Number(event.targetIndex);
+    const lots = num(event.lots);
+    const side = event.side === 'LONG' ? 'LONG' : event.side === 'SHORT' ? 'SHORT' : null;
+    const lotText = lots != null ? `${Math.ceil(lots * 100) / 100} LOT` : '';
+
+    const marker = {
+      id: `target-exit:${String(event.positionId || instanceId)}:${targetIndex}:${String(event.recordedAt || recordedAt)}`,
+      type: 'EXIT',
+      side,
+      price,
+      execTime: Math.floor(recordedAt / 1000),
+      time: Math.floor(bucket / 1000),
+      text: `T${Number.isFinite(targetIndex) ? targetIndex : '?'} EXIT${lotText ? ` · ${lotText}` : ''}`,
+    };
+
+    if (!session.executionMarkers.some(existing => existing.id === marker.id)) {
+      session.executionMarkers.push(marker);
+      if (session.executionMarkers.length > 20) session.executionMarkers = session.executionMarkers.slice(-20);
+    }
+  }
+
   updateExecution(instanceId, execution) {
     const session = this.active.get(instanceId);
     if (!session || !execution) return;
+    session.position = execution.position || null;
     const timeframeMs = this._timeframeMs(session.timeframe);
     const toMarker = (type, item) => {
       if (!item) return null;
@@ -636,9 +690,58 @@ class RecordingService {
     return n * ({ m: 60000, h: 3600000, d: 86400000 }[unit]);
   }
 
-  async list(instanceId, limit = 50) {
+  async list(instanceId, limit = 100) {
     const Recording = require('../../models/TradeRecording');
-    return Recording.find({ instanceId }).sort({ triggerTime: -1 }).limit(Math.min(Number(limit) || 50, 100)).lean();
+    const BotInstance = require('../../models/BotInstance');
+    const safeLimit = Math.min(Number(limit) || 100, 500);
+    const [records, bot] = await Promise.all([
+      Recording.find({ instanceId }).sort({ triggerTime: -1 }).limit(safeLimit).lean(),
+      BotInstance.findOne({ instanceId }).lean(),
+    ]);
+
+    const byId = new Map(records.map(r => [String(r.recordingId), r]));
+    const files = [];
+    if (fs.existsSync(RECORDINGS_DIR)) {
+      for (const name of fs.readdirSync(RECORDINGS_DIR)) {
+        if (!name.startsWith(`${instanceId}-`)) continue;
+        if (!/\.(webm|mp4|mkv)$/i.test(name)) continue;
+        const file = path.join(RECORDINGS_DIR, name);
+        let stat;
+        try { stat = fs.statSync(file); } catch (_) { continue; }
+        if (!stat.isFile() || stat.size <= 0) continue;
+        const recordingId = path.basename(name, path.extname(name));
+        if (byId.has(recordingId)) continue;
+
+        const match = name.match(/-chunk-(\d+)\.(?:webm|mp4|mkv)$/i);
+        const chunkIndex = match ? Number(match[1]) : 1;
+        const startedAt = stat.birthtimeMs || stat.mtimeMs;
+        files.push({
+          recordingId,
+          instanceId,
+          botName: bot?.name || '',
+          symbol: bot?.symbol || 'UNKNOWN',
+          timeframe: getActiveTimeframe(bot) || bot?.parameters?.timeframe || 'UNKNOWN',
+          environment: bot?.environment || 'PAPER',
+          direction: 'UNKNOWN',
+          level: null,
+          triggerTime: new Date(startedAt),
+          chunkIndex,
+          chunkStartedAt: new Date(startedAt),
+          chunkEndedAt: new Date(stat.mtimeMs),
+          durationSeconds: null,
+          frameRate: FPS,
+          status: 'READY',
+          fileName: name,
+          filePath: path.relative(path.join(__dirname, '..', '..'), file).replace(/\\/g, '/'),
+          triggerReason: 'Recovered from video storage',
+          recoveredFromStorage: true,
+        });
+      }
+    }
+
+    return [...records, ...files]
+      .sort((a, b) => new Date(b.triggerTime || 0).getTime() - new Date(a.triggerTime || 0).getTime())
+      .slice(0, safeLimit);
   }
 }
 

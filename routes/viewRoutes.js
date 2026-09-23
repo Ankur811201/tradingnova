@@ -18,6 +18,7 @@ const PAGES = [
   { path: '/trades', view: 'trades', title: 'Trade History', nav: 'trades' },
   { path: '/system-status', view: 'system-status', title: 'System Status', nav: 'system-status' },
   { path: '/safety', view: 'safety', title: 'Safety & Settings', nav: 'safety' },
+  { path: '/whatsapp', view: 'whatsapp', title: 'WhatsApp', nav: 'whatsapp' },
 ];
 
 // Public login page. If already authenticated, go straight to the dashboard.

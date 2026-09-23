@@ -16,7 +16,8 @@
  * Candle close is not required for the entry trigger.
  */
 
-const POINT_BUFFER = 5; // confirmed fixed 5-point SL buffer
+const SL_BUFFER = 10; // MODEL_002 stop-loss buffer: 10 points from evaluation-window wick
+const POINT_BUFFER = 5; // MODEL_002 Candle-2 boundary buffer
 
 // --- Step 1: Support/Resistance touch (Candle 1) ------------------------
 
@@ -31,26 +32,27 @@ function touchesLevelExact(level, candle) {
   return candle.low <= level && candle.high >= level;
 }
 
-/** Returns the first configured level (in given order) touched by `candle`, or null. */
+/** Returns the LAST configured label touched by `candle`, not a price zone.
+ * OHLC cannot prove intrabar order, so configured order is the deterministic
+ * fallback when one candle spans multiple labels. */
 function findTouchedLevel(levels, candle) {
+  let matched = null;
   for (let i = 0; i < levels.length; i += 1) {
-    if (touchesLevelExact(levels[i], candle)) {
-      return { index: i + 1, price: levels[i] };
-    }
+    if (touchesLevelExact(levels[i], candle)) matched = { index: i + 1, price: levels[i] };
   }
-  return null;
+  return matched;
 }
 
 // --- Step 2 (BUY) / Step 1 (SELL): Stop Loss -----------------------------
 
-/** BULLISH+SUPPORT: stopLoss = Candle1.low - 5 points (confirmed fixed buffer). */
+/** BULLISH+SUPPORT: stopLoss = Candle1.low - 10 points. */
 function computeBuyStopLoss(candle1) {
-  return candle1.low - POINT_BUFFER;
+  return candle1.low - SL_BUFFER;
 }
 
-/** BEARISH+RESISTANCE: stopLoss = Candle1.high + 5 points (confirmed fixed buffer). */
+/** BEARISH+RESISTANCE: stopLoss = Candle1.high + 10 points. */
 function computeSellStopLoss(candle1) {
-  return candle1.high + POINT_BUFFER;
+  return candle1.high + SL_BUFFER;
 }
 
 // --- Step 3 (BUY) / Step 2 (SELL): Candle 2 body-high/body-low touch ----
