@@ -62,8 +62,8 @@ function lastDecision(ctx) {
 // Pure engine unit tests (reversalPatternEngine.js)
 // =========================================================================
 
-test('touchesSupport: wick touch valid (low<=level even if high<level too — gap-through counts)', () => {
-  assert.equal(re.touchesSupport({ low: 59990, high: 59995 }, 60000), true);
+test('touchesSupport: candle fully below level is NOT a configured-level touch', () => {
+  assert.equal(re.touchesSupport({ low: 59990, high: 59995 }, 60000), false);
 });
 test('touchesSupport: body touch valid', () => {
   assert.equal(re.touchesSupport({ low: 59990, high: 60010, open: 59995, close: 60005 }, 60000), true);
@@ -71,6 +71,48 @@ test('touchesSupport: body touch valid', () => {
 test('touchesSupport: no touch when low > level', () => {
   assert.equal(re.touchesSupport({ low: 60001, high: 60010 }, 60000), false);
 });
+test('last-touch layer: exact range intersection prevents false higher-level touch', () => {
+  const levels = [84300, 84200, 84100];
+  assert.deepEqual(re.findTouchedLevel(levels, { low: 84150, high: 84250 }, 'BUY'), { index: 2, price: 84200 });
+  assert.equal(re.findTouchedLevel(levels, { low: 84000, high: 84050 }, 'BUY'), null);
+});
+
+test('last-touch layer: multi-level candle uses deterministic last configured match', () => {
+  const levels = [84300, 84200, 84100];
+  assert.deepEqual(re.findTouchedLevel(levels, { low: 84000, high: 84400 }, 'BUY'), { index: 3, price: 84100 });
+});
+
+test('last-touch layer: resistance requires exact range intersection', () => {
+  const levels = [84300, 84400, 84500];
+  assert.deepEqual(re.findTouchedLevel(levels, { low: 84400, high: 84600 }, 'SELL'), { index: 3, price: 84500 });
+  assert.equal(re.findTouchedLevel(levels, { low: 84650, high: 84700 }, 'SELL'), null);
+});
+
+test('last-touch layer: S1 -> S2 -> S3 -> S2 leaves S2 as the trade layer', () => {
+  const model = Object.create(Model002.prototype);
+  model.params = { support: [84300, 84200, 84100], resistance: [85000, 85100, 85200] };
+  model.levelTouch = {
+    support: { touched: false, at: null, level: null, index: null },
+    resistance: { touched: false, at: null, level: null, index: null },
+  };
+  model._hydrating = true;
+
+  const candles = [
+    { timestamp: BASE + 1, low: 84290, high: 84310 }, // S1
+    { timestamp: BASE + 2, low: 84190, high: 84210 }, // S2
+    { timestamp: BASE + 3, low: 84090, high: 84110 }, // S3
+    { timestamp: BASE + 4, low: 84190, high: 84210 }, // S2 again
+  ];
+  candles.forEach(c => model._recordLatestConfiguredTouches(c));
+
+  assert.deepEqual(model.levelTouch.support, {
+    touched: true, at: BASE + 4, level: 84200, index: 2,
+  });
+  assert.deepEqual(model._activeLevelFor({ direction: 'BUY', matchedLevel: { index: 1, price: 84300 } }), {
+    side: 'SUPPORT', index: 2, price: 84200,
+  });
+});
+
 test('touchesResistance mirror', () => {
   assert.equal(re.touchesResistance({ low: 64995, high: 65010 }, 65000), true);
   assert.equal(re.touchesResistance({ low: 64995, high: 64999 }, 65000), false);
