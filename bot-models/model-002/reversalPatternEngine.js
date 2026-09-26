@@ -62,19 +62,14 @@ const SL_BUFFER = 10;   // stop-loss buffer, wick-based
 
 // --- Support/Resistance touch (per-candle wick test, single-sided) -----
 
-/**
- * Exact configured-level touch. A candle touches a level only when the
- * level lies inside the candle's full OHLC range. This prevents a candle
- * that is already completely below S1 (or above R1) from falsely updating
- * the last-touch layer to that level.
- */
+/** BULLISH+SUPPORT: a wick OR body touch is valid whenever the candle's low reaches the level (does not also require high >= level). */
 function touchesSupport(candle, level) {
-  return candle.low <= level && candle.high >= level;
+  return candle.low <= level;
 }
 
-/** Resistance uses the same exact range-intersection rule. */
+/** BEARISH+RESISTANCE mirror: candle's high reaches the level. */
 function touchesResistance(candle, level) {
-  return candle.low <= level && candle.high >= level;
+  return candle.high >= level;
 }
 
 /** Returns the LAST configured label touched by `candle` for the given direction.

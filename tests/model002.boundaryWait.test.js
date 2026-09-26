@@ -162,13 +162,13 @@ test('3/4/5/6/13/14. BUY: C3 and C4 touch neither boundary -> WAIT; C5 touches U
   assert.equal(lastDecision(ctx).upperBoundary, boundariesAtC2.upper, '6. triggered against Candle 2\'s own boundaries');
 });
 
-test('BUY: the stop loss still spans Candle 2 through the trigger candle, waiting candles included', async () => {
+test('BUY: the stop loss spans Candle 1 through the trigger candle, waiting candles included', async () => {
   const { ctx, model } = await buySetup(); // B.low = 59995
   await feed(model, candleAt(21, 60020, 60030, 59993, 60025)); // WAIT, but the lowest low so far
   await feed(model, candleAt(22, 60025, 60040, 60020, 60030)); // WAIT
   await feed(model, candleAt(23, 60050, 60070, 60040, 60055)); // BUY
   assert.equal(ctx.commands.length, 1);
-  // Unchanged rule: lowest wick low from Candle 2 through the trigger, -10.
+  // New rule: lowest wick low from Candle 1 through the trigger, -10.
   assert.equal(ctx.commands[0].stopLoss, 59993 - 10);
 });
 
@@ -320,4 +320,26 @@ test('the retired "did not trigger correctly" wording is gone from the model', (
   assert.match(map.formatModel002Reason('awaiting_boundary_touch'), /did not touch either boundary/);
   // The retired code still renders as text for historical Decision History rows.
   assert.doesNotMatch(map.formatModel002Reason('invalidated_candle3_wrong_or_no_boundary_touch'), /did not trigger correctly/);
+});
+
+test('BUY: stop loss includes Candle 1 wick low in the evaluation window', async () => {
+  const { ctx, model } = await startedModel({});
+  const history = flat(20, 60010);
+  history[19] = candleAt(19, 60010, 60020, 59970, 60010); // Candle 1 extreme
+  await model.onHydrate(history);
+  await feed(model, VALID_B_BUY);
+  await feed(model, candleAt(21, 60050, 60070, 60000, 60060)); // C3 triggers BUY
+  assert.equal(ctx.commands.length, 1);
+  assert.equal(ctx.commands[0].stopLoss, 59970 - 10);
+});
+
+test('SELL: stop loss includes Candle 1 wick high in the evaluation window', async () => {
+  const { ctx, model } = await startedModel({ trend: 'BEARISH', support: SELL_SUPPORT, resistance: SELL_RESISTANCE });
+  const history = flat(20, 59990);
+  history[19] = candleAt(19, 59990, 60030, 59980, 59990); // Candle 1 extreme
+  await model.onHydrate(history);
+  await feed(model, VALID_B_SELL);
+  await feed(model, candleAt(21, 59950, 59960, 59935, 59945)); // C3 triggers SELL
+  assert.equal(ctx.commands.length, 1);
+  assert.equal(ctx.commands[0].stopLoss, 60030 + 10);
 });
