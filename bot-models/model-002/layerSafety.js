@@ -43,8 +43,13 @@ class LayerSafety {
     if (!entryLevel || typeof entryLevel !== 'object') return null;
     const side = String(entryLevel.side || '').toUpperCase();
     const index = Number(entryLevel.index);
-    if (!['SUPPORT','RESISTANCE'].includes(side) || !Number.isInteger(index) || index < 0 || index > 2) return null;
-    return `${side === 'SUPPORT' ? 'S' : 'R'}${index + 1}`;
+    // MODEL_002 level descriptors are 1-based everywhere in the live path:
+    // findTouchedLevel(), levelTouchState, RecordingService and the UI all
+    // use index 1=S1/R1, 2=S2/R2, 3=S3/R3. The old implementation treated
+    // these descriptors as 0-based and added 1 again, causing the exact
+    // production shift: S1 losses -> S2, S2 losses -> S3, and S3 -> null.
+    if (!['SUPPORT','RESISTANCE'].includes(side) || !Number.isInteger(index) || index < 1 || index > 3) return null;
+    return `${side === 'SUPPORT' ? 'S' : 'R'}${index}`;
   }
 
   canOpenLevel(entryLevel) {

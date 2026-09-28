@@ -751,6 +751,8 @@ class BotManager {
     }
     dbInstance.status = 'PAUSED';
     await dbInstance.save();
+    try { await recordingService.stopForBotPause(instanceId, 'BOT_PAUSED'); }
+    catch (err) { await logger.warn('BOT', `Recording stop on pause failed for ${instanceId}: ${err.message}`); }
     await logger.info('BOT', `Bot instance paused: ${instanceId}`);
     this._broadcastStatus(dbInstance);
     return dbInstance;
@@ -775,6 +777,8 @@ class BotManager {
     dbInstance.status = 'STOPPED';
     dbInstance.stoppedAt = new Date();
     await dbInstance.save();
+    try { await recordingService.stopForBotPause(instanceId, 'BOT_STOPPED'); }
+    catch (err) { await logger.warn('BOT', `Recording stop on stop failed for ${instanceId}: ${err.message}`); }
     this.readiness.delete(instanceId);
     await logger.info('BOT', `Bot instance stopped: ${instanceId}`);
     this._broadcastStatus(dbInstance);
@@ -1536,7 +1540,7 @@ class BotManager {
       // Recording-only mirror of the authoritative execution result. This
       // does not alter trading state; it lets the SVG recorder render the
       // same BUY/SELL/EXIT action markers visible on the live chart.
-      recordingService.updateExecution(instanceId, executionPayload);
+      await recordingService.updateExecution(instanceId, executionPayload);
       this.ioRef.to(`bot:${instanceId}`).emit('bot:execution', executionPayload);
     } catch (err) {
       await logger.error('BOT', `Failed to emit bot:execution for ${instanceId}: ${err.message}`);

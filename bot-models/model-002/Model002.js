@@ -680,12 +680,6 @@ class Model002 extends BotModelBase {
         // R1/S1 first confirmed setup is calibration-only; all later
         // R1/S1 and every R2/R3/S2/S3 setup is a normal NEW pattern.
         isCalibrationPattern: Boolean(isCalibration || this._computeIsCalibrationPattern(direction, touch)),
-        // Stop-loss evaluation window starts at Candle 1 and continues
-        // through Candle 2 and every subsequent evaluation/trigger candle.
-        // Keep the existing state variable names to avoid changing any
-        // downstream lifecycle, replay, graph, or exit behaviour.
-        lowestLowSinceCandle2: Math.min(prevCandle.low, candle.low),
-        highestHighSinceCandle2: Math.max(prevCandle.high, candle.high),
         firstLiveBoundaryTouch: null,
         liveTriggerCandle: null,
       } };
@@ -1286,8 +1280,8 @@ class Model002 extends BotModelBase {
       candidate.liveTriggerCandle.close = price;
     }
 
-    // Only NEW uses the running Candle-1..trigger SL window. OLD keeps its
-    // existing fixed Candle-1 stop-loss formula, so do not mutate its SL state here.
+    // Only NEW uses the running B..trigger SL window. OLD keeps its existing
+    // fixed Candle-1 stop-loss formula, so do not mutate its SL state here.
     if (candidate.engine === 'NEW') {
       candidate.lowestLowSinceCandle2 = Math.min(
         Number.isFinite(candidate.lowestLowSinceCandle2) ? candidate.lowestLowSinceCandle2 : candidate.candle2.low,
@@ -1402,10 +1396,11 @@ class Model002 extends BotModelBase {
     const entryPrice = direction === 'BUY' ? candidate.boundaries.upper : candidate.boundaries.lower;
     // Unchanged formula (reversalPatternEngine.computeBuy/SellStopLoss =
     // lowest low / highest high, minus / plus 10). The first argument now
-    // carries the running wick extreme across Candle 1, Candle 2 and every
-    // candle that WAITed after it, so the full evaluation window stays complete.
-    // With Candle 1 included, the stored window is initialized at A/B creation
-    // and then extended by every waiting/trigger candle.
+    // carries the running wick extreme across Candle 2 and every candle
+    // that WAITed after it, so the documented window "from Candle 2 through
+    // the trigger candle" stays complete now that more than one candle can
+    // sit inside it. With no waiting candles this is exactly Candle 2's own
+    // high/low, i.e. byte-identical to the previous behaviour.
     const windowLow = Number.isFinite(candidate.lowestLowSinceCandle2) ? candidate.lowestLowSinceCandle2 : candidate.candle2.low;
     const windowHigh = Number.isFinite(candidate.highestHighSinceCandle2) ? candidate.highestHighSinceCandle2 : candidate.candle2.high;
     const stopLoss = direction === 'BUY'

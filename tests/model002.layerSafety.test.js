@@ -9,6 +9,24 @@ test('fresh level safety starts all six levels at zero and one-success cap', () 
   assert.equal(s.getState().safetyStatus, 'NORMAL');
 });
 
+
+test('live 1-based level descriptors map to the same S/R labels without shifting', () => {
+  assert.equal(LayerSafety.normalizeLevelKey({ side: 'SUPPORT', index: 1 }), 'S1');
+  assert.equal(LayerSafety.normalizeLevelKey({ side: 'SUPPORT', index: 2 }), 'S2');
+  assert.equal(LayerSafety.normalizeLevelKey({ side: 'SUPPORT', index: 3 }), 'S3');
+  assert.equal(LayerSafety.normalizeLevelKey({ side: 'RESISTANCE', index: 1 }), 'R1');
+  assert.equal(LayerSafety.normalizeLevelKey({ side: 'RESISTANCE', index: 2 }), 'R2');
+  assert.equal(LayerSafety.normalizeLevelKey({ side: 'RESISTANCE', index: 3 }), 'R3');
+});
+
+test('real S1/S2/S3 touch indexes attribute losses to the same named layer', () => {
+  const s = new LayerSafety();
+  s.recordTradeOutcome('s1-loss', -10, { side: 'SUPPORT', index: 1 }, 'STOP_LOSS');
+  s.recordTradeOutcome('s2-loss', -10, { side: 'SUPPORT', index: 2 }, 'STOP_LOSS');
+  s.recordTradeOutcome('s3-loss', -10, { side: 'SUPPORT', index: 3 }, 'STOP_LOSS');
+  assert.deepEqual(s.getState().levelLosses, { S1:1, S2:1, S3:1, R1:0, R2:0, R3:0 });
+});
+
 test('loss increments only the level that opened the trade', () => {
   const s = new LayerSafety();
   s.recordTradeOutcome('a', -10, 'S1');
@@ -21,7 +39,7 @@ test('loss increments only the level that opened the trade', () => {
 test('two losses block only that level; other levels remain available', () => {
   const s = new LayerSafety();
   s.recordTradeOutcome('a', -10, 'S1');
-  const r = s.recordTradeOutcome('b', -10, {side:'SUPPORT', index:0});
+  const r = s.recordTradeOutcome('b', -10, {side:'SUPPORT', index:1});
   assert.equal(r.transition, 'LEVEL_BLOCKED');
   assert.equal(s.canOpenLevel('S1'), false);
   assert.equal(s.canOpenLevel('S2'), true);
