@@ -680,6 +680,12 @@ class Model002 extends BotModelBase {
         // R1/S1 first confirmed setup is calibration-only; all later
         // R1/S1 and every R2/R3/S2/S3 setup is a normal NEW pattern.
         isCalibrationPattern: Boolean(isCalibration || this._computeIsCalibrationPattern(direction, touch)),
+        // Stop-loss evaluation window starts at Candle 1 and continues
+        // through Candle 2 and every subsequent evaluation/trigger candle.
+        // Keep the existing state variable names to avoid changing any
+        // downstream lifecycle, replay, graph, or exit behaviour.
+        lowestLowSinceCandle2: Math.min(prevCandle.low, candle.low),
+        highestHighSinceCandle2: Math.max(prevCandle.high, candle.high),
         firstLiveBoundaryTouch: null,
         liveTriggerCandle: null,
       } };
