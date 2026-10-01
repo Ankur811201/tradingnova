@@ -121,10 +121,18 @@ async function getCandles(req, res, next) {
     // visible). Backward-compatible: if createdAt is ever missing/invalid,
     // no filter is applied, preserving prior (unfiltered) behavior rather
     // than risking an empty chart for a real bot.
+    const historyStartMs = Date.now() - HISTORY_WINDOW_MS;
+    const createdAtMs = instance.createdAt instanceof Date && !Number.isNaN(instance.createdAt.getTime())
+      ? instance.createdAt.getTime()
+      : (typeof instance.createdAt === 'number' && Number.isFinite(instance.createdAt) ? instance.createdAt : null);
+    const baselineMs = createdAtMs !== null
+      ? Math.max(historyStartMs, createdAtMs)
+      : historyStartMs;
+
     const candleFilter = {
       symbol,
       timeframe,
-      timestamp: { $gte: Date.now() - HISTORY_WINDOW_MS },
+      timestamp: { $gte: baselineMs },
     };
 
     // Newest-first for the limit to make sense, then reversed to oldest -> newest for the chart.
