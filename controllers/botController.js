@@ -25,6 +25,7 @@ const { formatModel002Reason } = require('../public/js/renderers/model002-reason
 // expected to accumulate more closed trades than this within the lifetime
 // of the app, but an unbounded query is avoided regardless.
 const PERFORMANCE_TRADES_LIMIT = 5000;
+const DECISION_HISTORY_WINDOW_MS = 36 * 60 * 60 * 1000;
 
 function decisionHistoryKey(payload = {}) {
   return JSON.stringify({
@@ -86,7 +87,11 @@ exports.renderBotDetail = async (req, res, next) => {
     const [trades, signals, decisionEvents, currentPosition, perfTrades, storyPositions] = await Promise.all([
       Trade.find({ instanceId, environment: bot.environment }).sort({ createdAt: -1 }).limit(50).lean(),
       Signal.find({ instanceId }).sort({ createdAt: -1 }).limit(50).lean(),
-      StrategyEvent.find({ instanceId, eventType: 'DECISION' }).sort({ at: -1 }).limit(200).lean(),
+      StrategyEvent.find({
+        instanceId,
+        eventType: 'DECISION',
+        at: { $gte: new Date(Date.now() - DECISION_HISTORY_WINDOW_MS) },
+      }).sort({ at: -1 }).limit(2160).lean(),
       Position.findOne({ instanceId, environment: bot.environment, status: 'OPEN' }).lean(),
       Trade.find({ instanceId, environment: bot.environment })
         .sort({ closedAt: -1 })

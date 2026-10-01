@@ -169,6 +169,11 @@ class Model002 extends BotModelBase {
     this.r1Calibrated = false;
     this.s1Calibrated = false;
 
+    // After the one-time opposite-market stop-hunt calibration is consumed,
+    // carry the calibrated/last-touched level into the next pattern search.
+    // A genuinely new configured level touch replaces this carry-forward.
+    this.reuseLastTouchedLevel = null;
+
     // MODEL_002 safety is level-based: each S1/S2/S3/R1/R2/R3 has its own
     // two-loss allowance. One successful completed trade stops the bot.
     this.layerSafety = new LayerSafety();
@@ -587,8 +592,9 @@ class Model002 extends BotModelBase {
     this.patternCandidate = attempt.candidate;
 
     if (attempt.candidate.engine === 'NEW') {
+      const carried = attempt.candidate.stage === 'WAITING_FOR_CANDLE2_CARRIED';
       this._emitDecision('WAIT', {
-        reason: 'candle2_confirmed_awaiting_candle3', direction: attempt.candidate.direction,
+        reason: carried ? 'carried_level_candle1_awaiting_candle2' : 'candle2_confirmed_awaiting_candle3', direction: attempt.candidate.direction,
         activeLevel: this._activeLevelFor(attempt.candidate),
         candle1: this._summarizeCandle(attempt.candidate.candle1),
         candle2: this._summarizeCandle(attempt.candidate.candle2),
@@ -633,12 +639,31 @@ class Model002 extends BotModelBase {
 
     // NEW A/B/C engine is used by all four combinations. Keep one implementation
     // here so mirrored BUY and SELL routes cannot drift apart.
-    const buildNewAttempt = (levels, direction, isCalibration) => {
-      const touch = reversalEngine.findTouchedLevel(levels, candle, direction);
+    const buildNewAttempt = (levels, direction, isCalibration, touchOverride = null) => {
+      const freshTouch = reversalEngine.findTouchedLevel(levels, candle, direction);
+      const isCarriedForward = !freshTouch && Boolean(touchOverride) && touchOverride.direction === direction;
+      const touch = freshTouch || (isCarriedForward
+        ? { index: touchOverride.index, price: touchOverride.price }
+        : null);
       if (!touch) return null;
 
-      this._recordLevelTouch(direction, touch, candle);
-      if (live) this._maybeSwitchToOppositeMarketTimeframe(candle, direction, touch);
+      if (freshTouch) this._recordLevelTouch(direction, touch, candle);
+      if (live && freshTouch) this._maybeSwitchToOppositeMarketTimeframe(candle, direction, touch);
+
+      // After stop-hunt/first-trade-left calibration, the next candle is
+      // Candle 1 using the remembered calibrated level. The following candle
+      // becomes Candle 2. This avoids requiring the market to physically
+      // touch the same level again before the next trade decision.
+      if (isCarriedForward) {
+        return { candidate: {
+          engine: 'NEW', direction, candle1: candle, candle2: null,
+          matchedLevel: touch, carriedForwardLevel: true,
+          stage: 'WAITING_FOR_CANDLE2_CARRIED', boundaries: null, points: null,
+          isCalibrationPattern: false, firstLiveBoundaryTouch: null, liveTriggerCandle: null,
+          lowestLowSinceCandle2: candle.low,
+          highestHighSinceCandle2: candle.high,
+        } };
+      }
 
       if (!prevCandle) {
         return { rejected: {
@@ -658,7 +683,7 @@ class Model002 extends BotModelBase {
       }
 
       const points = computeCandle2Points(candle, direction);
-      if (!isBodyPMaximum(points)) {
+      if (!isBodyPMaximum(points, direction)) {
         return { rejected: {
           reason: 'bodyP_not_maximum', direction,
           activeLevel: this._activeLevelFor({ direction, matchedLevel: touch }),
@@ -680,14 +705,11 @@ class Model002 extends BotModelBase {
         // R1/S1 first confirmed setup is calibration-only; all later
         // R1/S1 and every R2/R3/S2/S3 setup is a normal NEW pattern.
         isCalibrationPattern: Boolean(isCalibration || this._computeIsCalibrationPattern(direction, touch)),
-        // Stop-loss evaluation window starts at Candle 1 and continues
-        // through Candle 2 and every subsequent evaluation/trigger candle.
-        // Keep the existing state variable names to avoid changing any
-        // downstream lifecycle, replay, graph, or exit behaviour.
-        lowestLowSinceCandle2: Math.min(prevCandle.low, candle.low),
-        highestHighSinceCandle2: Math.max(prevCandle.high, candle.high),
         firstLiveBoundaryTouch: null,
         liveTriggerCandle: null,
+        // Stop-loss evaluation window includes Candle 1 and Candle 2.
+        lowestLowSinceCandle2: Math.min(prevCandle.low, candle.low),
+        highestHighSinceCandle2: Math.max(prevCandle.high, candle.high),
       } };
     };
 
@@ -697,10 +719,17 @@ class Model002 extends BotModelBase {
     // and first R1 (BULLISH) confirmed setup are calibration-only.
     const primaryLevels = this.params.support;
     const primaryDirection = 'BUY';
-    const buyAttempt = buildNewAttempt(primaryLevels, primaryDirection, false);
+    const buyTouch = reversalEngine.findTouchedLevel(primaryLevels, candle, primaryDirection);
+    const buyCarry = !buyTouch && this.reuseLastTouchedLevel && this.reuseLastTouchedLevel.direction === primaryDirection
+      ? this.reuseLastTouchedLevel : null;
+    const buyAttempt = buildNewAttempt(primaryLevels, primaryDirection, false, buyCarry);
     if (buyAttempt) return buyAttempt;
 
-    const sellAttempt = buildNewAttempt(this.params.resistance, 'SELL', false);
+    const sellLevels = this.params.resistance;
+    const sellTouch = reversalEngine.findTouchedLevel(sellLevels, candle, 'SELL');
+    const sellCarry = !sellTouch && this.reuseLastTouchedLevel && this.reuseLastTouchedLevel.direction === 'SELL'
+      ? this.reuseLastTouchedLevel : null;
+    const sellAttempt = buildNewAttempt(sellLevels, 'SELL', false, sellCarry);
     if (sellAttempt) return sellAttempt;
 
     return null;
@@ -795,6 +824,11 @@ class Model002 extends BotModelBase {
   /** Advances an in-progress pattern candidate through Candle 2 (shape validation, with OLD-engine Candle-1 replacement) or the fixed-boundary confirmation stage. */
   async _advancePatternCandidate(candle) {
     const candidate = this.patternCandidate;
+
+    if (candidate.engine === 'NEW' && candidate.stage === 'WAITING_FOR_CANDLE2_CARRIED') {
+      await this._advanceCarriedCandle1(candidate, candle);
+      return;
+    }
 
     if (candidate.engine === 'NEW') {
       await this._advanceNewEngineCandidate(candle);
@@ -934,13 +968,23 @@ class Model002 extends BotModelBase {
    * touched — array positions are preserved, no reordering.
    */
   _applyCalibration(candidate) {
+    const side = candidate.direction === 'SELL' ? 'RESISTANCE' : 'SUPPORT';
+    const calibratedPrice = candidate.direction === 'SELL' ? candidate.candle1.high : candidate.candle1.low;
+
     if (candidate.direction === 'SELL') {
-      this.params.resistance[0] = candidate.candle1.high;
+      this.params.resistance[0] = calibratedPrice;
       this.r1Calibrated = true;
     } else {
-      this.params.support[0] = candidate.candle1.low;
+      this.params.support[0] = calibratedPrice;
       this.s1Calibrated = true;
     }
+
+    this.reuseLastTouchedLevel = {
+      direction: candidate.direction, side,
+      index: candidate.matchedLevel && Number.isInteger(candidate.matchedLevel.index) ? candidate.matchedLevel.index : 1,
+      price: calibratedPrice,
+      calibratedAt: candidate.candle2 && candidate.candle2.timestamp,
+    };
   }
 
   /**
@@ -984,6 +1028,8 @@ class Model002 extends BotModelBase {
     if (!this.levelTouch) this.levelTouch = readLevelTouchState(null);
     const previous = this.levelTouch[key];
     const unchanged = previous.touched && previous.level === price && previous.index === index;
+
+    if (this.reuseLastTouchedLevel) this.reuseLastTouchedLevel = null;
 
     this.levelTouch = Object.assign({}, this.levelTouch, {
       [key]: { touched: true, at, level: price, index },
@@ -1066,6 +1112,9 @@ class Model002 extends BotModelBase {
 
   _activeLevelFor(candidate) {
     const side = candidate.direction === 'BUY' ? 'SUPPORT' : 'RESISTANCE';
+    if (candidate.carriedForwardLevel && candidate.matchedLevel) {
+      return { side, index: candidate.matchedLevel.index, price: candidate.matchedLevel.price };
+    }
     const key = side === 'SUPPORT' ? 'support' : 'resistance';
     const latest = this.levelTouch && this.levelTouch[key];
     if (latest && latest.touched && Number.isInteger(latest.index) && Number.isFinite(latest.level)) {
@@ -1170,6 +1219,63 @@ class Model002 extends BotModelBase {
    * #12: restart never reuses old Candle1/Candle2, so this same candle C
    * is never re-checked as a new B here either).
    */
+  async _advanceCarriedCandle1(candidate, candle2) {
+    const levels = candidate.direction === 'BUY' ? this.params.support : this.params.resistance;
+    const freshTouch = reversalEngine.findTouchedLevel(levels, candle2, candidate.direction);
+
+    if (freshTouch) {
+      this._recordLevelTouch(candidate.direction, freshTouch, candle2);
+      candidate = Object.assign({}, candidate, { matchedLevel: freshTouch, carriedForwardLevel: false });
+    }
+
+    const ab = reversalEngine.validateAB(candidate.candle1, candle2, candidate.direction);
+    if (!ab.valid) {
+      this.patternCandidate = null;
+      this._emitDecision('WAIT', {
+        reason: candidate.direction === 'BUY' ? 'ab_body_high_not_greater' : 'ab_body_low_not_less',
+        direction: candidate.direction, activeLevel: this._activeLevelFor(candidate),
+        candle1: this._summarizeCandle(candidate.candle1), candle2: this._summarizeCandle(candle2),
+      }, candle2);
+      return;
+    }
+
+    const points = computeCandle2Points(candle2, candidate.direction);
+    if (!isBodyPMaximum(points, candidate.direction)) {
+      this.patternCandidate = null;
+      this._emitDecision('WAIT', {
+        reason: 'bodyP_not_maximum', direction: candidate.direction, activeLevel: this._activeLevelFor(candidate),
+        candle1: this._summarizeCandle(candidate.candle1), candle2: this._summarizeCandle(candle2), points,
+      }, candle2);
+      return;
+    }
+
+    if (!isCorrectCandleNature(candle2, candidate.direction)) {
+      this.patternCandidate = null;
+      this._emitDecision('WAIT', {
+        reason: candidate.direction === 'BUY' ? 'candle2_not_bullish' : 'candle2_not_bearish',
+        direction: candidate.direction, activeLevel: this._activeLevelFor(candidate),
+        candle1: this._summarizeCandle(candidate.candle1), candle2: this._summarizeCandle(candle2), points,
+      }, candle2);
+      return;
+    }
+
+    this.patternCandidate = Object.assign({}, candidate, {
+      candle2, points, stage: 'AWAITING_CANDLE3',
+      boundaries: reversalEngine.computeBoundaries(candle2), firstLiveBoundaryTouch: null, liveTriggerCandle: null,
+      lowestLowSinceCandle2: Math.min(candidate.candle1.low, candle2.low),
+      highestHighSinceCandle2: Math.max(candidate.candle1.high, candle2.high),
+    });
+
+    this._emitDecision('WAIT', {
+      reason: 'candle2_confirmed_awaiting_candle3', direction: candidate.direction,
+      activeLevel: this._activeLevelFor(this.patternCandidate),
+      candle1: this._summarizeCandle(candidate.candle1), candle2: this._summarizeCandle(candle2),
+      points, boundaries: this.patternCandidate.boundaries,
+      bodyReference: this._bodyReferenceFor(this.patternCandidate),
+      patternVisual: this._patternVisualFor(this.patternCandidate),
+    }, candle2);
+  }
+
   async _advanceNewEngineCandidate(candleC) {
     const candidate = this.patternCandidate;
     const tieBreakSide = candidate.firstLiveBoundaryTouch;
@@ -1554,7 +1660,7 @@ class Model002 extends BotModelBase {
       lowerP: points ? points.lowerP : null,
       body: points ? points.body : null,
       bodyP: points ? points.bodyP : null,
-      bodyPIsMaximum: points ? (points.bodyP >= points.upperP && points.bodyP >= points.lowerP) : null,
+      bodyPIsMaximum: points ? isBodyPMaximum(points, result.direction || (decisionLabel === 'BUY' || decisionLabel === 'SELL' ? decisionLabel : null)) : null,
       candleNature: result.candle2 ? (result.candle2.close > result.candle2.open ? 'BULLISH' : 'BEARISH') : null,
       entryPrice: result.entryPrice !== undefined ? result.entryPrice : null,
       stopLoss: result.stopLoss !== undefined ? result.stopLoss : null,
@@ -1587,6 +1693,7 @@ class Model002 extends BotModelBase {
         // is cleared solely by the existing trend/levels edit lifecycle.
         // PATTERN STATE stays a separate field (`patternState`) below.
       }, toChecksLevelStatus(this.levelTouch), {
+        direction: result.direction || (decisionLabel === 'BUY' || decisionLabel === 'SELL' ? decisionLabel : null),
         activeLevel: result.activeLevel !== undefined ? result.activeLevel : null,
         bodyReference: result.bodyReference || this._bodyReferenceFor(this.patternCandidate) || null,
         patternVisual: result.patternVisual || this._patternVisualFor(this.patternCandidate, { candle3: result.candle3 }) || null,
@@ -1595,7 +1702,7 @@ class Model002 extends BotModelBase {
         candle3: result.candle3 || null,
         boundaries: result.boundaries || null,
         points: points,
-        bodyPIsMaximum: points ? (points.bodyP >= points.upperP && points.bodyP >= points.lowerP) : null,
+        bodyPIsMaximum: points ? isBodyPMaximum(points, result.direction || (decisionLabel === 'BUY' || decisionLabel === 'SELL' ? decisionLabel : null)) : null,
         patternState: this.patternCandidate ? this.patternCandidate.stage : (decisionLabel === 'BUY' || decisionLabel === 'SELL' ? 'TRADE_CONFIRMED' : 'IDLE'),
         // P4-H1 — which evaluation candle `candle3` is (3, 4, 5, ...). The
         // same value already present at the top level of this payload,

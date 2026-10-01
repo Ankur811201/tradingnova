@@ -146,13 +146,19 @@ window.ModelThinkingRegistry = {
 
       if (checks.points) {
         const p = checks.points;
-        const maxLabel = p.bodyP >= p.upperP && p.bodyP >= p.lowerP ? 'BodyP' : (p.upperP > p.lowerP ? 'UpperP' : 'LowerP');
+        const direction = checks.direction || null;
+        const bodyPMax = p.bodyP >= p.upperP && p.bodyP >= p.lowerP;
+        const upperMax = p.upperP >= p.bodyP && p.upperP >= p.lowerP;
+        const lowerMax = p.lowerP >= p.bodyP && p.lowerP >= p.upperP;
+        const maxLabel = bodyPMax ? 'BodyP' : (upperMax ? 'UpperP' : 'LowerP');
+        const maxValid = bodyPMax || (direction === 'SELL' && upperMax) || (direction === 'BUY' && lowerMax);
+        const validityText = maxValid ? ' (valid)' : ' (invalid for ' + (direction || 'current direction') + ')';
         out +=
           row('UpperP', '<span class="text-gray-300">' + Number(p.upperP).toFixed(2) + '</span>') +
           row('LowerP', '<span class="text-gray-300">' + Number(p.lowerP).toFixed(2) + '</span>') +
           row('Body', '<span class="text-gray-300">' + Number(p.body).toFixed(2) + '</span>') +
           row('BodyP (2.5x Body)', '<span class="text-gray-300">' + Number(p.bodyP).toFixed(2) + '</span>') +
-          row('Maximum', '<span class="' + (maxLabel === 'BodyP' ? 'text-emerald-400' : 'text-rose-400') + '">' + maxLabel + (maxLabel === 'BodyP' ? ' (valid)' : ' (invalid — BodyP must be max)') + '</span>');
+          row('Maximum', '<span class="' + (maxValid ? 'text-emerald-400' : 'text-rose-400') + '">' + maxLabel + validityText + '</span>');
       }
 
       if (checks.boundaries) {

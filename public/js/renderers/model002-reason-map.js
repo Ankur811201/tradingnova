@@ -71,6 +71,7 @@
     ab_body_low_not_less: 'Rejected — touch candle\'s body-low did not go below the prior candle\'s',
     // Candle 2 (B) confirmed, awaiting Candle 3 (the one and only trigger candle)
     candle2_confirmed_awaiting_candle3: 'Candle 2 confirmed — boundaries fixed, awaiting Candle 3',
+    carried_level_candle1_awaiting_candle2: 'Previous stop-hunt level carried forward — Candle 1 set, awaiting Candle 2',
     // Candle 3 (C) invalidation outcomes
     // Retired code — the model no longer emits it (a candle that touches
     // neither boundary now WAITs). Kept so historical Decision History rows

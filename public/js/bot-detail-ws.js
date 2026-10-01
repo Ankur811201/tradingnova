@@ -813,6 +813,14 @@ document.addEventListener('DOMContentLoaded', () => {
       countSpan.textContent = `${count}×`;
       row.appendChild(countSpan);
     }
+
+    // Keep Decision History bounded to the same 36-hour time window as the server.
+    row.dataset.lastSeenAt = lastAt.toISOString();
+    const cutoff = Date.now() - (36 * 60 * 60 * 1000);
+    Array.from(container.children).forEach((child) => {
+      const last = child.dataset && child.dataset.lastSeenAt ? Date.parse(child.dataset.lastSeenAt) : NaN;
+      if (Number.isFinite(last) && last < cutoff) child.remove();
+    });
   }
 
   // Render the server-loaded latest real decision immediately (Phase E) —

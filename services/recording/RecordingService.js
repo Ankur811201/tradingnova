@@ -16,7 +16,6 @@ const CHUNK_MS = 10 * 60 * 1000;
 const MAX_RECORDING_MS = 24 * 60 * 60 * 1000;
 const MAX_CANDLES = 300;
 const MAX_LEVEL_TOUCH_INDEX = 1; // Only S1 / R1 start recordings.
-const ENTRY_CANDLE_CLOSE_LIMIT = 3; // Stop the touch recording after 3 completed candles from trade entry.
 const FFMPEG_TIMEOUT_MS = 90 * 1000;
 
 function resolveFfmpeg() {
@@ -79,11 +78,6 @@ class RecordingService {
   constructor() {
     this.active = new Map();
     this.lastPrices = new Map();
-    // S1/R1 level-touch recording is a lifetime trigger per bot instance:
-    // once each level has triggered successfully, later touches never start
-    // another level-touch recording. Trade OPEN/EXIT recordings remain
-    // repeatable and are not affected by these flags.
-    this.levelTouchRecordingTriggered = new Map();
     this.io = null;
     fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
   }
@@ -136,23 +130,13 @@ class RecordingService {
       .catch((err) => console.error(`[RECORDING] live level-touch start failed for ${bot.instanceId}: ${err.message}`));
   }
 
-  async startFromLevelTouch({ instanceId, touch, bot: suppliedBot = null, manual = false, tradeEntry = false, tradeExit = false }) {
+  async startFromLevelTouch({ instanceId, touch, bot: suppliedBot = null, manual = false }) {
     if (!instanceId || !touch) return null;
     const index = Number(touch.index);
     const side = String(touch.side || '').toUpperCase();
-    if (!manual && !tradeEntry && !tradeExit && (index !== MAX_LEVEL_TOUCH_INDEX || !['SUPPORT', 'RESISTANCE'].includes(side))) return null;
+    if (!manual && (index !== MAX_LEVEL_TOUCH_INDEX || !['SUPPORT', 'RESISTANCE'].includes(side))) return null;
     if (manual && side !== 'MANUAL') return null;
-    if (tradeEntry && side !== 'TRADE_ENTRY') return null;
-    if (tradeExit && side !== 'TRADE_EXIT') return null;
     if (this.active.has(instanceId)) return this.active.get(instanceId).id;
-
-    // S1/R1 are one-time triggers for the lifetime of this bot instance.
-    // Do not reset these flags when a recording stops, a trade exits, or the
-    // bot is paused. OPEN/EXIT recordings are separate and remain repeatable.
-    const lifetimeKey = (!manual && !tradeEntry && !tradeExit) ? `${side}:${index}` : null;
-    if (lifetimeKey && this.levelTouchRecordingTriggered.get(instanceId)?.has(lifetimeKey)) {
-      return null;
-    }
 
     const bot = suppliedBot || await BotInstance.findOne({ instanceId }).lean();
     if (!bot || bot.modelId !== 'MODEL_002') return null;
@@ -171,22 +155,18 @@ class RecordingService {
       environment: bot.environment,
       createdAtMs: bot.createdAt instanceof Date && !Number.isNaN(bot.createdAt.getTime()) ? bot.createdAt.getTime() : null,
       trend: bot.parameters?.trend || '',
-      direction: manual ? 'MANUAL' : (tradeEntry || tradeExit) ? (String(touch.tradeSide || '').toUpperCase() === 'SHORT' ? 'SELL' : 'BUY') : (side === 'SUPPORT' ? 'BUY' : 'SELL'),
+      direction: manual ? 'MANUAL' : (side === 'SUPPORT' ? 'BUY' : 'SELL'),
       support: bot.parameters?.support || [],
       resistance: bot.parameters?.resistance || [],
-      level: (manual || tradeEntry || tradeExit) ? null : { side, index, price: num(touch.price) },
+      level: manual ? null : { side, index, price: num(touch.price) },
       boundaries: { upper: null, lower: null },
       decision: {
         decision: 'TOUCHED',
-        reason: manual ? 'Manual recording started' : tradeEntry ? 'Trade entry recording started' : tradeExit ? 'Trade exit recording started' : `${side === 'SUPPORT' ? 'S' : 'R'}${index} touched`,
-        activeLevel: (manual || tradeEntry || tradeExit) ? null : { side, index, price: num(touch.price) },
+        reason: manual ? 'Manual recording started' : `${side === 'SUPPORT' ? 'S' : 'R'}${index} touched`,
+        activeLevel: manual ? null : { side, index, price: num(touch.price) },
         triggerTime: Date.now(),
       },
       startedAt: Number.isFinite(Number(touch.at)) ? Number(touch.at) : Date.now(),
-      mode: tradeEntry ? 'TRADE_ENTRY' : tradeExit ? 'TRADE_EXIT' : manual ? 'MANUAL' : 'LEVEL_TOUCH',
-      entryOpenedAt: null,
-      entryCandleCloseCount: 0,
-      countedEntryCandleTimestamps: new Set(),
       frameIndex: 0,
       chunkIndex: 1,
       chunkStartedAt: Number.isFinite(Number(touch.at)) ? Number(touch.at) : Date.now(),
@@ -211,18 +191,6 @@ class RecordingService {
     // pipeline can finish independently of recording; this prevents a fast
     // risk/execution response from racing ahead of recording startup.
     this.active.set(instanceId, session);
-
-    // Reserve the lifetime S1/R1 trigger only after the session is registered.
-    // If renderer startup later fails, the flag is cleared so a failed start
-    // does not permanently consume the one allowed trigger.
-    if (lifetimeKey) {
-      let triggered = this.levelTouchRecordingTriggered.get(instanceId);
-      if (!triggered) {
-        triggered = new Set();
-        this.levelTouchRecordingTriggered.set(instanceId, triggered);
-      }
-      triggered.add(lifetimeKey);
-    }
 
     // Load the same 300-candle historical baseline used by the live chart
     // BEFORE the first recording frame is captured. The old implementation
@@ -283,13 +251,6 @@ class RecordingService {
       await session.renderer.start(session);
     } catch (err) {
       this.active.delete(instanceId);
-      if (lifetimeKey) {
-        const triggered = this.levelTouchRecordingTriggered.get(instanceId);
-        if (triggered) {
-          triggered.delete(lifetimeKey);
-          if (!triggered.size) this.levelTouchRecordingTriggered.delete(instanceId);
-        }
-      }
       try { if (session.renderer) await session.renderer.stop(); } catch (_) {}
       try { fs.rmSync(session.framesDir, { recursive: true, force: true }); } catch (_) {}
       throw new Error(`Chart renderer failed to start: ${err.message}`);
@@ -377,24 +338,6 @@ class RecordingService {
         if (validRecordingCandle(c)) {
           session.candles.set(String(c.timestamp), c);
           session.currentCandle = c.closed ? null : c;
-
-          // The initial level-touch recording ends after exactly three
-          // completed candles following the authoritative trade entry.
-          // We use candle close time (start + timeframe) so an entry made
-          // inside a candle correctly counts that candle when it closes.
-          if (c.closed && ['LEVEL_TOUCH', 'TRADE_ENTRY'].includes(session.mode) && session.entryOpenedAt && !session.stopping) {
-            const candleKey = String(c.timestamp);
-            const candleCloseAt = Number(c.timestamp) + this._timeframeMs(session.timeframe);
-            if (candleCloseAt > Number(session.entryOpenedAt) && !session.countedEntryCandleTimestamps.has(candleKey)) {
-              session.countedEntryCandleTimestamps.add(candleKey);
-              session.entryCandleCloseCount += 1;
-              console.log(`[RECORDING] entry candle close ${session.id}: ${session.entryCandleCloseCount}/${ENTRY_CANDLE_CLOSE_LIMIT}`);
-              if (session.entryCandleCloseCount >= ENTRY_CANDLE_CLOSE_LIMIT) {
-                this.stop(session.instanceId, 'THREE_CANDLES_AFTER_ENTRY')
-                  .catch(err => console.error(`[RECORDING] 3-candle stop failed: ${err.message}`));
-              }
-            }
-          }
         }
       }
     }
@@ -451,97 +394,10 @@ class RecordingService {
     }
   }
 
-  async updateExecution(instanceId, execution) {
-    if (!execution) return;
-    let session = this.active.get(instanceId);
-
-    // The 3-candle entry recording may already have finished before the trade
-    // closes. Therefore a CLOSE must still be able to create the dedicated
-    // exit recording even when there is no active recording session.
-    if (!session && !execution.trade) return;
-    if (session) session.position = execution.position || null;
-
-    // Every trade OPEN starts/restarts a 3-closed-candle recording window.
-    // If the one-time S1/R1 recording is already active, reuse that session;
-    // otherwise create a dedicated TRADE_ENTRY recording. Unlike S1/R1, the
-    // trade-entry trigger is repeatable for every position in the bot life.
-    if (execution.position && !execution.trade) {
-      const openedAt = execution.position.openedAt instanceof Date
-        ? execution.position.openedAt.getTime()
-        : new Date(execution.position.openedAt || Date.now()).getTime();
-      if (!session) {
-        const entryBot = await BotInstance.findOne({ instanceId }).lean().catch(() => null);
-        if (entryBot && String(entryBot.status || '').toUpperCase() === 'RUNNING') {
-          try {
-            await this.startFromLevelTouch({
-              instanceId,
-              bot: entryBot,
-              tradeEntry: true,
-              touch: {
-                side: 'TRADE_ENTRY',
-                index: 0,
-                price: num(execution.position.entryPrice),
-                at: Number.isFinite(openedAt) ? openedAt : Date.now(),
-                tradeSide: execution.position.side,
-              },
-            });
-          } catch (err) {
-            console.error(`[RECORDING] trade-entry recording start failed for ${instanceId}: ${err.message}`);
-          }
-          session = this.active.get(instanceId) || null;
-        }
-      }
-      if (session) {
-        session.entryOpenedAt = Number.isFinite(openedAt) ? openedAt : Date.now();
-        session.entryCandleCloseCount = 0;
-        session.countedEntryCandleTimestamps.clear();
-        session.mode = session.mode === 'LEVEL_TOUCH' ? 'LEVEL_TOUCH' : 'TRADE_ENTRY';
-        console.log(`[RECORDING] trade opened ${session.id}: starting 3-candle close countdown`);
-      }
-    }
-
-    // A completed 3-candle entry recording can leave no active session.
-    // Process a trade exit before building execution markers so EXIT can
-    // create its own fresh recording session even when the entry session is
-    // already gone.
-    if (execution.trade) {
-      const tradeExitAt = execution.trade.closedAt instanceof Date
-        ? execution.trade.closedAt.getTime()
-        : new Date(execution.trade.closedAt || Date.now()).getTime();
-      const exitBot = await BotInstance.findOne({ instanceId }).lean().catch(() => null);
-
-      if (session && !session.stopping) {
-        await this.stop(instanceId, 'TRADE_EXIT').catch(err =>
-          console.error(`[RECORDING] trade-exit stop failed: ${err.message}`)
-        );
-        session = null;
-      }
-
-      if (exitBot && String(exitBot.status || '').toUpperCase() === 'RUNNING') {
-        try {
-          await this.startFromLevelTouch({
-            instanceId,
-            bot: exitBot,
-            tradeExit: true,
-            touch: {
-              side: 'TRADE_EXIT',
-              index: 0,
-              price: num(execution.trade.exitPrice),
-              at: Number.isFinite(tradeExitAt) ? tradeExitAt : Date.now(),
-              tradeSide: execution.trade.side,
-            },
-          });
-        } catch (err) {
-          console.error(`[RECORDING] trade-exit recording start failed for ${instanceId}: ${err.message}`);
-        }
-        session = this.active.get(instanceId) || null;
-      }
-    }
-
-    // Nothing to annotate if no recording session exists (for example, the
-    // bot was paused at the exact time of an execution).
-    if (!session) return;
-
+  updateExecution(instanceId, execution) {
+    const session = this.active.get(instanceId);
+    if (!session || !execution) return;
+    session.position = execution.position || null;
     const timeframeMs = this._timeframeMs(session.timeframe);
     const toMarker = (type, item) => {
       if (!item) return null;
@@ -574,15 +430,9 @@ class RecordingService {
         session.executionMarkers.push(marker);
       }
     }
-
-
     if (session.executionMarkers.length > 20) {
       session.executionMarkers = session.executionMarkers.slice(-20);
     }
-  }
-
-  async stopForBotPause(instanceId, reason = 'BOT_PAUSED') {
-    return this.stop(instanceId, reason);
   }
 
   stopSoon(instanceId, reason) {

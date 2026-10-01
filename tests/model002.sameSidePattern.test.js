@@ -74,10 +74,27 @@ test('UpperP/LowerP/Body/BodyP â€” exact requirement worked example (Open=100,Cl
   assert.deepEqual(points, { upperP: 2, lowerP: 1, body: 2, bodyP: 5 });
 });
 
-test('BodyP maximum check', () => {
-  assert.equal(sp.isBodyPMaximum({ upperP: 2, lowerP: 1, bodyP: 5 }), true);
-  assert.equal(sp.isBodyPMaximum({ upperP: 6, lowerP: 1, bodyP: 5 }), false);
-  assert.equal(sp.isBodyPMaximum({ upperP: 2, lowerP: 6, bodyP: 5 }), false);
+test('Dominant component rule: BodyP valid both, UpperP valid SELL, LowerP valid BUY', () => {
+  assert.equal(sp.isBodyPMaximum({ upperP: 2, lowerP: 1, bodyP: 5 }, 'BUY'), true);
+  assert.equal(sp.isBodyPMaximum({ upperP: 2, lowerP: 1, bodyP: 5 }, 'SELL'), true);
+  assert.equal(sp.isBodyPMaximum({ upperP: 6, lowerP: 1, bodyP: 5 }, 'SELL'), true);
+  assert.equal(sp.isBodyPMaximum({ upperP: 6, lowerP: 1, bodyP: 5 }, 'BUY'), false);
+  assert.equal(sp.isBodyPMaximum({ upperP: 2, lowerP: 6, bodyP: 5 }, 'BUY'), true);
+  assert.equal(sp.isBodyPMaximum({ upperP: 2, lowerP: 6, bodyP: 5 }, 'SELL'), false);
+});
+
+test('evaluateCandle2 (BUY): lower wick maximum is valid', () => {
+  const candle1 = { open: 60050, close: 60040 };
+  const c2 = { open: 60050, close: 60051, high: 60051, low: 60020 }; // lowerP=30 dominates
+  const result = sp.evaluateCandle2(candle1, c2, 'BUY');
+  assert.equal(result.valid, true);
+});
+
+test('evaluateCandle2 (SELL): upper wick maximum is valid', () => {
+  const candle1 = { open: 65000, close: 65010 };
+  const c2 = { open: 65000, close: 64999, high: 65030, low: 64999 }; // upperP=30 dominates
+  const result = sp.evaluateCandle2(candle1, c2, 'SELL');
+  assert.equal(result.valid, true);
 });
 
 test('bullish candle validation (Open < Close)', () => {
@@ -105,7 +122,7 @@ test('evaluateCandle2 (BUY): fails on no body-high touch', () => {
 
 test('evaluateCandle2 (BUY): fails when BodyP is not maximum', () => {
   const candle1 = { open: 60050, close: 60040 };
-  // Large upper wick relative to a small body -> UpperP > BodyP
+  // Upper wick is dominant, which is invalid for BUY
   const c2 = { open: 60050, close: 60051, high: 60070, low: 60049.5 };
   const result = sp.evaluateCandle2(candle1, c2, 'BUY');
   assert.equal(result.valid, false);
@@ -198,7 +215,7 @@ test('evaluateCandle2 (SELL): fails on no body-low touch', () => {
 
 test('evaluateCandle2 (SELL): fails when BodyP is not maximum', () => {
   const candle1 = { open: 65000, close: 65010 };
-  const c2 = { open: 65000, close: 64999, high: 65000.5, low: 64970 }; // huge lower wick
+  const c2 = { open: 65000, close: 64999, high: 65000.5, low: 64970 }; // Lower wick is dominant, which is invalid for SELL
   const result = sp.evaluateCandle2(candle1, c2, 'SELL');
   assert.equal(result.valid, false);
   assert.equal(result.reason, 'bodyP_not_maximum');
@@ -527,4 +544,37 @@ test('READINESS: the model still correctly evaluates real patterns once ready â€
   assert.ok(model.patternCandidate, 'a real Resistance touch must still correctly start a pattern once ready');
   assert.equal(model.patternCandidate.stage, 'AWAITING_CANDLE3');
   assert.equal(model.patternCandidate.engine, 'NEW');
+});
+
+test('POST-STOP-HUNT: carried calibrated R1 starts next Candle1 without requiring another level touch', async () => {
+  const { ctx, model } = await startedModel({ trend: 'BULLISH', support: [60000, 59000, 58000], resistance: [65000, 66000, 67000] });
+  await model.onHydrate(flat(20, 64000, BASE));
+
+  const a1 = bearishSellA(20);
+  const b1 = bearishSellB(21);
+  const c1 = candleAt(22, 65000, 65005, 64990, 65002, BASE);
+  for (const c of [a1, b1, c1]) {
+    await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c.timestamp, data: c }, null);
+  }
+  assert.equal(model.r1Calibrated, true);
+  assert.equal(ctx.commands.length, 0);
+  assert.equal(model.params.resistance[0], a1.high);
+
+  // No new R1 touch: the calibrated/remembered R1 starts the next candle as Candle1.
+  const a2 = candleAt(23, 65020, 65025, 65010, 65020, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: a2.timestamp, data: a2 }, null);
+  assert.equal(model.patternCandidate.stage, 'WAITING_FOR_CANDLE2_CARRIED');
+  assert.equal(model.patternCandidate.candle1.timestamp, a2.timestamp);
+
+  // Candle2 also does not touch R1; normal A/B + wick/body rule is applied.
+  const b2 = candleAt(24, 65025, 65028, 65010, 65015, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: b2.timestamp, data: b2 }, null);
+  assert.equal(model.patternCandidate.stage, 'AWAITING_CANDLE3');
+  assert.equal(model.patternCandidate.carriedForwardLevel, true);
+  assert.equal(model.patternCandidate.matchedLevel.index, 1);
+
+  const c2 = candleAt(25, 65015, 65020, 65005, 65010, BASE);
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: c2.timestamp, data: c2 }, null);
+  assert.equal(ctx.commands.length, 1);
+  assert.equal(ctx.commands[0].action, 'SHORT');
 });

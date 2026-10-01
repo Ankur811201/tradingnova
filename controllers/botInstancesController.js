@@ -9,8 +9,9 @@ const botEngineManager = require('../services/BotEngineManager');
 const { getActiveTimeframe } = require('../utils/activeTimeframe');
 const { TargetExitManager } = require('../services/TargetExitManager');
 
-const CANDLES_DEFAULT_LIMIT = 300;
-const CANDLES_MAX_LIMIT = 500;
+const HISTORY_WINDOW_MS = 36 * 60 * 60 * 1000;
+const CANDLES_DEFAULT_LIMIT = 2160; // 36h at 1m; server filters exact 36h window
+const CANDLES_MAX_LIMIT = 2160;
 
 /**
  * Computes a lightweight, request-time "trading readiness" view without
@@ -72,7 +73,7 @@ async function getInstance(req, res, next) {
 }
 
 /**
- * GET /api/bot-instances/:instanceId/candles?limit=300
+ * GET /api/bot-instances/:instanceId/candles?limit=2160
  *
  * Resolves instanceId -> BotInstance -> (symbol, timeframe), then reads
  * real, previously-persisted candles for that exact pair from the Candle
@@ -120,10 +121,11 @@ async function getCandles(req, res, next) {
     // visible). Backward-compatible: if createdAt is ever missing/invalid,
     // no filter is applied, preserving prior (unfiltered) behavior rather
     // than risking an empty chart for a real bot.
-    const candleFilter = { symbol, timeframe };
-    if (instance.createdAt instanceof Date && !Number.isNaN(instance.createdAt.getTime())) {
-      candleFilter.timestamp = { $gte: instance.createdAt.getTime() };
-    }
+    const candleFilter = {
+      symbol,
+      timeframe,
+      timestamp: { $gte: Date.now() - HISTORY_WINDOW_MS },
+    };
 
     // Newest-first for the limit to make sense, then reversed to oldest -> newest for the chart.
     const docs = await Candle.find(candleFilter)

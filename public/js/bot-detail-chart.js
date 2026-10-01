@@ -11,7 +11,7 @@
  *     -> Socket.IO 'bot:candle' (bot:<instanceId> room)  -/
  *   -> Lightweight Charts (via ChartManager / CandleSeriesManager)
  *
- * Historical load: GET /api/bot-instances/:instanceId/candles?limit=300
+ * Historical load: GET /api/bot-instances/:instanceId/candles?limit=2160
  * Live updates:    'bot:candle' on the SAME shared socket as bot-detail-ws.js
  *                  (see bot-socket.js) — never a second connection, never a
  *                  second candle builder in the browser.
@@ -20,7 +20,7 @@
  * overlays, no MODEL_001 integration — those are later parts.
  */
 (function () {
-  var CANDLE_LIMIT = 300;
+  var CANDLE_LIMIT = 2160; // Server returns only the latest 36 hours (2160 max 1m candles)
   var CHART_CONTAINER_ID = 'bot-chart-container';
 
   function setChartState(message) {
@@ -199,11 +199,11 @@
       // overwrites rather than duplicates the lines.
       (cfg.support || []).forEach(function (price, idx) {
         if (price == null) return;
-        om.setPriceLine('cfgSupport' + idx, price, '#089981', 'S' + (idx + 1), 1);
+        om.setPriceLine('cfgSupport' + idx, price, '#089981', 'S' + (idx + 1), 0);
       });
       (cfg.resistance || []).forEach(function (price, idx) {
         if (price == null) return;
-        om.setPriceLine('cfgResistance' + idx, price, '#f23645', 'R' + (idx + 1), 1);
+        om.setPriceLine('cfgResistance' + idx, price, '#f23645', 'R' + (idx + 1), 0);
       });
     })();
 

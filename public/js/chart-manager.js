@@ -19,6 +19,16 @@ class ChartManager {
       crosshair: {
         mode: LightweightCharts.CrosshairMode.Normal,
       },
+      localization: {
+        timeFormatter: (time) => {
+          if (typeof time !== 'number') return '';
+          return new Intl.DateTimeFormat('en-IN', {
+            timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit',
+            year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
+            hour12: false,
+          }).format(new Date(time * 1000));
+        },
+      },
       rightPriceScale: {
         borderColor: '#d1d4dc',
         autoScale: true,
@@ -27,6 +37,15 @@ class ChartManager {
         borderColor: '#d1d4dc',
         timeVisible: true,
         secondsVisible: false,
+        // Display chart times in Indian Standard Time without changing the
+        // underlying UTC candle timestamps used by the trading engine.
+        tickMarkFormatter: (time) => {
+          if (typeof time !== 'number') return '';
+          return new Intl.DateTimeFormat('en-IN', {
+            timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit',
+            hour: '2-digit', minute: '2-digit', hour12: false,
+          }).format(new Date(time * 1000));
+        },
         // Keep the latest candle visually separated from the right chart edge.
         // This is shared by the live chart and the server-side recording so
         // their candle placement remains visually consistent.

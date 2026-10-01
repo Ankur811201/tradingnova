@@ -101,9 +101,29 @@ function computeCandle2Points(candle2, direction) {
   return { upperP, lowerP, body, bodyP };
 }
 
-/** Step 5 (BUY) / Step 4 (SELL): BodyP must be the maximum of the three. */
-function isBodyPMaximum(points) {
-  return points.bodyP >= points.upperP && points.bodyP >= points.lowerP;
+/**
+ * Step 5 (BUY) / Step 4 (SELL): accept the dominant candle component.
+ *
+ * Valid combinations:
+ *   - BodyP is maximum: valid for both BUY and SELL.
+ *   - LowerP is maximum: valid for BUY only.
+ *   - UpperP is maximum: valid for SELL only.
+ *
+ * Ties are valid (>=), so a wick tied with the allowed component is accepted.
+ */
+function isBodyPMaximum(points, direction) {
+  const bodyPMax = points.bodyP >= points.upperP && points.bodyP >= points.lowerP;
+  if (bodyPMax) return true;
+
+  if (direction === 'BUY') {
+    return points.lowerP >= points.bodyP && points.lowerP >= points.upperP;
+  }
+
+  if (direction === 'SELL') {
+    return points.upperP >= points.bodyP && points.upperP >= points.lowerP;
+  }
+
+  return false;
 }
 
 /** Step 6 (BUY) / Step 5 (SELL): Candle 2 nature must match the trade direction. */
@@ -125,7 +145,7 @@ function evaluateCandle2(candle1, candle2, direction) {
   }
 
   const points = computeCandle2Points(candle2, direction);
-  const bodyPIsMax = isBodyPMaximum(points);
+  const bodyPIsMax = isBodyPMaximum(points, direction);
   if (!bodyPIsMax) {
     return { valid: false, reason: 'bodyP_not_maximum', points };
   }
