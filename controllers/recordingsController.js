@@ -87,16 +87,18 @@ async function getRecording(req, res, next) {
     if (!bot) return res.status(404).json({ ok: false, error: 'Bot instance not found' });
 
     const recording = await resolveRecording(instanceId, recordingId);
-    if (!recording || recording.status !== 'READY' || !recording.filePath) {
+    if (!recording || recording.status !== 'READY') {
       return res.status(404).json({ ok: false, error: 'Recording not found' });
     }
 
+    if (!recording.filePath) {
+      return res.status(404).json({ ok: false, error: 'Recording video data not found' });
+    }
     return res.sendFile(path.resolve(__dirname, '..', recording.filePath));
   } catch (err) {
     return next(err);
   }
 }
-
 
 
 async function renderRecordingPlayer(req, res, next) {
@@ -187,8 +189,12 @@ async function deleteRecording(req, res, next) {
     const Recording = require('../models/TradeRecording');
     const recording = await resolveRecording(instanceId, recordingId);
     if (!recording) return res.status(404).json({ ok: false, error: 'Recording not found' });
-    if (recording.status !== 'READY' || !recording.filePath) {
+    if (recording.status !== 'READY') {
       return res.status(409).json({ ok: false, error: 'Recording is not ready for deletion' });
+    }
+
+    if (!recording.filePath) {
+      return res.status(404).json({ ok: false, error: 'Recording video data not found' });
     }
 
     const filePath = path.resolve(__dirname, '..', recording.filePath);
@@ -230,7 +236,7 @@ async function deleteAllRecordings(req, res, next) {
     const deletedRecordingIds = recordings.map(r => r.recordingId);
     let filesDeleted = 0;
 
-    // Delete every video and chunk directory belonging to this bot instance.
+    // Delete legacy filesystem videos belonging to this bot instance.
     for (const recording of recordings) {
       if (recording.filePath) {
         const filePath = path.resolve(projectRoot, recording.filePath);

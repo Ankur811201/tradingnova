@@ -36,14 +36,13 @@
 
   function render(recordings) {
     if (!recordings.length) {
-      listEl.innerHTML = '<div class="text-gray-500 italic text-xs py-4">No S1/R1 recordings yet.</div>';
+      listEl.innerHTML = '<div class="text-gray-500 italic text-xs py-4">No level recordings yet.</div>';
       return;
     }
     listEl.innerHTML = recordings.map((r) => {
       const time = r.triggerTime ? new Date(r.triggerTime).toLocaleString() : '--';
       const level = r.level && r.level.index ? `${r.level.side === 'SUPPORT' ? 'S' : 'R'}${r.level.index}` : '--';
       const duration = Number(r.durationSeconds || 0).toFixed(0);
-      const chunk = Number(r.chunkIndex || 1);
       const start = r.chunkStartedAt ? new Date(r.chunkStartedAt).toLocaleTimeString() : time;
       const end = r.chunkEndedAt ? new Date(r.chunkEndedAt).toLocaleTimeString() : '--';
       const directionClass = r.direction === 'SELL' ? 'text-rose-400' : r.direction === 'BUY' ? 'text-emerald-400' : 'text-gray-400';
@@ -59,7 +58,7 @@
               <span class="text-gray-600">•</span>
               <span class="text-gray-500">${escapeHtml(time)}</span>
             </div>
-            <div class="text-[10px] text-gray-500 mt-1">Chunk ${chunk} • ${escapeHtml(r.symbol)} • ${escapeHtml(r.timeframe)} • ${escapeHtml(start)} → ${escapeHtml(end)} • ${duration}s • 1 FPS</div>
+            <div class="text-[10px] text-gray-500 mt-1">${escapeHtml(r.symbol)} • ${escapeHtml(r.timeframe)} • ${escapeHtml(start)} → ${escapeHtml(end)} • ${duration}s • 0.5 FPS • ${escapeHtml(r.storageStatus || 'STORED')}</div>
           </div>
           <div class="flex items-center gap-2">
             <a href="${playerUrl}" class="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/25 text-blue-400 hover:bg-blue-500/20 text-xs font-semibold">▶ Watch</a>
@@ -179,7 +178,7 @@
     socket.on('bot:recording', (data) => {
       if (!data || data.instanceId !== config.instanceId) return;
       setLive(data.status, data);
-      if (data.status === 'CHUNK_READY' || data.status === 'STOPPED') load();
+      if (data.status === 'STOPPED' || data.status === 'TRADE_OPEN' || data.status === 'LEVEL_RECORDING_BLOCKED') load();
     });
   }
 

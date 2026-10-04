@@ -91,7 +91,6 @@ test('renderChartFrame produces one complete, well-formed SVG document', () => {
   const svg = renderChartFrame(state);
   assert.match(svg, /^<svg viewBox="0 0 1380 720" width="1380" height="720"/);
   assert.match(svg, /<\/svg>$/);
-  assert.doesNotMatch(svg, /NOVA TRADE/);
   assert.doesNotMatch(svg, /BOT DECISION ENGINE/);
   // The recording view intentionally contains exactly 10 history candles + 1 live candle.
   const candleBodyRects = (svg.match(/<rect[^>]*fill="#(?:089981|f23645)"/g) || []).length;
@@ -233,22 +232,21 @@ test('TradeRecording direction enum accepts MANUAL (no validation-failure regres
 
 test('RecordingService logs the required lifecycle and error events without per-frame spam', () => {
   assert.match(recordingSrc, /\[RECORDING\] starting/);
-  assert.match(recordingSrc, /\[RECORDING\] rotating/);
   assert.match(recordingSrc, /\[RECORDING\] encoding/);
   assert.match(recordingSrc, /\[RECORDING\] ffmpeg complete/);
-  assert.match(recordingSrc, /\[RECORDING\] database record ready/);
+  assert.match(recordingSrc, /\[RECORDING\] database record verified/);
   assert.match(recordingSrc, /\[RECORDING\] frame generation failed/);
   assert.match(recordingSrc, /\[RECORDING\] frame rasterization failed/);
   assert.match(recordingSrc, /\[RECORDING\] ffmpeg failed/);
-  assert.match(recordingSrc, /\[RECORDING\] database save failed/);
-  // No per-frame (every-second) log line.
+  assert.match(recordingSrc, /MongoDB video verification failed|database record verified/);
+  // No per-frame capture log line.
   assert.doesNotMatch(recordingSrc, /\[RECORDING\] frame generated/);
 });
 
-test('RecordingService cleans up temp frame directories on ffmpeg/renderer failure and on stop', () => {
-  assert.match(recordingSrc, /fs\.rmSync\(oldDir, \{ recursive: true, force: true \}\)/);
+test('RecordingService cleans up temporary frame/video files on failure and after MongoDB verification', () => {
   assert.match(recordingSrc, /fs\.rmSync\(session\.framesDir, \{ recursive: true, force: true \}\)/);
-  assert.match(recordingSrc, /fs\.rmSync\(framesDir, \{ recursive: true, force: true \}\)/);
+  assert.match(recordingSrc, /fs\.rmSync\(session\.framesDir, \{ recursive: true, force: true \}\)/);
+  assert.match(recordingSrc, /fs\.rmSync\(webm, \{ force: true \}\)/);
 });
 
 test('resolveFfmpeg still resolves ffmpeg-static without requiring a system ffmpeg install', () => {

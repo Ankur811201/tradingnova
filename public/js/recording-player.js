@@ -37,7 +37,7 @@
         <span class="event-dot ${kind(e.type)}"></span>
         <span class="min-w-0 flex-1"><span class="block text-[11px] font-semibold text-gray-200 truncate">${esc(label(e.type))}</span><span class="block text-[10px] text-gray-500 truncate mt-0.5">${esc(e.label || '')}${e.price != null ? ` · ${Number(e.price).toLocaleString('en-US',{maximumFractionDigits:2})}` : ''}</span></span>
         <span class="text-[10px] font-mono text-gray-500">${fmt(e.seconds)}</span>
-      </button>`).join('') : '<div class="text-xs text-gray-500 italic p-4">No recorded events for this chunk.</div>';
+      </button>`).join('') : '<div class="text-xs text-gray-500 italic p-4">No recorded events for this recording.</div>';
   }
 
   function renderMarkers() {

@@ -5,6 +5,9 @@ const mongoose = require('mongoose');
 const tradeRecordingSchema = new mongoose.Schema(
   {
     recordingId: { type: String, required: true, unique: true, index: true },
+    videoId: { type: String, unique: true, sparse: true, index: true },
+    storageType: { type: String, enum: ['FILESYSTEM'], default: 'FILESYSTEM' },
+    storageStatus: { type: String, enum: ['PENDING', 'UPLOADING', 'STORED', 'VERIFIED', 'FAILED'], default: null },
     instanceId: { type: String, required: true, index: true },
     botName: { type: String, default: '' },
     symbol: { type: String, required: true },

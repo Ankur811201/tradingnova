@@ -1,24 +1,52 @@
 'use strict';
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'services', 'recording', 'RecordingService.js'), 'utf8');
+const root = path.join(__dirname, '..');
+const recordingSrc = fs.readFileSync(path.join(root, 'services', 'recording', 'RecordingService.js'), 'utf8');
+const tradeRecordingSrc = fs.readFileSync(path.join(root, 'models', 'TradeRecording.js'), 'utf8');
 
-test('S1/R1 level recording is lifetime-one-time while trade entry/exit are repeatable', () => {
-  assert.match(src, /this\.levelTouchRecordingTriggered = new Map\(\)/);
-  assert.match(src, /const lifetimeKey = \(!manual && !tradeEntry && !tradeExit\)/);
-  assert.match(src, /get\(instanceId\)\?\.has\(lifetimeKey\)/);
-  assert.match(src, /tradeEntry \? 'TRADE_ENTRY'/);
-  assert.match(src, /tradeExit \? 'TRADE_EXIT'/);
+test('all six configured S/R levels can start recordings', () => {
+  assert.match(recordingSrc, /MAX_LEVEL_TOUCH_INDEX = 3/);
+  assert.match(recordingSrc, /i < MAX_LEVEL_TOUCH_INDEX/);
+  assert.match(recordingSrc, /levelKey = manual \? null : `\$\{side === 'SUPPORT' \? 'S' : 'R'\}\$\{index\}`/);
 });
 
-test('trade entry starts a recording even when no S1/R1 session is active', () => {
-  assert.match(src, /if \(!session\) \{[\s\S]*?tradeEntry: true/);
+test('a level touch starts only once; only the first loss can create Trade 2 recording', () => {
+  assert.match(recordingSrc, /this\.levelStates = new Map\(\)/);
+  assert.match(recordingSrc, /if \(!allowRepeat && levelState\) return null/);
+  assert.match(recordingSrc, /allowRepeat && \(!levelState \|\| levelState\.blocked \|\| levelState\.losses !== 1 \|\| levelState\.tradesStarted !== 1\)/);
+  assert.match(recordingSrc, /state\.losses = Number\(state\.losses \|\| 0\) \+ 1/);
+  assert.match(recordingSrc, /state\.losses >= 2/);
 });
 
-test('trade entry recordings stop after three closed candles', () => {
-  assert.match(src, /\['LEVEL_TOUCH', 'TRADE_ENTRY'\]\.includes\(session\.mode\)/);
-  assert.match(src, /entryCandleCloseCount >= ENTRY_CANDLE_CLOSE_LIMIT/);
+test('recording stops after three completed candles following trade entry', () => {
+  assert.match(recordingSrc, /ENTRY_CANDLE_CLOSE_LIMIT = 3/);
+  assert.match(recordingSrc, /session\.entryCandleCloseCount = Number\(session\.entryCandleCloseCount \|\| 0\) \+ 1/);
+  assert.match(recordingSrc, /entryCandleCloseCount >= ENTRY_CANDLE_CLOSE_LIMIT/);
+  assert.match(recordingSrc, /THREE_CANDLES_AFTER_ENTRY/);
+});
+
+test('recordings are single files with no chunk rotation', () => {
+  assert.doesNotMatch(recordingSrc, /CHUNK_MS/);
+  assert.doesNotMatch(recordingSrc, /_rotateChunkIfNeeded/);
+  assert.doesNotMatch(recordingSrc, /_scheduleChunkRotation/);
+  assert.match(recordingSrc, /\$\{session\.id\}\.webm/);
+});
+
+test('completed video is stored permanently on the local filesystem', () => {
+  assert.match(tradeRecordingSrc, /storageType: \{ type: String, enum: \['FILESYSTEM'\]/);
+  assert.match(recordingSrc, /storageType: 'FILESYSTEM'/);
+  assert.match(recordingSrc, /filePath: relativeVideoPath/);
+  assert.doesNotMatch(recordingSrc, /GridFSBucket/);
+  assert.doesNotMatch(recordingSrc, /tradeRecordingVideos/);
+});
+
+test('profit close blocks the level retry path', () => {
+  assert.match(recordingSrc, /state\.profitable = true/);
+  assert.match(recordingSrc, /state\.blocked = true/);
+  assert.match(recordingSrc, /PROFIT_EXIT/);
 });
