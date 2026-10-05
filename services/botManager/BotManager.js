@@ -1276,6 +1276,27 @@ class BotManager {
         }
       }
 
+      // MODEL_002 opposite-market STOP HUNT persistence. The first eligible
+      // R1/S1 opposite setup is a simulated trade-like stop hunt; once it has
+      // started, the lifetime-used flag must survive bot/server restart. The
+      // active state is also persisted so a restart cannot accidentally turn
+      // an unfinished stop hunt into a real trade. R2/R3/S2/S3 never emit this
+      // event and therefore never touch these fields.
+      if (dbInstance.modelId === 'MODEL_002' && event.eventType === 'OPPOSITE_STOP_HUNT_STARTED') {
+        dbInstance.parameters = Object.assign({}, dbInstance.parameters || {}, {
+          oppositeStopHuntUsed: true,
+          oppositeStopHuntActive: event.payload || null,
+        });
+        dbInstance.markModified('parameters');
+      }
+      if (dbInstance.modelId === 'MODEL_002' && event.eventType === 'OPPOSITE_STOP_HUNT_EXITED') {
+        dbInstance.parameters = Object.assign({}, dbInstance.parameters || {}, {
+          oppositeStopHuntUsed: true,
+          oppositeStopHuntActive: null,
+        });
+        dbInstance.markModified('parameters');
+      }
+
       // ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH (persistence side).
       // The model detected the touch and emitted this through the existing
       // StrategyEvent pipeline (which is also what puts it in Decision

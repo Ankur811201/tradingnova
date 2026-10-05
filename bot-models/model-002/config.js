@@ -67,6 +67,11 @@ const DEFAULT_PARAMETERS = {
   // Preserved TP formula (confirmed §13 — RR source itself is pending per §19C, but the RR *mechanism* already exists and is preserved).
   riskRewardRatio: 2,
 
+  // Opposite-market stop-hunt lifetime state. Only the first eligible R1/S1
+  // opposite pattern consumes this flag; R2/R3/S2/S3 never use it.
+  oppositeStopHuntUsed: false,
+  oppositeStopHuntActive: null,
+
 };
 
 module.exports = {

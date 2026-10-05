@@ -113,9 +113,12 @@
     // fall back to the raw code (see formatModel002Reason below), so this
     // never silently hides a genuinely unknown/legacy code.
 
-    // One-time R1/S1 calibration (opposite-side patterns) — never a trade
-    r1_calibration_confirmed_no_trade: 'Pattern confirmed — R1 updated, waiting for next R1 pattern',
-    s1_calibration_confirmed_no_trade: 'Pattern confirmed — S1 updated, waiting for next S1 pattern',
+    // Opposite-market first R1/S1 stop hunt — simulated lifecycle, never a real order.
+    first_opposite_r1_s1_pattern: 'First opposite R1/S1 pattern — STOP HUNTING',
+    opposite_stop_hunt_invalid_stop_loss: 'Stop hunting cancelled — invalid stop-loss calculation',
+    stop_loss: 'STOP HUNTING exited at stop-loss',
+    r1_calibration_confirmed_no_trade: 'Legacy: previous R1 calibration rule',
+    s1_calibration_confirmed_no_trade: 'Legacy: previous S1 calibration rule',
 
     // Generic
     rejected: 'Rejected',

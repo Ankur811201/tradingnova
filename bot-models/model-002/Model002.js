@@ -16,11 +16,9 @@ const {
   computeBuyRiskLength, computeSellRiskLength, computeLotFromRiskLength, computeQuantityFromLot, LOT_SIZE_BTC,
   computeCandle2Points, isBodyPMaximum, isCorrectCandleNature,
 } = require('./sameSidePatternEngine');
-// NEW spec (A/B/C wick-trigger reversal pattern) — all current NEW routes:
-// BULLISH+SUPPORT -> BUY, BEARISH+SUPPORT -> BUY, and
-// BEARISH+RESISTANCE -> SELL. BEARISH+SUPPORT shares the exact NEW BUY
-// algorithm; only the first S1 confirmation is calibration-only.
-// BULLISH+RESISTANCE -> SELL remains on the OLD engine.
+// NEW spec (A/B/C wick-trigger reversal pattern) — all active routes use
+// the same NEW engine. The first eligible opposite-market R1/S1 pattern is
+// a simulated STOP HUNTING lifecycle; R2/R3/S2/S3 are always direct trades.
 const reversalEngine = require('./reversalPatternEngine');
 const { LayerSafety } = require('./layerSafety');
 const {
@@ -51,9 +49,10 @@ const LEVERAGE_MAX = 200;
  * CURRENT CONFIRMED ROUTING — ONE active NEW A/B/C engine is used for
  * all four trend/level combinations. BUY + BEARISH is the exact mirror of
  * BUY + BULLISH, and SELL + BULLISH is the exact mirror of SELL + BEARISH.
- * The first S1 setup under BEARISH and first R1 setup under BULLISH are
- * one-time stop-hunt calibration setups; they never trade. After that,
- * S1/S2/S3 and R1/R2/R3 use the same normal NEW pattern.
+ * The first eligible opposite-market S1 (BEARISH) or R1 (BULLISH) setup
+ * is a simulated STOP HUNTING lifecycle: same entry/SL calculation, no real
+ * order, then exit when the simulated stop-loss is touched. This is consumed
+ * once for the entire bot lifetime. R2/R3/S2/S3 are always direct trades.
  *
  *   BULLISH + SUPPORT    -> NEW engine, BUY   (reversalPatternEngine.js)
  *   BEARISH + SUPPORT    -> NEW engine, BUY   (reversalPatternEngine.js)
@@ -157,20 +156,24 @@ class Model002 extends BotModelBase {
     // restart-recovery contract on the safety side.
     this.patternCandidate = null;
 
-    // One-time R1/S1 calibration flags (opposite-side patterns). In-memory
-    // only — no MongoDB persistence yet, per explicit instruction. Start
-    // false on every onStart/restart; _reconstructPatternStateFromHistory
-    // deterministically re-derives the true value from whatever calibration
-    // evidence is actually present in the hydrated candle window. If that
-    // evidence predates the window, it cannot be seen — this is a known,
-    // documented, tested limitation (not a silent guess): see
-    // tests/model002.sameSidePattern.test.js "CALIBRATION HISTORY OUTSIDE
-    // HYDRATION WINDOW".
+    // The opposite-market STOP HUNT lifetime flag and active state are
+    // persisted in BotInstance.parameters through BotManager events, so a
+    // restart cannot reset the one-time rule or turn an unfinished stop hunt
+    // into a real trade.
     this.r1Calibrated = false;
     this.s1Calibrated = false;
 
-    // After the one-time opposite-market stop-hunt calibration is consumed,
-    // carry the calibrated/last-touched level into the next pattern search.
+    // NEW opposite-market stop-hunt rule: only the first eligible R1/S1
+    // opposite-market pattern in the bot's lifetime is a simulated
+    // stop-hunt. R2/R3/S2/S3 are always direct real trades.
+    this.oppositeStopHuntUsed = Boolean(this.params.oppositeStopHuntUsed);
+    this.oppositeStopHuntActive = this.params.oppositeStopHuntActive && typeof this.params.oppositeStopHuntActive === 'object'
+      ? Object.assign({}, this.params.oppositeStopHuntActive)
+      : null;
+
+    // After the one-time opposite-market stop hunt is consumed, normal
+    // pattern search continues; the existing last-touch carry-forward rule
+    // remains independent of this lifecycle.
     // A genuinely new configured level touch replaces this carry-forward.
     this.reuseLastTouchedLevel = null;
 
@@ -504,6 +507,8 @@ class Model002 extends BotModelBase {
     // existing tick stream is reused; no new market-data connection/listener
     // is created.
     if (marketUpdate.type === 'price') {
+      if (this._checkOppositeStopHuntPrice(marketUpdate.data && marketUpdate.data.price, marketUpdate.timestamp)) return;
+      if (this.oppositeStopHuntActive) return;
       await this._handleLiveBoundaryTouch(marketUpdate, positionContext);
       return;
     }
@@ -521,6 +526,12 @@ class Model002 extends BotModelBase {
     this.lastProcessedTs = candle.timestamp;
 
     this.candles = this._appendAndTrim(this.candles, candle, this.params.historySize);
+
+    // A simulated opposite-market stop-hunt is monitored independently of
+    // real Position state. Once its SL is touched, the simulated lifecycle
+    // ends and the next candle may search for a real trade.
+    if (this._checkOppositeStopHuntCandle(candle)) return;
+    if (this.oppositeStopHuntActive) return;
 
     // PHASE 2 — layer/success safety eligibility gate. Runs BEFORE any
     // pattern evaluation (before pattern evaluation) so a stopped bot never even attempts
@@ -704,7 +715,8 @@ class Model002 extends BotModelBase {
         boundaries: reversalEngine.computeBoundaries(candle), points,
         // R1/S1 first confirmed setup is calibration-only; all later
         // R1/S1 and every R2/R3/S2/S3 setup is a normal NEW pattern.
-        isCalibrationPattern: Boolean(isCalibration || this._computeIsCalibrationPattern(direction, touch)),
+        isCalibrationPattern: false,
+        isStopHuntPattern: Boolean(!this._hydrating && (isCalibration || this._computeIsOppositeStopHuntPattern(direction, touch))),
         firstLiveBoundaryTouch: null,
         liveTriggerCandle: null,
         // Stop-loss evaluation window includes Candle 1 and Candle 2.
@@ -745,6 +757,90 @@ class Model002 extends BotModelBase {
    * always reflects the CURRENT calibration flag at that moment, then
    * locked into the candidate until it resolves.
    */
+  _computeIsOppositeStopHuntPattern(direction, matchedLevel) {
+    if (this.oppositeStopHuntUsed || this.oppositeStopHuntActive) return false;
+    if (!matchedLevel || matchedLevel.index !== 1) return false;
+    return (direction === 'SELL' && this.params.trend === 'BULLISH')
+      || (direction === 'BUY' && this.params.trend === 'BEARISH');
+  }
+
+  _buildNewStopHuntState(candidate, candleC) {
+    const direction = candidate.direction;
+    const entryPrice = direction === 'BUY' ? candidate.boundaries.upper : candidate.boundaries.lower;
+    const windowLow = Number.isFinite(candidate.lowestLowSinceCandle2) ? candidate.lowestLowSinceCandle2 : candidate.candle2.low;
+    const windowHigh = Number.isFinite(candidate.highestHighSinceCandle2) ? candidate.highestHighSinceCandle2 : candidate.candle2.high;
+    const stopLoss = direction === 'BUY'
+      ? reversalEngine.computeBuyStopLoss({ low: windowLow }, candleC)
+      : reversalEngine.computeSellStopLoss({ high: windowHigh }, candleC);
+    return {
+      id: `STOP_HUNT:${this.instanceId}:${candleC.timestamp}:${direction}`,
+      direction,
+      entryPrice,
+      stopLoss,
+      activeLevel: this._activeLevelFor(candidate),
+      startedAt: candleC.timestamp,
+      candle1: this._summarizeCandle(candidate.candle1),
+      candle2: this._summarizeCandle(candidate.candle2),
+      candle3: this._summarizeCandle(candleC),
+    };
+  }
+
+  _startOppositeStopHunt(candidate, candleC) {
+    const state = this._buildNewStopHuntState(candidate, candleC);
+    if (!Number.isFinite(state.entryPrice) || !Number.isFinite(state.stopLoss)) {
+      this._emitDecision('WAIT', {
+        reason: 'opposite_stop_hunt_invalid_stop_loss',
+        direction: candidate.direction, activeLevel: this._activeLevelFor(candidate),
+        entryPrice: state.entryPrice, stopLoss: state.stopLoss,
+      }, candleC);
+      this.patternCandidate = null;
+      return false;
+    }
+    this.oppositeStopHuntUsed = true;
+    this.oppositeStopHuntActive = state;
+    this.emitStrategyEvent('OPPOSITE_STOP_HUNT_STARTED', Object.assign({}, state, {
+      reason: 'first_opposite_r1_s1_pattern',
+      message: `First opposite-market ${state.activeLevel.side === 'RESISTANCE' ? 'R1 SELL' : 'S1 BUY'} converted to STOP HUNTING.`,
+    }));
+    this._emitDecision('STOP_HUNTING', Object.assign({}, state, {
+      reason: 'first_opposite_r1_s1_pattern',
+    }), candleC);
+    this.patternCandidate = null;
+    return true;
+  }
+
+  _exitOppositeStopHunt(candle, triggerPrice, source = 'price') {
+    const state = this.oppositeStopHuntActive;
+    if (!state) return false;
+    const exit = {
+      reason: 'stop_loss', source, exitPrice: triggerPrice, exitedAt: candle && candle.timestamp,
+      direction: state.direction, entryPrice: state.entryPrice, stopLoss: state.stopLoss,
+      activeLevel: state.activeLevel, stopHuntId: state.id,
+      candle: this._summarizeCandle(candle),
+    };
+    this.oppositeStopHuntActive = null;
+    this.emitStrategyEvent('OPPOSITE_STOP_HUNT_EXITED', exit);
+    this._emitDecision('STOP_HUNTING_EXIT', exit, candle);
+    return true;
+  }
+
+  _checkOppositeStopHuntPrice(price, timestamp) {
+    const state = this.oppositeStopHuntActive;
+    if (!state || !Number.isFinite(price)) return false;
+    const hit = state.direction === 'BUY' ? price <= state.stopLoss : price >= state.stopLoss;
+    if (!hit) return false;
+    return this._exitOppositeStopHunt({ timestamp, open: price, high: price, low: price, close: price }, price, 'price');
+  }
+
+  _checkOppositeStopHuntCandle(candle) {
+    const state = this.oppositeStopHuntActive;
+    if (!state) return false;
+    const hit = state.direction === 'BUY' ? candle.low <= state.stopLoss : candle.high >= state.stopLoss;
+    if (!hit) return false;
+    const exitPrice = state.direction === 'BUY' ? state.stopLoss : state.stopLoss;
+    return this._exitOppositeStopHunt(candle, exitPrice, 'candle');
+  }
+
   _computeIsCalibrationPattern(direction, matchedLevel) {
     if (direction === 'SELL' && this.params.trend === 'BULLISH' && matchedLevel.index === 1) {
       return !this.r1Calibrated;
@@ -1333,24 +1429,8 @@ class Model002 extends BotModelBase {
       return;
     }
 
-    // The first S1 BUY (BEARISH trend) and first R1 SELL (BULLISH trend)
-    // are one-time stop-hunt calibration setups. They use the exact same
-    // NEW pattern/trigger as every later setup, but the first successful
-    // resolution calibrates the level and deliberately does not trade.
-    if (candidate.isCalibrationPattern && (boundaryResult.outcome === 'BUY' || boundaryResult.outcome === 'SELL')) {
-      this._applyCalibration(candidate);
-      const calibrationReason = candidate.direction === 'SELL'
-        ? 'r1_calibration_confirmed_no_trade'
-        : 's1_calibration_confirmed_no_trade';
-      this._emitDecision('WAIT', {
-        reason: calibrationReason, direction: candidate.direction,
-        activeLevel: this._activeLevelFor(candidate),
-        candle1: this._summarizeCandle(candidate.candle1),
-        candle2: this._summarizeCandle(candidate.candle2),
-        candle3: this._summarizeCandle(candleC),
-        points: candidate.points, boundaries: candidate.boundaries,
-      }, candleC);
-      this.patternCandidate = null;
+    if (candidate.isStopHuntPattern && (boundaryResult.outcome === 'BUY' || boundaryResult.outcome === 'SELL')) {
+      this._startOppositeStopHunt(candidate, candleC);
       return;
     }
 
@@ -1430,26 +1510,11 @@ class Model002 extends BotModelBase {
 
     if (!triggerTouched) return;
 
-    // The first received tick that reaches the correct boundary is the
-    // trigger. The first S1 BUY / R1 SELL setup is calibration-only, so
-    // consume that NEW trigger exactly like the candle path: calibrate once
-    // and never submit a TradeCommand. Every later setup uses the ordinary
-    // NEW confirmation path.
+    // The first eligible opposite R1/S1 setup is a simulated stop-hunt.
+    // R2/R3/S2/S3 never enter this branch because isStopHuntPattern is false.
     if (candidate.engine === 'NEW') {
-      if (candidate.isCalibrationPattern) {
-        this._applyCalibration(candidate);
-        const calibrationReason = direction === 'SELL'
-          ? 'r1_calibration_confirmed_no_trade'
-          : 's1_calibration_confirmed_no_trade';
-        this._emitDecision('WAIT', {
-          reason: calibrationReason, direction,
-          activeLevel: this._activeLevelFor(candidate),
-          candle1: this._summarizeCandle(candidate.candle1),
-          candle2: this._summarizeCandle(candidate.candle2),
-          candle3: this._summarizeCandle(candidate.liveTriggerCandle),
-          points: candidate.points, boundaries: candidate.boundaries,
-        }, candidate.liveTriggerCandle);
-        this.patternCandidate = null;
+      if (candidate.isStopHuntPattern) {
+        this._startOppositeStopHunt(candidate, candidate.liveTriggerCandle);
         return;
       }
       await this._confirmAndSubmitNew(candidate, candidate.liveTriggerCandle);
