@@ -56,7 +56,7 @@
     // Searching for Candle 1
     no_level_touch: 'Waiting for price to touch a configured level',
 
-    // One-time opposite-market active-timeframe switch (ACTIVE_TIMEFRAME_SWITCHED)
+    // Opposite-market timeframe switching is removed; configured timeframe is authoritative.
     opposite_market_level_touch: 'Opposite market level touched — analysis timeframe switched to 1m',
 
     // Candle 1 found, awaiting Candle 2

@@ -111,8 +111,8 @@ class ChartManager {
   }
 
   /**
-   * MODEL_002 pattern-role markers. These are purely visual and are kept
-   * separate inside MarkerManager so they can never erase execution markers.
+   * MODEL_002 pattern-role markers. Active groups may be removed on
+   * invalidation; successful groups remain separate from execution markers.
    */
   setPatternMarkers(markers) {
     this.markerManager.setPatternMarkers(markers);
@@ -120,6 +120,10 @@ class ChartManager {
 
   clearPatternMarkers() {
     this.markerManager.clearPatternMarkers();
+  }
+
+  removePatternMarkersByPatternId(patternId) {
+    this.markerManager.removePatternMarkersByPatternId(patternId);
   }
 
   loadTargetMarkers(markers) {
@@ -130,6 +134,14 @@ class ChartManager {
 
   addTargetMarker(marker) {
     this.markerManager.addTargetMarker(marker);
+  }
+
+  loadStopHuntMarkers(markers) {
+    this.markerManager.loadStopHuntMarkers(markers);
+  }
+
+  addStopHuntMarker(marker) {
+    this.markerManager.addStopHuntMarker(marker);
   }
 }
 window.ChartManager = ChartManager;

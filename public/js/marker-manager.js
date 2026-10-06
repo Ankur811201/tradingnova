@@ -23,11 +23,12 @@ class MarkerManager {
   constructor(candlestickSeries) {
     this.series = candlestickSeries;
     this.markersById = new Map();
-    // Pattern-role markers (Candle 1/2/3) are kept separately from
-    // authoritative execution markers so pattern visuals can be replaced
-    // without ever deleting BUY/SELL/EXIT execution markers.
+    // Pattern-role markers are kept separately from authoritative execution
+    // markers. Only successful TRIGGERED groups remain permanently; active
+    // groups can be removed without ever deleting BUY/SELL/EXIT markers.
     this.patternMarkersById = new Map();
     this.targetMarkersById = new Map();
+    this.stopHuntMarkersById = new Map();
   }
 
   /**
@@ -59,11 +60,12 @@ class MarkerManager {
   }
 
   /**
-   * Replace the MODEL_002 pattern-role markers (Candle 1/2/3) while
-   * preserving all authoritative execution markers already on the chart.
+   * Merge MODEL_002 pattern-role markers into chart state. Successful
+   * TRIGGERED groups are retained permanently; active groups are removable.
+   * Pattern markers are historical evidence, not active-trade state: adding
+   * a new decision must never erase an older Candle 1/2/3/... marker.
    */
   setPatternMarkers(markers) {
-    this.patternMarkersById.clear();
     (markers || []).forEach((marker) => {
       if (!marker || !marker.id || !Number.isFinite(marker.time)) return;
       this.patternMarkersById.set(marker.id, marker);
@@ -71,6 +73,19 @@ class MarkerManager {
     this._apply();
   }
 
+  /** Remove one still-active MODEL_002 pattern group after invalidation. */
+  removePatternMarkersByPatternId(patternId) {
+    if (!patternId) return;
+    const prefix = `model002-pattern:${patternId}:`;
+    let changed = false;
+    for (const id of this.patternMarkersById.keys()) {
+      if (id.indexOf(prefix) === 0) {
+        this.patternMarkersById.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) this._apply();
+  }
 
   /**
    * Historical Target confirmation/exit markers (CT1/CT2/CT3/Tn EXIT).
@@ -93,18 +108,36 @@ class MarkerManager {
     this._apply();
   }
 
-  /** Remove all Candle 1/2/3 visual markers without touching executions. */
-  clearPatternMarkers() {
-    if (this.patternMarkersById.size === 0) return;
-    this.patternMarkersById.clear();
+  /** MODEL_002 opposite stop-hunt markers (STOP HUNT / STOP END). */
+  loadStopHuntMarkers(markers) {
+    (markers || []).forEach((marker) => {
+      if (!marker || !marker.id || !Number.isFinite(marker.time)) return;
+      this.stopHuntMarkersById.set(marker.id, marker);
+    });
     this._apply();
+  }
+
+  addStopHuntMarker(marker) {
+    if (!marker || !marker.id || !Number.isFinite(marker.time)) return;
+    this.stopHuntMarkersById.set(marker.id, marker);
+    this._apply();
+  }
+
+  /**
+   * Pattern markers are permanent for the page/session. This method is kept
+   * only for API compatibility; normal decision updates must never call it.
+   */
+  clearPatternMarkers() {
+    // Intentionally do nothing: Candle 1/Candle 2/Candle 3/... are
+    // permanent historical chart markers and must survive trade start/end.
   }
 
   /** Lightweight Charts requires markers passed to setMarkers() sorted ascending by time. */
   _apply() {
     const combined = Array.from(this.markersById.values())
       .concat(Array.from(this.patternMarkersById.values()))
-      .concat(Array.from(this.targetMarkersById.values()));
+      .concat(Array.from(this.targetMarkersById.values()))
+      .concat(Array.from(this.stopHuntMarkersById.values()));
     const sorted = combined.sort((a, b) => a.time - b.time);
     this.series.setMarkers(sorted);
   }

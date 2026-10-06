@@ -6,11 +6,6 @@ const BotModelMetadata = require('../../models/BotModelMetadata');
 const { TIMEFRAMES_MS } = require('../../utils/timeframes');
 const logger = require('../../utils/logger');
 const { getMarketDataProvider } = require('./index');
-// ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH: shared definition of a running
-// instance's ACTIVE analysis timeframe (identical to parameters.timeframe
-// for any instance that never switched).
-const { getActiveTimeframe } = require('../../utils/activeTimeframe');
-
 const ACTIVE_TIMEFRAME_CACHE_MS = 5000;
 const IS_DEV = process.env.NODE_ENV !== 'production';
 
@@ -137,12 +132,9 @@ class CandlePersistenceService {
       // A bot without one simply cannot appear in `running` with a usable
       // timeframe, so it's correctly skipped rather than being silently
       // persisted/routed as if it were on 5m.
-      // ACTIVE timeframe, not configured: a bot that performed the one-time
-      // opposite-market switch now needs the existing 1m candle stream built
-      // and routed for it. Only that one instance is affected — every other
-      // running bot keeps contributing its own configured timeframe exactly
-      // as before, and no bot is ever globally moved to 1m.
-      const tf = getActiveTimeframe(bot);
+      // The configured timeframe is authoritative. Opposite-market detection
+      // does not create a second analysis timeframe.
+      const tf = bot.parameters && bot.parameters.timeframe;
       addInstanceForTimeframe(tf, bot.instanceId);
 
       // PART A: additionally persist/route every timeframe this bot's

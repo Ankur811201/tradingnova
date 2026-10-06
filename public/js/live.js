@@ -112,8 +112,12 @@
       liveTradingEnabled = Boolean(settings.liveTradingEnabled);
       const symbols = settings.allowedSymbols || [];
       const select = document.getElementById('tradeSymbol');
+      const pairLabel = (symbol) => {
+        const upper = String(symbol || '').toUpperCase();
+        return upper.endsWith('USD') ? upper.slice(0, -3) + '/USD' : upper;
+      };
       select.innerHTML = symbols.length
-        ? symbols.map((s) => '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>').join('')
+        ? symbols.map((s) => '<option value="' + escapeHtml(s) + '">' + escapeHtml(pairLabel(s)) + '</option>').join('')
         : '<option value="">No symbols configured</option>';
     } catch (_err) {
       liveTradingEnabled = false;

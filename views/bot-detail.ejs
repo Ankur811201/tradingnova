@@ -805,14 +805,6 @@
             <div class="glass-tight rounded-xl p-3 text-center">
               <div class="text-[10px] text-gray-500 uppercase">Timeframe</div>
               <div class="text-sm font-bold font-mono text-gray-200 mt-1"><%= (bot.parameters && bot.parameters.timeframe) || '--' %></div>
-              <!-- ONE-TIME OPPOSITE-MARKET SWITCH: the user's configured
-                   timeframe above never changes; this line appears only once
-                   the bot has actually switched, so the page can never show
-                   a stale "3m" while the bot is really analysing 1m. -->
-              <div id="active-timeframe-row" class="mt-1 <%= (bot.parameters && bot.parameters.timeframeSwitched === true) ? '' : 'hidden' %>">
-                <div class="text-[10px] text-gray-500 uppercase">Active</div>
-                <div class="text-sm font-bold font-mono text-emerald-400" id="active-timeframe-value"><%= (bot.parameters && bot.parameters.activeTimeframe) || '--' %></div>
-              </div>
             </div>
             <div class="glass-tight rounded-xl p-3 text-center">
               <div class="text-[10px] text-gray-500 uppercase">Support (S1/S2/S3)</div>
@@ -928,12 +920,6 @@
   // by the client, see bot-detail-ws.js/bot-detail-chart.js) is the honest
   // value; a stored-but-invalid timeframe still fails loudly elsewhere.
   timeframe: "<%= (bot.parameters && bot.parameters.timeframe) || '' %>",
-  // ONE-TIME OPPOSITE-MARKET SWITCH: the timeframe this bot is ACTUALLY
-  // analysing. Equals `timeframe` for any bot that never switched; '1m'
-  // afterwards. Chart candles, execution markers and the next-candle
-  // countdown all follow this value so none of them can go stale.
-  activeTimeframe: "<%= (bot.parameters && bot.parameters.timeframeSwitched === true && bot.parameters.activeTimeframe) || (bot.parameters && bot.parameters.timeframe) || '' %>",
-  timeframeSwitched: <%- (bot.parameters && bot.parameters.timeframeSwitched === true) ? 'true' : 'false' %>,
   // Legacy level/target configuration is exposed only to legacy models.
   // MODEL_002 has no Top/Bottom/Target overlay data in its chart config;
   // its chart source is exclusively the user-configured Support/Resistance
@@ -974,6 +960,11 @@
   // bot-detail-ws.js renders this immediately on page load so the Decision
   // Engine panel shows the bot's last real decision without waiting for the
   // next closed candle. Null when the bot has never produced a decision yet.
+  // Permanent MODEL_002 pattern-marker history. Unlike BOT_INITIAL_DECISION,
+  // this contains every distinct pattern visual retained by StrategyEvent,
+  // so C1/C2/C3... labels survive trade completion and page refreshes.
+  window.BOT_INITIAL_PATTERN_VISUAL_HISTORY = <%- JSON.stringify(typeof initialPatternVisualHistory !== 'undefined' && initialPatternVisualHistory ? initialPatternVisualHistory : []) %>;
+
   window.BOT_INITIAL_DECISION = <%- JSON.stringify(typeof initialDecision !== 'undefined' && initialDecision ? {
     ...(initialDecision.payload || {}),
     history: {
@@ -999,6 +990,9 @@
   // -- no separate markers endpoint. Consumed by bot-detail-chart.js to
   // reconstruct real historical BUY/SELL/EXIT markers on page load.
   window.BOT_INITIAL_TRADES = <%- JSON.stringify(typeof initialTrades !== 'undefined' ? initialTrades : []) %>;
+  // MODEL_002 opposite stop-hunt history used only for chart visualization:
+  // exact STARTED/EXITED timestamps plus the authoritative entry/SL values.
+  window.BOT_INITIAL_STOP_HUNT_EVENTS = <%- JSON.stringify(typeof initialStopHuntEvents !== 'undefined' ? initialStopHuntEvents : []) %>;
   window.BOT_INITIAL_TARGET_POSITIONS = <%- JSON.stringify(typeof initialTargetPositions !== 'undefined' ? initialTargetPositions : []) %>;
 </script>
 
@@ -1222,32 +1216,6 @@
   }
 
   // =========================================================
-  // ACTIVE ANALYSIS TIMEFRAME (one-time opposite-market switch)
-  // =========================================================
-  //
-  // Purely a display + retarget concern: the switch itself is decided by
-  // MODEL_002 and persisted by BotManager. This only makes sure the page
-  // never keeps showing the configured timeframe after the bot has really
-  // moved to 1m, and repoints the existing countdown at the new timeframe
-  // (NovaNextCandle.setTimeframe — the same single timer, not a new one).
-  function renderActiveTimeframe(data) {
-    if (!data || data.timeframeSwitched !== true || !data.activeTimeframe) return;
-    if (window.BOT_CONFIG.activeTimeframe === data.activeTimeframe && window.BOT_CONFIG.timeframeSwitched) return;
-
-    window.BOT_CONFIG.activeTimeframe = data.activeTimeframe;
-    window.BOT_CONFIG.timeframeSwitched = true;
-
-    const row = document.getElementById('active-timeframe-row');
-    const val = document.getElementById('active-timeframe-value');
-    if (val) val.textContent = data.activeTimeframe;
-    if (row) row.classList.remove('hidden');
-
-    if (window.NovaNextCandle && window.NovaNextCandle.current) {
-      window.NovaNextCandle.current.setTimeframe(data.activeTimeframe);
-    }
-  }
-
-  // =========================================================
   // NEXT CANDLE COUNTDOWN (PART 11 — PHASE H, reworked)
   // =========================================================
   //
@@ -1269,7 +1237,7 @@
   document.addEventListener('DOMContentLoaded', function initNextCandleCountdown() {
     if (!window.NovaNextCandle) return; // never break the page if the script is absent
     window.NovaNextCandle.init({
-      timeframe: window.BOT_CONFIG && (window.BOT_CONFIG.activeTimeframe || window.BOT_CONFIG.timeframe),
+      timeframe: window.BOT_CONFIG && window.BOT_CONFIG.timeframe,
       symbol: window.BOT_CONFIG && window.BOT_CONFIG.pair,
       instanceId: window.BOT_CONFIG && window.BOT_CONFIG.instanceId,
       socket: window.NovaBotSocket, // the shared connection — no second socket
@@ -1313,10 +1281,6 @@
         if (!data || data.instanceId !== window.BOT_CONFIG.instanceId) return;
         window.BOT_CONFIG.status = data.status;
         applyButtonStateForStatus(data.status);
-        // ONE-TIME OPPOSITE-MARKET SWITCH: bot:status now also carries
-        // activeTimeframe/timeframeSwitched (see BotManager._broadcastStatus).
-        // No new event and no second socket — this handler already exists.
-        renderActiveTimeframe(data);
         const badge = document.getElementById('bot-status-badge');
         if (badge) {
           badge.textContent = data.status;

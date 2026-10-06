@@ -5,13 +5,13 @@
  *
  * Implements the NEW A/B/C pattern rule for all four active MODEL_002 routes:
  *   BULLISH + SUPPORT    -> BUY
- *   BEARISH + SUPPORT    -> BUY (same BUY algorithm; first S1 confirmation is calibration-only)
- *   BULLISH + RESISTANCE -> SELL (mirror of BUY + BEARISH; first R1 confirmation is calibration-only)
+ *   BEARISH + SUPPORT    -> BUY
+ *   BULLISH + RESISTANCE -> SELL
  *   BEARISH + RESISTANCE -> SELL
  *
  * This module is the single source of truth for the NEW A/B/C algorithm, so
- * mirrored BUY and SELL trend cases must stay identical after their one-time
- * S1/R1 calibration exceptions.
+ * mirrored BUY and SELL trend cases must stay identical; the one-time
+ * opposite-market STOP HUNTING decision is owned by Model002, not this engine.
  *
  *   A = Candle 1 — the candle immediately BEFORE the Support/Resistance-
  *       touch candle

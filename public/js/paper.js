@@ -106,7 +106,11 @@
         select.innerHTML = '<option value="">No symbols configured</option>';
         return;
       }
-      select.innerHTML = symbols.map((s) => '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>').join('');
+      const pairLabel = (symbol) => {
+        const upper = String(symbol || '').toUpperCase();
+        return upper.endsWith('USD') ? upper.slice(0, -3) + '/USD' : upper;
+      };
+      select.innerHTML = symbols.map((s) => '<option value="' + escapeHtml(s) + '">' + escapeHtml(pairLabel(s)) + '</option>').join('');
     } catch (_err) {
       select.innerHTML = '<option value="">Unavailable</option>';
     }

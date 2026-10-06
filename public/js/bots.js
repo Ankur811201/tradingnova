@@ -89,8 +89,12 @@
     try {
       const settings = await NovaApi.get('/api/settings');
       const symbols = settings.allowedSymbols || [];
+      const pairLabel = (symbol) => {
+        const upper = String(symbol || '').toUpperCase();
+        return upper.endsWith('USD') ? upper.slice(0, -3) + '/USD' : upper;
+      };
       select.innerHTML = symbols.length
-        ? symbols.map((s) => '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>').join('')
+        ? symbols.map((s) => '<option value="' + escapeHtml(s) + '">' + escapeHtml(pairLabel(s)) + '</option>').join('')
         : '<option value="">No symbols configured</option>';
     } catch (_err) {
       select.innerHTML = '<option value="">Unavailable</option>';
@@ -287,7 +291,7 @@
     <div class="bot-card-badges mt-12">
       ${statusBadgeClass(instance.status)}
       ${NovaFormat.envBadge(instance.environment)}
-      <span class="badge badge-neutral">${escapeHtml(instance.symbol)}</span>
+      <span class="badge badge-neutral">${escapeHtml((String(instance.symbol || "").toUpperCase().endsWith("USD") ? String(instance.symbol).slice(0, -3) + "/USD" : instance.symbol))}</span>
       <span class="badge badge-neutral">${escapeHtml(timeframe)}</span>
     </div>
 

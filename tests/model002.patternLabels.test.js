@@ -148,6 +148,7 @@ async function bootChart({ instanceId = 'inst_1', initialDecision = null } = {})
     this.loadExecutionMarkers = function (m) { this.markerManager.loadExecutionMarkers(m); };
     this.setPatternMarkers = function (m) { this.markerManager.setPatternMarkers(m); };
     this.clearPatternMarkers = function () { this.markerManager.clearPatternMarkers(); };
+    this.removePatternMarkersByPatternId = function (id) { this.markerManager.removePatternMarkersByPatternId(id); };
   };
 
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public/js/bot-detail-chart.js'), 'utf8'), sandbox, { filename: 'bot-detail-chart.js' });
@@ -184,8 +185,8 @@ test('1-4. C1/C2/C3 sit on the real A/B/C candles, and C2 is marked as the TOUCH
   assert.equal(m.length, 2, 'no C3 label before a C candle exists');
   assert.equal(labelOf(m, 'C1').time, a.timestamp / 1000);
   assert.equal(labelOf(m, 'C2').time, b.timestamp / 1000);
-  assert.match(labelOf(m, 'C1').text, /^\u2460 C1$/);
-  assert.match(labelOf(m, 'C2').text, /^\u2461 C2 \u2022 TOUCH$/);
+  assert.equal(labelOf(m, 'C1').text, 'C1');
+  assert.equal(labelOf(m, 'C2').text, 'C2');
 
   await feed(model, c);
   chart.render(lastDecision(ctx).checks);
@@ -247,7 +248,7 @@ test('7-10. an invalidated pattern removes C1, C2, C3 and the body-reference lin
   assert.notEqual(invalid.checks.candle1, null, 'the payload still carries the candles — this is what used to leave stale labels');
 
   chart.render(invalid.checks);
-  assert.equal(chart.patternMarkers().length, 0, 'C1, C2 and C3 all removed');
+  assert.equal(chart.patternMarkers().length, 0, 'invalidated C1/C2/C3 are removed');
   assert.equal(invalid.checks.bodyReference, null, 'body-reference line removed with the group');
 });
 
@@ -560,8 +561,8 @@ test('LIVE BUG: BEARISH + SUPPORT now uses the same NEW BUY labelled group', asy
   chart.render(payload.checks);
   const m = chart.patternMarkers();
   assert.equal(m.length, 3);
-  assert.match(labelOf(m, 'C1').text, /^\u2460 C1$/);
-  assert.match(labelOf(m, 'C2').text, /^\u2461 C2 \u2022 TOUCH$/);
+  assert.equal(labelOf(m, 'C1').text, 'C1');
+  assert.equal(labelOf(m, 'C2').text, 'C2');
   assert.match(labelOf(m, 'C3').text, /^\u2462 C3$/);
   assert.equal(labelOf(m, 'C1').time, a.timestamp / 1000, 'markers are not shifted by one candle');
 });

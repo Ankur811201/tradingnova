@@ -30,9 +30,8 @@ module.exports = {
     'Candle2.low-5 -> Candle 3 and every later candle evaluated against those same fixed ' +
     'boundaries. A wick touch of the trigger boundary fires immediately on the running candle ' +
     'with no close required, a wrong-boundary touch is INVALID, and touching neither is WAIT. ' +
-    'The first S1 setup for BEARISH+SUPPORT and first R1 setup for BULLISH+RESISTANCE are ' +
-    'one-time stop-hunt calibration patterns and never trade; after calibration, S1/S2/S3 and ' +
-    'R1/R2/R3 all use the same normal NEW pattern. Level selection is first-match-wins. ' +
+    'The first eligible R1/S1 opposite-market setup uses one-time STOP HUNTING; R2/R3 and S2/S3 are always direct trades. ' +
+    'After the stop hunt is consumed, later R1/S1 opposite setups are also direct trades. Level selection is first-match-wins. ' +
     'Blocks each Support/Resistance level after 2 losing completed trades; the first successful completed trade stops the bot.',
   author: 'Nova Trade',
   supportedSymbols: [], // empty = no model-level restriction; RiskEngine's allowed-symbol list still applies

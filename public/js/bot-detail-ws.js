@@ -532,7 +532,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // bail-out only, never a guess.
         // ACTIVE analysis timeframe (one-time opposite-market switch): equals
         // BOT_CONFIG.timeframe unless this bot switched to 1m.
-        const timeframe = window.BOT_CONFIG && (window.BOT_CONFIG.activeTimeframe || window.BOT_CONFIG.timeframe);
+        const timeframe = window.BOT_CONFIG && window.BOT_CONFIG.timeframe;
         if (!timeframe) throw new Error('No configured timeframe for this bot; cannot bucket execution marker');
         const liveMarkers = window.NovaExecutionMarkers.deriveLiveMarkers(data, timeframe);
         liveMarkers.forEach((marker) => window.NovaBotChartManager.addExecutionMarker(marker));
@@ -542,6 +542,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+
+  // MODEL_002 opposite stop-hunt chart events. These are intentionally
+  // separate from bot:execution because a stop hunt is simulated and must
+  // never be represented as a real position/trade.
+  socket.on('bot:strategy-event', (event) => {
+    if (!event || event.instanceId !== instanceId) return;
+    if (event.eventType !== 'OPPOSITE_STOP_HUNT_STARTED' &&
+        event.eventType !== 'OPPOSITE_STOP_HUNT_EXITED') return;
+    if (window.addLiveStopHuntEvent) {
+      window.addLiveStopHuntEvent(event);
+    }
+  });
 
   // =========================================================
   // REAL DECISION ENGINE (model-agnostic, authoritative)

@@ -71,7 +71,7 @@
       return {
         instanceId: instanceId,
         symbol: window.BOT_CONFIG && window.BOT_CONFIG.pair,
-        timeframe: window.BOT_CONFIG && (window.BOT_CONFIG.activeTimeframe || window.BOT_CONFIG.timeframe),
+        timeframe: window.BOT_CONFIG && window.BOT_CONFIG.timeframe,
         count: window.__NOVA_RECORDING_CANDLES__.length,
         candles: window.__NOVA_RECORDING_CANDLES__
       };
@@ -352,8 +352,8 @@
      *
      * Marker ids are namespaced with the group's own patternId, so markers
      * from a different pattern (or a different bot) can never be confused
-     * with these; MarkerManager.setPatternMarkers replaces the whole
-     * pattern-marker set on every call, so a redraw can never leave a
+     * with these; MarkerManager.setPatternMarkers merges permanent/active pattern
+     * markers by stable id; invalid active groups are explicitly removed a
      * duplicate or an orphan behind.
      *
      * Lightweight Charts markers carry a single line of text, so the
@@ -377,8 +377,7 @@
         if (time == null) return null;
         // The visible caption is the backend's own role code, plus its own
         // TOUCH/trigger flags. Nothing is decided here.
-        var text = (label.badge ? label.badge + ' ' : '') + (label.trigger || label.code);
-        if (label.touch) text += ' \u2022 TOUCH';
+        var text = label.code || label.role || 'CANDLE';
         var color = colors[label.role] || '#94a3b8';
         // P4-M4 — RISK REJECTED (visual only). The pattern really did
         // trigger, so the trigger label stays; it is restyled amber and
@@ -391,7 +390,7 @@
           color = '#f59e0b';
         }
         return {
-          id: 'model002-pattern:' + visual.patternId + ':' + label.role,
+          id: 'model002-pattern:' + visual.patternId + ':' + label.role + ':' + (label.code || '') + ':' + time,
           time: time,
           position: position,
           color: color,
@@ -407,31 +406,46 @@
       // markers themselves.
       _currentChecks: null,
       _rejected: false,
+      _currentPersistent: false,
       /**
-       * Renders the labels of the pattern group in `checks`, or removes
-       * every pattern label when there is no group (IDLE, or the pattern
-       * was just invalidated — the backend sends patternVisual: null, which
-       * is precisely the "remove C1/C2/C3" signal). Always call this on
-       * every decision: passing a checks object with no group is how stale
-       * labels get cleaned up.
+       * Adds the current MODEL_002 pattern labels to the chart. ACTIVE groups are temporary; TRIGGERED groups become permanent history.
+       * A missing patternVisual means the current pattern ended/invalidated;
+       * it is NOT permission to erase historical labels. Evaluation candles
+       * use distinct marker ids, so C3 remains when the same pattern advances
+       * to C4/C5/etc.
        */
       setFromChecks: function (checks) {
         if (!chartManager || typeof chartManager.setPatternMarkers !== 'function') return;
         var visual = checks && checks.patternVisual;
         var previous = this._currentChecks && this._currentChecks.patternVisual;
-        // A rejection belongs to ONE pattern attempt: the moment a
-        // different pattern group is drawn, the REJECTED annotation goes
-        // with the old one.
-        if (!visual || !previous || visual.patternId !== previous.patternId) {
+
+        // No current pattern means the active candidate was invalidated.
+        // Remove ONLY that untriggered candidate's C1/C2/C3... markers.
+        // Triggered groups are historical and remain permanently.
+        if (!visual || !Array.isArray(visual.labels) || !visual.labels.length) {
+          if (previous && !this._currentPersistent && typeof chartManager.removePatternMarkersByPatternId === 'function') {
+            chartManager.removePatternMarkersByPatternId(previous.patternId);
+          }
+          this._currentChecks = null;
+          this._rejected = false;
+          this._currentPersistent = false;
+          return;
+        }
+
+        // A new pattern supersedes an older ACTIVE pattern. Remove the old
+        // untriggered group; never remove a group that already triggered.
+        if (previous && visual.patternId !== previous.patternId && !this._currentPersistent &&
+            typeof chartManager.removePatternMarkersByPatternId === 'function') {
+          chartManager.removePatternMarkersByPatternId(previous.patternId);
+        }
+
+        if (!previous || visual.patternId !== previous.patternId) {
           this._rejected = false;
         }
         this._currentChecks = checks || null;
+        this._currentPersistent = visual.status === 'TRIGGERED';
         var markers = buildPatternRoleMarkers(checks, this._rejected);
-        if (!markers.length) {
-          this.clear();
-          return;
-        }
-        chartManager.setPatternMarkers(markers);
+        if (markers.length) chartManager.setPatternMarkers(markers);
       },
       /**
        * P4-M4 — the RiskEngine rejected the TradeCommand this pattern
@@ -447,16 +461,25 @@
         if (!chartManager || typeof chartManager.setPatternMarkers !== 'function') return;
         var visual = this._currentChecks && this._currentChecks.patternVisual;
         if (!visual || visual.status !== 'TRIGGERED') return;
-        this._rejected = true;
-        var markers = buildPatternRoleMarkers(this._currentChecks, true);
-        if (!markers.length) return;
-        chartManager.setPatternMarkers(markers);
-      },
-      clear: function () {
+        // A risk-rejected trigger did not produce a successful trade. Per
+        // chart-history rules, its C1/C2/C3... pattern markers are temporary
+        // and must disappear. The authoritative execution layer is separate;
+        // successful BUY/SELL and EXIT markers remain untouched.
+        if (visual.patternId && typeof chartManager.removePatternMarkersByPatternId === 'function') {
+          chartManager.removePatternMarkersByPatternId(visual.patternId);
+        }
         this._currentChecks = null;
         this._rejected = false;
-        if (!chartManager || typeof chartManager.clearPatternMarkers !== 'function') return;
-        chartManager.clearPatternMarkers();
+        this._currentPersistent = false;
+      },
+      clear: function () {
+        var visual = this._currentChecks && this._currentChecks.patternVisual;
+        if (visual && !this._currentPersistent && typeof chartManager.removePatternMarkersByPatternId === 'function') {
+          chartManager.removePatternMarkersByPatternId(visual.patternId);
+        }
+        this._currentChecks = null;
+        this._rejected = false;
+        this._currentPersistent = false;
       },
     };
 
@@ -491,6 +514,39 @@
   // falls before the earliest loaded candle is dropped rather than
   // expanding the candle fetch just to show it.
   // -----------------------------------------------------------------
+  function addLiveStopHuntEvent(event) {
+    if (!event || !window.NovaExecutionMarkers || !window.NovaBotChartManager) return;
+    var timeframe = window.BOT_CONFIG && window.BOT_CONFIG.timeframe;
+    if (!timeframe) return;
+    var type = event.eventType === 'OPPOSITE_STOP_HUNT_STARTED' ? 'STOP_HUNT'
+      : event.eventType === 'OPPOSITE_STOP_HUNT_EXITED' ? 'STOP_END' : null;
+    if (!type || typeof window.NovaExecutionMarkers.makeStopHuntMarker !== 'function') return;
+    var marker = window.NovaExecutionMarkers.makeStopHuntMarker(event, type, timeframe);
+    if (marker && typeof window.NovaBotChartManager.addStopHuntMarker === 'function') {
+      window.NovaBotChartManager.addStopHuntMarker(marker);
+    }
+    if (type === 'STOP_HUNT') {
+      var payload = event.payload || event;
+      var sl = Number(payload.stopLoss);
+      if (Number.isFinite(sl) && window.NovaBotChartManager.overlayManager &&
+          typeof window.NovaBotChartManager.overlayManager.setPriceLine === 'function') {
+        window.NovaBotChartManager.overlayManager.setPriceLine('oppositeStopHuntSL', sl, '#f23645', 'STOP HUNT SL', 1);
+      }
+    } else if (type === 'STOP_END') {
+      // STOP HUNT SL is an active-state line only. Once the simulated stop
+      // hunt touches/exits at its SL, remove the horizontal line. The STOP
+      // HUNT and STOP END event markers remain permanently on the chart.
+      var om = window.NovaBotChartManager.overlayManager;
+      if (om && typeof om.removePriceLine === 'function') {
+        om.removePriceLine('oppositeStopHuntSL');
+      }
+    }
+  }
+
+  // bot-detail-ws.js receives strategy events independently, so expose the
+  // handler explicitly for live START/EXIT updates.
+  window.addLiveStopHuntEvent = addLiveStopHuntEvent;
+
   function loadInitialExecutionMarkers(candles) {
     if (typeof window.NovaExecutionMarkers === 'undefined') {
       console.error('[CHART] execution-markers.js did not load — skipping execution markers');
@@ -503,7 +559,7 @@
     // such a bot cannot have real candles to bucket markers against anyway.
     // ACTIVE analysis timeframe (one-time opposite-market switch): equals
     // BOT_CONFIG.timeframe unless this bot switched to 1m.
-    var timeframe = window.BOT_CONFIG && (window.BOT_CONFIG.activeTimeframe || window.BOT_CONFIG.timeframe);
+    var timeframe = window.BOT_CONFIG && window.BOT_CONFIG.timeframe;
     if (!timeframe) return;
     var trades = Array.isArray(window.BOT_INITIAL_TRADES) ? window.BOT_INITIAL_TRADES : [];
     var openPosition = window.BOT_INITIAL_POSITION || null;
@@ -514,6 +570,37 @@
     markers = markers.filter(function (m) { return m.time >= earliest; });
 
     chartManager.loadExecutionMarkers(markers);
+    // MODEL_002 opposite stop-hunt visuals: show the exact STOP HUNT start
+    // candle and STOP END candle, plus preserve the authoritative stop-loss
+    // price as a chart reference. These are strategy visuals, not executions.
+    if (window.NovaExecutionMarkers && typeof window.NovaExecutionMarkers.buildStopHuntMarkers === 'function') {
+      var stopHuntEvents = Array.isArray(window.BOT_INITIAL_STOP_HUNT_EVENTS)
+        ? window.BOT_INITIAL_STOP_HUNT_EVENTS
+        : [];
+      var stopHuntMarkers = window.NovaExecutionMarkers.buildStopHuntMarkers(stopHuntEvents, timeframe)
+        .filter(function (m) { return m.time >= earliest; });
+      if (typeof chartManager.loadStopHuntMarkers === 'function') {
+        chartManager.loadStopHuntMarkers(stopHuntMarkers);
+      }
+
+      // STOP HUNT SL is active-state only. Restore it after reload only if
+      // the historical stop hunt has STARTED and has NOT already EXITED. The
+      // STOP HUNT / STOP END markers themselves remain permanent.
+      var startEvent = stopHuntEvents.find(function (ev) {
+        return ev && ev.eventType === 'OPPOSITE_STOP_HUNT_STARTED'
+          && Number.isFinite(Number((ev.payload || ev).stopLoss));
+      });
+      var stopHuntExited = stopHuntEvents.some(function (ev) {
+        return ev && ev.eventType === 'OPPOSITE_STOP_HUNT_EXITED';
+      });
+      if (startEvent && !stopHuntExited && chartManager.overlayManager && typeof chartManager.overlayManager.setPriceLine === 'function') {
+        var sl = Number((startEvent.payload || startEvent).stopLoss);
+        chartManager.overlayManager.setPriceLine('oppositeStopHuntSL', sl, '#f23645', 'STOP HUNT SL', 1);
+      } else if (chartManager.overlayManager && typeof chartManager.overlayManager.removePriceLine === 'function') {
+        chartManager.overlayManager.removePriceLine('oppositeStopHuntSL');
+      }
+    }
+
 
     // Target Exit markers are persisted on Position documents. Load recent
     // positions, not only the currently-open position, so T1/T2/T3 partial
@@ -652,10 +739,16 @@
         // and historical candles are ready. bot-detail-ws.js also handles
         // subsequent live decisions through the same public helper.
         if (window.BOT_CONFIG && window.BOT_CONFIG.modelId === 'MODEL_002') {
-          // RELOAD: only the pattern group the backend itself reported on
-          // its most recent real decision is drawn. No pattern is ever
-          // reconstructed from historical candles here, and a decision with
-          // no active group draws nothing.
+          // RELOAD: restore every persisted MODEL_002 pattern visual first,
+          // then apply the latest decision. Historical labels are never
+          // reconstructed from OHLC and are never cleared when the latest
+          // pattern becomes idle/invalidated.
+          var initialPatternHistory = Array.isArray(window.BOT_INITIAL_PATTERN_VISUAL_HISTORY)
+            ? window.BOT_INITIAL_PATTERN_VISUAL_HISTORY : [];
+          initialPatternHistory.forEach(function (visual) {
+            if (!visual || !Array.isArray(visual.labels)) return;
+            window.NovaChartPatternMarkers.setFromChecks({ patternVisual: visual });
+          });
           var initialChecks = window.NovaPendingPatternChecks || (window.BOT_INITIAL_DECISION && window.BOT_INITIAL_DECISION.checks);
           window.NovaChartPatternMarkers.setFromChecks(initialChecks || null);
           // Same server-rendered initial decision also carries the

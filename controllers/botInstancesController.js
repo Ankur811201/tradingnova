@@ -6,7 +6,6 @@ const Candle = require('../models/Candle');
 const { success, AppError } = require('../utils/apiResponse');
 const { getMarketDataProvider } = require('../services/marketData');
 const botEngineManager = require('../services/BotEngineManager');
-const { getActiveTimeframe } = require('../utils/activeTimeframe');
 const { TargetExitManager } = require('../services/TargetExitManager');
 
 const HISTORY_WINDOW_MS = 36 * 60 * 60 * 1000;
@@ -89,11 +88,9 @@ async function getCandles(req, res, next) {
     if (!instance) throw new AppError('Bot instance not found', 404);
 
     const symbol = instance.symbol;
-    // ACTIVE analysis timeframe (see utils/activeTimeframe.js): identical to
-    // parameters.timeframe unless this instance performed the one-time
-    // opposite-market switch, in which case the chart must show the 1m
-    // candles the bot is actually analysing rather than stale 3m ones.
-    const timeframe = getActiveTimeframe(instance);
+    // The configured timeframe is authoritative. Opposite-market detection
+    // no longer switches the chart or analysis stream.
+    const timeframe = instance.parameters && instance.parameters.timeframe;
     // PART 13.1 -- PHASE D: an existing bot with no configured timeframe
     // must not silently be shown/queried as if it were on the model's
     // default timeframe (see the shared model-configuration validators, which

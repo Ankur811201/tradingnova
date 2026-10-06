@@ -263,6 +263,59 @@ function buildTargetMarkers(events, side) {
     .filter(Boolean);
 }
 
+
+/**
+ * MODEL_002 opposite stop-hunt graph markers.
+ * These are strategy-event visuals, not executions: no real order/position is
+ * created by the stop hunt. The event payload carries the authoritative
+ * start/end timestamp, direction, entry and stop-loss.
+ */
+function makeStopHuntMarker(event, type, timeframe) {
+  if (!event || !type) return null;
+  var payload = event.payload || event;
+  var rawTime = type === 'STOP_HUNT'
+    ? (payload.startedAt || payload.at || event.at)
+    : (payload.exitedAt || payload.at || event.at);
+  var execSeconds = toUnixSeconds(rawTime);
+  var time = bucketToCandle(execSeconds, timeframe);
+  if (time === null) return null;
+
+  var direction = String(payload.direction || '').toUpperCase();
+  var isBuy = direction === 'BUY';
+  var price = type === 'STOP_HUNT' ? Number(payload.entryPrice) : Number(payload.stopLoss);
+  if (!Number.isFinite(price)) return null;
+
+  return {
+    id: 'stop-hunt:' + String(payload.stopHuntId || payload.id || '') + ':' + type + ':' + execSeconds,
+    type: type,
+    side: isBuy ? 'LONG' : 'SHORT',
+    execTime: execSeconds,
+    time: time,
+    price: price,
+    position: type === 'STOP_HUNT'
+      ? (isBuy ? 'belowBar' : 'aboveBar')
+      : (isBuy ? 'aboveBar' : 'belowBar'),
+    color: '#f23645',
+    shape: type === 'STOP_HUNT' ? (isBuy ? 'arrowUp' : 'arrowDown') : 'circle',
+    text: type === 'STOP_HUNT' ? 'STOP HUNT' : 'STOP END',
+  };
+}
+
+function buildStopHuntMarkers(events, timeframe) {
+  var out = [];
+  (events || []).forEach(function (event) {
+    var eventType = event && event.eventType;
+    if (eventType === 'OPPOSITE_STOP_HUNT_STARTED') {
+      var start = makeStopHuntMarker(event, 'STOP_HUNT', timeframe);
+      if (start) out.push(start);
+    } else if (eventType === 'OPPOSITE_STOP_HUNT_EXITED') {
+      var end = makeStopHuntMarker(event, 'STOP_END', timeframe);
+      if (end) out.push(end);
+    }
+  });
+  return out;
+}
+
 var NovaExecutionMarkers = {
   toUnixSeconds: toUnixSeconds,
   bucketToCandle: bucketToCandle,
@@ -273,6 +326,8 @@ var NovaExecutionMarkers = {
   deriveLiveMarkers: deriveLiveMarkers,
   makeTargetMarker: makeTargetMarker,
   buildTargetMarkers: buildTargetMarkers,
+  makeStopHuntMarker: makeStopHuntMarker,
+  buildStopHuntMarkers: buildStopHuntMarkers,
 };
 
 if (typeof window !== 'undefined') {

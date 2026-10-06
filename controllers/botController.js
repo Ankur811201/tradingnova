@@ -84,7 +84,7 @@ exports.renderBotDetail = async (req, res, next) => {
     // closed Trade for this instance, used to compute Total Profit/Win
     // Rate/Profit Factor/Today's Profit -- never derived from the legacy
     // runtime or from decision/signal data.
-    const [trades, signals, decisionEvents, currentPosition, perfTrades, storyPositions] = await Promise.all([
+    const [trades, signals, decisionEvents, stopHuntEvents, currentPosition, perfTrades, storyPositions] = await Promise.all([
       Trade.find({ instanceId, environment: bot.environment }).sort({ createdAt: -1 }).limit(50).lean(),
       Signal.find({ instanceId }).sort({ createdAt: -1 }).limit(50).lean(),
       StrategyEvent.find({
@@ -92,6 +92,13 @@ exports.renderBotDetail = async (req, res, next) => {
         eventType: 'DECISION',
         at: { $gte: new Date(Date.now() - DECISION_HISTORY_WINDOW_MS) },
       }).sort({ at: -1 }).limit(2160).lean(),
+      // MODEL_002 has at most one lifetime opposite stop-hunt. Keep both
+      // STARTED and EXITED events so the chart can reconstruct the exact
+      // STOP HUNT -> STOP END candle range after reload.
+      StrategyEvent.find({
+        instanceId,
+        eventType: { $in: ['OPPOSITE_STOP_HUNT_STARTED', 'OPPOSITE_STOP_HUNT_EXITED'] },
+      }).sort({ at: 1 }).limit(10).lean(),
       Position.findOne({ instanceId, environment: bot.environment, status: 'OPEN' }).lean(),
       Trade.find({ instanceId, environment: bot.environment })
         .sort({ closedAt: -1 })
@@ -107,6 +114,38 @@ exports.renderBotDetail = async (req, res, next) => {
     const perf = computePerformance(perfTrades);
     const todayProfit = computeTodayProfit(perfTrades);
     const compactedDecisionEvents = compactDecisionHistory(decisionEvents);
+
+    // MODEL_002 chart history: preserve every pattern visual emitted by the
+    // decision stream. Decision History is intentionally compacted for the
+    // panel, but chart Candle 1/Candle 2/Candle 3... markers are permanent
+    // historical evidence and must never be reconstructed from only the
+    // latest decision. Deduplicate by patternId while keeping the newest
+    // payload for an evolving evaluation candle (C3 -> C4 -> C5...).
+    const patternVisualById = new Map();
+    for (const event of decisionEvents) {
+      const visual = event && event.payload && event.payload.checks && event.payload.checks.patternVisual;
+      // Only successfully triggered patterns are permanent history. ACTIVE
+      // groups are temporary and INVALIDATED groups are intentionally absent
+      // from the latest visual payload; neither belongs in reload history.
+      if (!visual || visual.status !== 'TRIGGERED' || !visual.patternId || !Array.isArray(visual.labels)) continue;
+      const key = String(visual.patternId);
+      let merged = patternVisualById.get(key);
+      if (!merged) {
+        merged = { ...visual, labels: [] };
+        merged._labelsByKey = new Map();
+        patternVisualById.set(key, merged);
+      }
+      for (const label of visual.labels) {
+        const labelKey = `${label.role || ''}:${label.code || ''}:${label.timestamp}`;
+        // Same candle/role is updated in place (for example when C3 becomes
+        // a triggered BUY/SELL label), while a later evaluation candle such
+        // as C4/C5 gets its own permanent entry.
+        merged._labelsByKey.set(labelKey, { ...label });
+      }
+      // Keep newest group metadata while retaining the complete label set.
+      Object.assign(merged, visual, { labels: Array.from(merged._labelsByKey.values()) });
+    }
+    const patternVisualHistory = Array.from(patternVisualById.values()).map(({ _labelsByKey, ...visual }) => visual);
 
     // Current PnL / ROI-on-margin: both are real derived ratios of two
     // authoritative Position fields (unrealizedPnl, margin) -- not an
@@ -147,6 +186,11 @@ exports.renderBotDetail = async (req, res, next) => {
       // recent one (decisionEvents[0]) is also the Decision Engine panel's
       // initial state.
       initialDecisions: compactedDecisionEvents,
+      // Permanent MODEL_002 C1/C2/C3... chart history. This is separate from
+      // the compacted Decision History panel so old pattern labels survive
+      // trade completion and page refreshes.
+      initialPatternVisualHistory: patternVisualHistory,
+      initialStopHuntEvents: stopHuntEvents,
       initialDecision: compactedDecisionEvents.length ? compactedDecisionEvents[0] : null,
       // NOVA TRADE -- PART 15 PHASE B/STEP 5: real "Live Trade Story"
       // timeline, replacing the dead `Signal`-backed one. Built purely from

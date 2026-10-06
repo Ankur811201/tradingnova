@@ -17,14 +17,6 @@ const { newInstanceId } = require('../../utils/ids');
 const logger = require('../../utils/logger');
 const { env } = require('../../config/env');
 const { AppError } = require('../../utils/apiResponse');
-// ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH: the single shared definition of
-// "which timeframe is this instance actually analysing" + the analysis
-// baseline. Pure helpers, no new state, no new stream — see
-// utils/activeTimeframe.js.
-const {
-  getActiveTimeframe, applySwitch, hasSwitched, computeAnalysisBaselineMs,
-} = require('../../utils/activeTimeframe');
-
 const { applyLevelTouch, clearLevelTouchState } = require('../../utils/levelTouchState');
 // PART 11: how many recent CLOSED candles to hydrate a newly-started
 // instance with. patternEngine.js requires >= 50 (50-period EMA is the
@@ -33,6 +25,21 @@ const { applyLevelTouch, clearLevelTouchState } = require('../../utils/levelTouc
 // Capped at the instance's own historySize since the model never keeps
 // more than that in memory anyway — no point loading more.
 const HYDRATION_MIN_CANDLES = 60;
+
+function computeBotAnalysisBaselineMs(dbInstance) {
+  if (!dbInstance) return null;
+  const createdAt = dbInstance.createdAt;
+  const createdAtMs = createdAt instanceof Date && !Number.isNaN(createdAt.getTime())
+    ? createdAt.getTime()
+    : (typeof createdAt === 'number' && Number.isFinite(createdAt) ? createdAt : null);
+  const levelsUpdatedAt = dbInstance.parameters && Number.isFinite(dbInstance.parameters.levelsUpdatedAt)
+    ? dbInstance.parameters.levelsUpdatedAt
+    : null;
+  const candidates = [];
+  if (createdAtMs !== null) candidates.push(createdAtMs);
+  if (levelsUpdatedAt !== null) candidates.push(levelsUpdatedAt);
+  return candidates.length ? Math.max(...candidates) : null;
+}
 
 // NOTE: this constant lives under bot-models/model-001/ but is already
 // treated as shared candle infrastructure elsewhere in the codebase (e.g.
@@ -201,7 +208,7 @@ class BotManager {
     // updateConfiguration, never on create; a bot could be created above
     // env.RISK_MAX_LEVERAGE and only get caught later by RiskEngine at
     // trade time. Validate up front instead.
-    const maxLeverage = env.RISK_MAX_LEVERAGE || 20;
+    const maxLeverage = env.RISK_MAX_LEVERAGE || 200;
     let normalizedLeverage, normalizedLevels, normalizedTargets, normalizedSizing;
     try {
       normalizedLeverage = validateLeverage(leverage, maxLeverage);
@@ -471,10 +478,9 @@ class BotManager {
     // real, explicit value by this point. A fallback here would just hide
     // that guarantee ever broke.
     if (typeof modelInstance.onHydrate === 'function') {
-      // A restarted instance that already switched hydrates its ACTIVE
-      // timeframe (1m), never its configured one — otherwise it would come
-      // back analysing 3m candles again.
-      const timeframe = getActiveTimeframe(dbInstance);
+      // The configured timeframe is authoritative, including after restart.
+      // Opposite-market detection does not change the analysis timeframe.
+      const timeframe = dbInstance.parameters && dbInstance.parameters.timeframe;
       const wantCount = Math.max(
         HYDRATION_MIN_CANDLES,
         Math.min((dbInstance.parameters && dbInstance.parameters.historySize) || 0, 200)
@@ -568,10 +574,9 @@ class BotManager {
     // not happen via the normal creation path — timestamps are Mongoose-
     // automatic — but never trust it blindly), preserve the existing,
     // unfiltered behavior rather than risk stalling a real bot.
-    // Baseline = max(createdAt, levelsUpdatedAt, timeframeSwitchedAt) — see
-    // utils/activeTimeframe.js. The switch term is what stops 1m candles
-    // that predate the switch from being hydrated back in after a restart.
-    const baselineMs = computeAnalysisBaselineMs(dbInstance);
+    // Baseline = max(createdAt, levelsUpdatedAt). Opposite-market logic does
+    // not change the bot's configured timeframe or hydration baseline.
+    const baselineMs = computeBotAnalysisBaselineMs(dbInstance);
 
     if (baselineMs === null) return candles;
     return candles.filter((c) => c.timestamp >= baselineMs);
@@ -841,7 +846,7 @@ class BotManager {
       if (dbInstance.status === 'RUNNING') {
         throw new AppError('Cannot change leverage while the bot is RUNNING. Pause or stop it first.', 409);
       }
-      const maxLeverage = env.RISK_MAX_LEVERAGE || 20;
+      const maxLeverage = env.RISK_MAX_LEVERAGE || 200;
       try {
         patch.leverage = validateLeverage(updates.leverage, maxLeverage);
       } catch (err) {
@@ -1049,7 +1054,7 @@ class BotManager {
     // is the ONLY routing change needed for the switch — the existing
     // exact-match rule (a candle only reaches instances on that exact
     // timeframe) is otherwise untouched, so no other bot is affected.
-    if (getActiveTimeframe(dbInstance) === timeframe) return true;
+    if (dbInstance.parameters && dbInstance.parameters.timeframe === timeframe) return true;
     const modelDef = this.registeredModels.get(dbInstance.modelId);
     const required = (modelDef && modelDef.requiredTimeframes) || [];
     return required.some((entry) => entry.timeframe === timeframe);
@@ -1095,12 +1100,12 @@ class BotManager {
         // could otherwise feed a stale-timestamped candle into live
         // dispatch.
         // Same createdAt/levelsUpdatedAt baseline as before, now also
-        // including timeframeSwitchedAt (see utils/activeTimeframe.js).
+        // The configured timeframe is authoritative.
         // That single addition is what makes the candle already forming at
         // the moment of the switch un-analysable: only a candle whose
         // period STARTED at or after the switch instant — i.e. the next
         // newly closed 1m candle — passes.
-        const baselineMs = computeAnalysisBaselineMs(dbInstance);
+        const baselineMs = computeBotAnalysisBaselineMs(dbInstance);
         if (baselineMs !== null && marketUpdate.timestamp < baselineMs) continue;
       }
 
@@ -1225,6 +1230,33 @@ class BotManager {
       let persistedStrategyEvent = null;
       const eventAt = new Date(event.at);
 
+      // Make the lifetime stop-hunt state durable before writing the history
+      // event. This closes the restart window where a crash could otherwise
+      // occur after the model started its one-time stop hunt but before the
+      // normal BotInstance save completed.
+      if (dbInstance.modelId === 'MODEL_002' && event.eventType === 'OPPOSITE_STOP_HUNT_STARTED') {
+        const state = Object.assign({}, event.payload || {});
+        dbInstance.parameters = Object.assign({}, dbInstance.parameters || {}, {
+          oppositeStopHuntUsed: true,
+          oppositeStopHuntActive: state,
+        });
+        dbInstance.markModified('parameters');
+        await BotInstance.updateOne({ _id: dbInstance._id }, { $set: {
+          'parameters.oppositeStopHuntUsed': true,
+          'parameters.oppositeStopHuntActive': state,
+        } });
+      } else if (dbInstance.modelId === 'MODEL_002' && event.eventType === 'OPPOSITE_STOP_HUNT_EXITED') {
+        dbInstance.parameters = Object.assign({}, dbInstance.parameters || {}, {
+          oppositeStopHuntUsed: true,
+          oppositeStopHuntActive: null,
+        });
+        dbInstance.markModified('parameters');
+        await BotInstance.updateOne({ _id: dbInstance._id }, { $set: {
+          'parameters.oppositeStopHuntUsed': true,
+          'parameters.oppositeStopHuntActive': null,
+        } });
+      }
+
       // Decision History is a state/history feed, not a raw market-data log.
       // Consecutive identical decisions are folded into the latest record.
       if (event.eventType === 'DECISION') {
@@ -1276,46 +1308,6 @@ class BotManager {
         }
       }
 
-      // MODEL_002 opposite-market STOP HUNT persistence. The first eligible
-      // R1/S1 opposite setup is a simulated trade-like stop hunt; once it has
-      // started, the lifetime-used flag must survive bot/server restart. The
-      // active state is also persisted so a restart cannot accidentally turn
-      // an unfinished stop hunt into a real trade. R2/R3/S2/S3 never emit this
-      // event and therefore never touch these fields.
-      if (dbInstance.modelId === 'MODEL_002' && event.eventType === 'OPPOSITE_STOP_HUNT_STARTED') {
-        dbInstance.parameters = Object.assign({}, dbInstance.parameters || {}, {
-          oppositeStopHuntUsed: true,
-          oppositeStopHuntActive: event.payload || null,
-        });
-        dbInstance.markModified('parameters');
-      }
-      if (dbInstance.modelId === 'MODEL_002' && event.eventType === 'OPPOSITE_STOP_HUNT_EXITED') {
-        dbInstance.parameters = Object.assign({}, dbInstance.parameters || {}, {
-          oppositeStopHuntUsed: true,
-          oppositeStopHuntActive: null,
-        });
-        dbInstance.markModified('parameters');
-      }
-
-      // ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH (persistence side).
-      // The model detected the touch and emitted this through the existing
-      // StrategyEvent pipeline (which is also what puts it in Decision
-      // History / the bot:event log — no new logging system). BotManager,
-      // the only component that owns BotInstance persistence, applies it to
-      // the SAME `parameters` object that is about to be saved below, so no
-      // extra write is added. applySwitch() is a no-op (returns null) if the
-      // instance already switched or is configured on 1m, so this can never
-      // fire twice and never touches `parameters.timeframe`.
-      let timeframeSwitchApplied = false;
-      if (event.eventType === 'ACTIVE_TIMEFRAME_SWITCHED') {
-        const switched = applySwitch(dbInstance.parameters || {}, event.payload && event.payload.at);
-        if (switched) {
-          dbInstance.parameters = switched;
-          dbInstance.markModified('parameters');
-          timeframeSwitchApplied = true;
-        }
-      }
-
       await dbInstance.save();
 
       // MODEL_002 recording: reuse the existing LEVEL_TOUCHED event. Only
@@ -1346,25 +1338,22 @@ class BotManager {
         recordingService.updateDecision(instanceId, event.payload || {});
       }
 
-      if (timeframeSwitchApplied) {
-        // The candle builder decides which timeframes to persist from the
-        // running instances' active timeframes; drop its short-lived cache
-        // for this symbol so the existing 1m stream starts serving this
-        // instance immediately instead of up to one cache window later.
-        try {
-          require('../marketData/CandlePersistenceService').invalidateSymbol(dbInstance.symbol);
-        } catch (err) {
-          await logger.warn('BOT', `Could not refresh candle routing after timeframe switch for ${instanceId}: ${err.message}`);
-        }
-        await logger.info('BOT', (event.payload && event.payload.message)
-          || `Bot instance ${instanceId} switched active analysis timeframe to ${getActiveTimeframe(dbInstance)}`);
-        // Reuses the EXISTING bot:status event (room:bots, which the Bot
-        // Detail page already joins) rather than opening a second socket
-        // or inventing a new channel.
-        this._broadcastStatus(dbInstance);
-      }
-
       if (this.ioRef) this.ioRef.to('room:bots').emit('bot:event', { instanceId, ...event });
+
+      // MODEL_002 chart visualization events. These are strategy-state
+      // events, not executions: the browser uses them only to draw the
+      // STOP HUNT / STOP END markers and its stop-loss reference line.
+      if (this.ioRef && dbInstance.modelId === 'MODEL_002' &&
+          (event.eventType === 'OPPOSITE_STOP_HUNT_STARTED' ||
+           event.eventType === 'OPPOSITE_STOP_HUNT_EXITED')) {
+        this.ioRef.to(`bot:${instanceId}`).emit('bot:strategy-event', {
+          instanceId,
+          modelId: dbInstance.modelId,
+          eventType: event.eventType,
+          at: event.at,
+          payload: event.payload || {},
+        });
+      }
 
       // NOVA TRADE -- PART 8: real legacy decisions (see the model decision emitter)
       // additionally get a dedicated, per-bot socket event. Unlike the generic
@@ -1566,18 +1555,11 @@ class BotManager {
 
   _broadcastStatus(dbInstance) {
     if (this.ioRef) {
-      // ACTIVE-TIMEFRAME fields are additive on the EXISTING bot:status
-      // event (§13: reuse an existing event rather than adding one). For a
-      // bot that never switched, configuredTimeframe === activeTimeframe and
-      // timeframeSwitched is false, so nothing about the payload's meaning
-      // changes for any existing consumer.
       this.ioRef.to('room:bots').emit('bot:status', {
         instanceId: dbInstance.instanceId,
         status: dbInstance.status,
         lastError: dbInstance.lastError,
         configuredTimeframe: dbInstance.parameters && dbInstance.parameters.timeframe,
-        activeTimeframe: getActiveTimeframe(dbInstance),
-        timeframeSwitched: hasSwitched(dbInstance.parameters),
       });
     }
   }

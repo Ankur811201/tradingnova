@@ -22,10 +22,6 @@ const {
 const reversalEngine = require('./reversalPatternEngine');
 const { LayerSafety } = require('./layerSafety');
 const {
-  isOppositeMarketTouch, getActiveTimeframe, hasSwitched, shouldSwitch,
-  OPPOSITE_TOUCH_TIMEFRAME,
-} = require('../../utils/activeTimeframe');
-const {
   readLevelTouchState, applyLevelTouch, toChecksLevelStatus,
 } = require('../../utils/levelTouchState');
 const { buildPatternVisual } = require('../../utils/model002PatternVisual');
@@ -160,9 +156,6 @@ class Model002 extends BotModelBase {
     // persisted in BotInstance.parameters through BotManager events, so a
     // restart cannot reset the one-time rule or turn an unfinished stop hunt
     // into a real trade.
-    this.r1Calibrated = false;
-    this.s1Calibrated = false;
-
     // NEW opposite-market stop-hunt rule: only the first eligible R1/S1
     // opposite-market pattern in the bot's lifetime is a simulated
     // stop-hunt. R2/R3/S2/S3 are always direct real trades.
@@ -184,16 +177,6 @@ class Model002 extends BotModelBase {
     this.paused = false;
     this.stopped = false;
 
-    // ONE-TIME OPPOSITE-MARKET TIMEFRAME SWITCH — per-instance state, read
-    // back from this instance's own persisted `parameters` (written by
-    // BotManager when the switch happened). Never a module-level/global
-    // value: two Model002 instances in the same process each carry their
-    // own flag, so one bot switching can never affect another. On a
-    // restart these come back as `true`/'1m' from MongoDB, which is what
-    // prevents the switch (and its log entry) from happening a second time.
-    this.timeframeSwitched = hasSwitched(this.params);
-    this.activeTimeframe = getActiveTimeframe(this.params);
-
     // PERSISTENT LEVEL-TOUCH STATE — per-instance, read back from this
     // instance's own persisted `parameters` (written by BotManager when the
     // touch happened), exactly like the timeframe-switch latch above. Never
@@ -214,8 +197,6 @@ class Model002 extends BotModelBase {
       symbol: this.symbol,
       environment: this.environment,
       timeframe: this.params.timeframe,
-      activeTimeframe: this.activeTimeframe,
-      timeframeSwitched: this.timeframeSwitched,
       trend: this.params.trend,
       support: this.params.support,
       resistance: this.params.resistance,
@@ -322,9 +303,6 @@ class Model002 extends BotModelBase {
           });
           continue;
         }
-        if (candidate.isCalibrationPattern && (replayResult.outcome === 'BUY' || replayResult.outcome === 'SELL')) {
-          this._applyCalibration(candidate);
-        }
         candidate = null;
         continue;
       }
@@ -365,17 +343,6 @@ class Model002 extends BotModelBase {
         const boundaryResult = evaluateBoundaryBreak(candle, candidate.boundaries, candidate.direction);
         if (boundaryResult.outcome === 'WAIT') continue; // boundaries stay fixed, unchanged
 
-        if (candidate.isCalibrationPattern && (boundaryResult.outcome === 'BUY' || boundaryResult.outcome === 'SELL')) {
-          // One-time calibration, reconstructed deterministically — never a
-          // trade during replay (or ever, for a calibration pattern).
-          // Client-confirmed rule: strictly the NEXT candle may start a
-          // fresh search — this resolving candle is NOT re-checked for a
-          // fresh touch, unlike the general INVALID/failed-Candle-2 case.
-          this._applyCalibration(candidate);
-          candidate = null;
-          continue;
-        }
-
         // BUY / SELL / INVALID all resolve the pattern historically. Fall
         // through (do not `continue`) so this exact resolving candle is
         // still checked below for being a fresh touch of its own — a
@@ -386,7 +353,7 @@ class Model002 extends BotModelBase {
 
       // No active candidate — either there never was one, or one was just
       // discarded/resolved above on THIS SAME candle (except the
-      // calibration case above, and the NEW-engine Candle-3 resolution
+      // the NEW-engine Candle-3 resolution
       // above, both of which explicitly skip this). Check whether this
       // candle is itself a fresh pattern start, via the SAME shared logic
       // the live path uses (_tryStartFreshPattern) — silently: a rejected
@@ -635,7 +602,7 @@ class Model002 extends BotModelBase {
    * BULLISH+SUPPORT -> BUY, BEARISH+SUPPORT -> BUY,
    * BULLISH+RESISTANCE -> SELL, BEARISH+RESISTANCE -> SELL.
    * The first S1 (BEARISH+SUPPORT) and first R1 (BULLISH+RESISTANCE)
-   * confirmations are calibration-only. `prevCandle` (the candle immediately
+   * confirmations are STOP-HUNT-only. `prevCandle` (the candle immediately
    * before `candle`) is REQUIRED for every NEW BUY/SELL A/B validation.
    *
    * Returns:
@@ -650,7 +617,7 @@ class Model002 extends BotModelBase {
 
     // NEW A/B/C engine is used by all four combinations. Keep one implementation
     // here so mirrored BUY and SELL routes cannot drift apart.
-    const buildNewAttempt = (levels, direction, isCalibration, touchOverride = null) => {
+    const buildNewAttempt = (levels, direction, touchOverride = null) => {
       const freshTouch = reversalEngine.findTouchedLevel(levels, candle, direction);
       const isCarriedForward = !freshTouch && Boolean(touchOverride) && touchOverride.direction === direction;
       const touch = freshTouch || (isCarriedForward
@@ -659,10 +626,9 @@ class Model002 extends BotModelBase {
       if (!touch) return null;
 
       if (freshTouch) this._recordLevelTouch(direction, touch, candle);
-      if (live && freshTouch) this._maybeSwitchToOppositeMarketTimeframe(candle, direction, touch);
 
-      // After stop-hunt/first-trade-left calibration, the next candle is
-      // Candle 1 using the remembered calibrated level. The following candle
+      // After stop-hunt/first-trade-left carry-forward, the next candle is
+      // Candle 1 using the remembered configured level. The following candle
       // becomes Candle 2. This avoids requiring the market to physically
       // touch the same level again before the next trade decision.
       if (isCarriedForward) {
@@ -670,7 +636,7 @@ class Model002 extends BotModelBase {
           engine: 'NEW', direction, candle1: candle, candle2: null,
           matchedLevel: touch, carriedForwardLevel: true,
           stage: 'WAITING_FOR_CANDLE2_CARRIED', boundaries: null, points: null,
-          isCalibrationPattern: false, firstLiveBoundaryTouch: null, liveTriggerCandle: null,
+          firstLiveBoundaryTouch: null, liveTriggerCandle: null,
           lowestLowSinceCandle2: candle.low,
           highestHighSinceCandle2: candle.high,
         } };
@@ -713,10 +679,7 @@ class Model002 extends BotModelBase {
         engine: 'NEW', direction, candle1: prevCandle, candle2: candle,
         matchedLevel: touch, stage: 'AWAITING_CANDLE3',
         boundaries: reversalEngine.computeBoundaries(candle), points,
-        // R1/S1 first confirmed setup is calibration-only; all later
-        // R1/S1 and every R2/R3/S2/S3 setup is a normal NEW pattern.
-        isCalibrationPattern: false,
-        isStopHuntPattern: Boolean(!this._hydrating && (isCalibration || this._computeIsOppositeStopHuntPattern(direction, touch))),
+        isStopHuntPattern: Boolean(!this._hydrating && this._computeIsOppositeStopHuntPattern(direction, touch)),
         firstLiveBoundaryTouch: null,
         liveTriggerCandle: null,
         // Stop-loss evaluation window includes Candle 1 and Candle 2.
@@ -728,35 +691,26 @@ class Model002 extends BotModelBase {
     // Every active MODEL_002 trend/level combination now uses the same NEW
     // A/B/C algorithm. The two BUY combinations are exact mirrors, and the
     // two SELL combinations are exact mirrors. Only the first S1 (BEARISH)
-    // and first R1 (BULLISH) confirmed setup are calibration-only.
+    // and first R1 (BULLISH) confirmed setup are STOP-HUNT-only.
     const primaryLevels = this.params.support;
     const primaryDirection = 'BUY';
     const buyTouch = reversalEngine.findTouchedLevel(primaryLevels, candle, primaryDirection);
     const buyCarry = !buyTouch && this.reuseLastTouchedLevel && this.reuseLastTouchedLevel.direction === primaryDirection
       ? this.reuseLastTouchedLevel : null;
-    const buyAttempt = buildNewAttempt(primaryLevels, primaryDirection, false, buyCarry);
+    const buyAttempt = buildNewAttempt(primaryLevels, primaryDirection, buyCarry);
     if (buyAttempt) return buyAttempt;
 
     const sellLevels = this.params.resistance;
     const sellTouch = reversalEngine.findTouchedLevel(sellLevels, candle, 'SELL');
     const sellCarry = !sellTouch && this.reuseLastTouchedLevel && this.reuseLastTouchedLevel.direction === 'SELL'
       ? this.reuseLastTouchedLevel : null;
-    const sellAttempt = buildNewAttempt(sellLevels, 'SELL', false, sellCarry);
+    const sellAttempt = buildNewAttempt(sellLevels, 'SELL', sellCarry);
     if (sellAttempt) return sellAttempt;
 
     return null;
   }
 
   /** Constructs the Candle 1 candidate object — the single source of truth for Candle 1 state, reused by both the live touch path and hydration recovery. Never emits anything; callers decide what (if anything) to emit. */
-  /**
-   * One-time R1/S1 calibration: the FIRST
-   * confirmed pattern at index-1 (R1 for BULLISH+RESISTANCE=SELL, S1 for
-   * BEARISH+SUPPORT=BUY) is never traded — it calibrates that level to
-   * Candle1.high/low instead. Computed fresh every time a Candle 1
-   * candidate is (re)built (including OLD-engine Candle-1 replacements), so it
-   * always reflects the CURRENT calibration flag at that moment, then
-   * locked into the candidate until it resolves.
-   */
   _computeIsOppositeStopHuntPattern(direction, matchedLevel) {
     if (this.oppositeStopHuntUsed || this.oppositeStopHuntActive) return false;
     if (!matchedLevel || matchedLevel.index !== 1) return false;
@@ -841,16 +795,6 @@ class Model002 extends BotModelBase {
     return this._exitOppositeStopHunt(candle, exitPrice, 'candle');
   }
 
-  _computeIsCalibrationPattern(direction, matchedLevel) {
-    if (direction === 'SELL' && this.params.trend === 'BULLISH' && matchedLevel.index === 1) {
-      return !this.r1Calibrated;
-    }
-    if (direction === 'BUY' && this.params.trend === 'BEARISH' && matchedLevel.index === 1) {
-      return !this.s1Calibrated;
-    }
-    return false;
-  }
-
   _buildCandle1Candidate(candle, direction, matchedLevel) {
     // Legacy OLD-engine Candle 1 construction retained for legacy helpers
     // and tests. Active Model002 routing uses the NEW engine above.
@@ -858,7 +802,6 @@ class Model002 extends BotModelBase {
     return {
       engine: 'OLD', // legacy path; active routing uses NEW
       direction, candle1: candle, matchedLevel, stage: 'WAITING_FOR_CANDLE2',
-      isCalibrationPattern: this._computeIsCalibrationPattern(direction, matchedLevel),
     };
   }
 
@@ -881,34 +824,8 @@ class Model002 extends BotModelBase {
    * StrategyEvent through the existing emit pipeline and BotManager owns
    * persistence + candle routing.
    */
-  _maybeSwitchToOppositeMarketTimeframe(candle, direction, matchedLevel) {
-    if (this.timeframeSwitched) return;                    // §5 one-time latch
-    if (!shouldSwitch(this.params)) return;                // §6 already 1m -> nothing to do
-
-    const touchedSide = direction === 'BUY' ? 'SUPPORT' : 'RESISTANCE';
-    if (!isOppositeMarketTouch(this.params.trend, touchedSide)) return;
-
-    const from = this.activeTimeframe;
-    this.timeframeSwitched = true;
-    this.activeTimeframe = OPPOSITE_TOUCH_TIMEFRAME;
-
-    this.emitStrategyEvent('ACTIVE_TIMEFRAME_SWITCHED', {
-      reason: 'opposite_market_level_touch',
-      trend: this.params.trend,
-      touchedSide,
-      level: { index: matchedLevel.index, price: matchedLevel.price },
-      configuredTimeframe: this.params.timeframe,
-      previousActiveTimeframe: from,
-      activeTimeframe: OPPOSITE_TOUCH_TIMEFRAME,
-      at: candle.timestamp,
-      message: `Opposite market detected: ${this.params.trend} + ${touchedSide === 'SUPPORT' ? 'Support' : 'Resistance'} touch. `
-        + `Analysis timeframe switched from ${from} to ${OPPOSITE_TOUCH_TIMEFRAME}.`,
-    });
-  }
-
   _startCandle1(candle, direction, matchedLevel) {
     this.patternCandidate = this._buildCandle1Candidate(candle, direction, matchedLevel);
-    this._maybeSwitchToOppositeMarketTimeframe(candle, direction, matchedLevel);
     this._emitDecision('WAIT', {
       reason: direction === 'BUY' ? 'candle1_support_touch_awaiting_candle2' : 'candle1_resistance_touch_awaiting_candle2',
       direction,
@@ -1032,55 +949,7 @@ class Model002 extends BotModelBase {
       return;
     }
 
-    // boundaryResult.outcome === 'BUY' or 'SELL'
-    if (candidate.isCalibrationPattern) {
-      this._applyCalibration(candidate);
-      this._emitDecision('WAIT', {
-        reason: candidate.direction === 'SELL' ? 'r1_calibration_confirmed_no_trade' : 's1_calibration_confirmed_no_trade',
-        direction: candidate.direction,
-        activeLevel: this._activeLevelFor(candidate),
-        candle1: this._summarizeCandle(candidate.candle1),
-        candle2: this._summarizeCandle(candidate.candle2),
-        candle3: this._summarizeCandle(candle),
-        points: candidate.points,
-        boundaries: candidate.boundaries,
-      }, candle);
-      this.patternCandidate = null;
-      // Deliberately no same-candle fresh-touch re-check here — the
-      // client-confirmed rule for this specific case is "strictly the next
-      // candle," overriding the general same-candle reprocessing rule that
-      // applies to ordinary failed-Candle-2 / INVALID resolutions.
-      return;
-    }
-
     await this._confirmAndSubmit(candidate, boundaryResult, candle);
-  }
-
-  /**
-   * One-time R1/S1 calibration — never a trade. Mutates the FIRST element
-   * of the relevant level array (index 0 = R1/S1) to this pattern's own
-   * Candle 1 high/low, and marks that level's calibration flag done for
-   * the rest of this running process. R2/R3/S2/S3 (indices 1/2) are never
-   * touched — array positions are preserved, no reordering.
-   */
-  _applyCalibration(candidate) {
-    const side = candidate.direction === 'SELL' ? 'RESISTANCE' : 'SUPPORT';
-    const calibratedPrice = candidate.direction === 'SELL' ? candidate.candle1.high : candidate.candle1.low;
-
-    if (candidate.direction === 'SELL') {
-      this.params.resistance[0] = calibratedPrice;
-      this.r1Calibrated = true;
-    } else {
-      this.params.support[0] = calibratedPrice;
-      this.s1Calibrated = true;
-    }
-
-    this.reuseLastTouchedLevel = {
-      direction: candidate.direction, side,
-      index: candidate.matchedLevel && Number.isInteger(candidate.matchedLevel.index) ? candidate.matchedLevel.index : 1,
-      price: calibratedPrice,
-      calibratedAt: candidate.candle2 && candidate.candle2.timestamp,
-    };
   }
 
   /**
@@ -1092,7 +961,7 @@ class Model002 extends BotModelBase {
    * a rejected trade or a losing trade). Persistence is owned by
    * BotManager, which applies the emitted LEVEL_TOUCHED StrategyEvent to
    * this instance's own `parameters` — the same additive pattern already
-   * used by ACTIVE_TIMEFRAME_SWITCHED.
+   * used by the persistent level-touch event pipeline.
    *
    * A BUY candidate is by definition a SUPPORT touch and a SELL candidate a
    * RESISTANCE touch, so the side is read from the caller's existing
