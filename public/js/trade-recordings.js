@@ -39,6 +39,7 @@
       listEl.innerHTML = '<div class="text-gray-500 italic text-xs py-4">No level recordings yet.</div>';
       return;
     }
+    if (window.NovaRecordingTimeline) window.NovaRecordingTimeline.update({ recordings: recordings, active: null });
     listEl.innerHTML = recordings.map((r) => {
       const time = r.triggerTime ? new Date(r.triggerTime).toLocaleString() : '--';
       const level = r.level && r.level.index ? `${r.level.side === 'SUPPORT' ? 'S' : 'R'}${r.level.index}` : '--';
@@ -162,6 +163,7 @@
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || 'Unable to load recordings');
       render(Array.isArray(data.recordings) ? data.recordings : []);
+      if (window.NovaRecordingTimeline) window.NovaRecordingTimeline.update(data);
       if (data.active) setLive('STARTED', data.active);
       else {
         if (liveEl) liveEl.classList.add('hidden');
