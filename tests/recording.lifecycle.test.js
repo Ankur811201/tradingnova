@@ -50,3 +50,31 @@ test('profit close blocks the level retry path', () => {
   assert.match(recordingSrc, /state\.blocked = true/);
   assert.match(recordingSrc, /PROFIT_EXIT/);
 });
+
+
+test('recordings without an entry are bounded by completed candles', () => {
+  assert.match(recordingSrc, /NO_ENTRY_CANDLE_CLOSE_LIMIT = 6/);
+  assert.match(recordingSrc, /NO_ENTRY_CANDLE_LIMIT/);
+  assert.match(recordingSrc, /noEntryCandleCloseCount/);
+});
+
+test('recording finalization preserves frames and validates WebM before READY', () => {
+  assert.match(recordingSrc, /source frames preserved for retry/);
+  assert.match(recordingSrc, /Recorded WebM failed media validation/);
+  assert.match(recordingSrc, /'-deadline', 'realtime'/);
+  assert.match(recordingSrc, /'-cpu-used', '8'/);
+  assert.match(recordingSrc, /FFMPEG_TIMEOUT_PER_FRAME_MS/);
+});
+
+test('close events and graceful shutdown are wired to RecordingService', () => {
+  const botManagerSrc = fs.readFileSync(path.join(root, 'services', 'botManager', 'BotManager.js'), 'utf8');
+  const serverSrc = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+  const targetSrc = fs.readFileSync(path.join(root, 'services', 'TargetExitManager.js'), 'utf8');
+  assert.match(recordingSrc, /async handleClosedTrade\(instanceId, positionId\)/);
+  assert.match(recordingSrc, /CLOSED_TRADE_LOOKUP_ATTEMPTS = 6/);
+  assert.match(recordingSrc, /closed Trade lookup could not be applied|has no linked Trade after/);
+  assert.match(botManagerSrc, /recordingService\.handleClosedTrade\(instanceId, pending\.positionId\)/);
+  assert.match(serverSrc, /recordingService\.handleClosedTrade\(null, result\.positionId\)/);
+  assert.match(targetSrc, /recordingService\.handleClosedTrade\(String\(closedDoc\.instanceId\), closedDoc\._id\)/);
+  assert.match(serverSrc, /await recordingService\.stopAll/);
+});

@@ -94,8 +94,15 @@ for (const symbol of env.RISK_ALLOWED_SYMBOLS) {
       // Target Exit: raw price touches are evaluated continuously; this never pauses the bot.
       try { await TargetExitManager.onTick(symbol, price, timestamp); } catch (err) { await logger.error('TRADING', `TargetExit tick failed for ${symbol}: ${err.message}`); }
       try {
-        await paperEngine.closeStopLossPositions(symbol, price);
-        await liveEngine.closeStopLossPositions(symbol, price);
+        const paperStopLosses = await paperEngine.closeStopLossPositions(symbol, price);
+        const liveStopLosses = await liveEngine.closeStopLossPositions(symbol, price);
+        for (const result of [...(paperStopLosses || []), ...(liveStopLosses || [])]) {
+          if (!result?.closed || !result?.positionId) continue;
+          try { await recordingService.handleClosedTrade(null, result.positionId); }
+          catch (recordingErr) {
+            await logger.warn('RECORDING', `Stop-loss close mirror failed for ${result.positionId}: ${recordingErr.message}`);
+          }
+        }
       } catch (err) { await logger.error('TRADING', `Stop-loss processing failed for ${symbol}: ${err.message}`); }
 
       // 2. Update paper trading positions
@@ -274,10 +281,22 @@ for (const symbol of env.RISK_ALLOWED_SYMBOLS) {
     logger.error('SYSTEM', `Uncaught exception: ${err.message}`, { stack: err.stack });
   });
 
+  let shuttingDown = false;
   const shutdown = async (signal) => {
-    await logger.info('SYSTEM', `Received ${signal}, shutting down gracefully`);
-    httpServer.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 10000).unref();
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await logger.info('SYSTEM', `Received ${signal}, finalizing active recordings before shutdown`);
+    const hardExit = setTimeout(() => process.exit(1), 10 * 60 * 1000);
+    hardExit.unref();
+    try {
+      await recordingService.stopAll(`SERVER_SHUTDOWN_${signal}`);
+    } catch (err) {
+      await logger.error('RECORDING', `Shutdown recording flush failed: ${err.message}`);
+    }
+    httpServer.close(() => {
+      clearTimeout(hardExit);
+      process.exit(0);
+    });
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));

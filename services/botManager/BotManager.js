@@ -1175,6 +1175,13 @@ class BotManager {
 
           if (closedTrade) {
             live.pendingClosedTradeLookup = null;
+            // Mirror every authoritative close into recording lifecycle too.
+            // This covers manual/safety/controller paths that bypass bot-issued CLOSE commands.
+            try {
+              await recordingService.handleClosedTrade(instanceId, pending.positionId);
+            } catch (recordingErr) {
+              await logger.warn('RECORDING', `Closed-trade lifecycle mirror failed for ${pending.positionId}: ${recordingErr.message}`);
+            }
             try {
               const safetyResult = await live.modelInstance.onPositionClosed(closedTrade);
 

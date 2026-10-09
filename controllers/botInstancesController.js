@@ -7,6 +7,10 @@ const { success, AppError } = require('../utils/apiResponse');
 const { getMarketDataProvider } = require('../services/marketData');
 const botEngineManager = require('../services/BotEngineManager');
 const { TargetExitManager } = require('../services/TargetExitManager');
+const fs = require('fs');
+const path = require('path');
+const TradeRecording = require('../models/TradeRecording');
+const recordingService = require('../services/recording/RecordingService');
 
 const HISTORY_WINDOW_MS = 36 * 60 * 60 * 1000;
 const CANDLES_DEFAULT_LIMIT = 2160; // 36h at 1m; server filters exact 36h window
@@ -309,36 +313,93 @@ async function restartInstance(req, res, next) {
   }
 }
 async function deleteInstance(req, res) {
-
     const { instanceId } = req.params;
 
     try {
+        // Verify ownership before stopping runtimes or touching any files.
+        const ownedBot = await BotInstance.findOne({ instanceId, user: req.session.userId }).lean();
+        if (!ownedBot) {
+            return res.status(404).json({ success: false, message: 'Bot instance not found' });
+        }
+        if (ownedBot.status === 'RUNNING') {
+            return res.status(400).json({ success: false, message: 'Stop the bot before deleting it.' });
+        }
 
-        // Part 7: make sure no stale legacy telemetry runtime entry (and its
-        // socket room emissions) survives the authoritative bot being deleted.
+        // Finish any recording still active for this stopped bot before cleanup.
+        const activeRecording = recordingService.getActive(instanceId);
+        if (activeRecording) {
+            await recordingService.stop(instanceId, 'BOT_DELETED');
+        }
+
+        // The recording service stores final videos and source-frame folders
+        // under storage/recordings. Delete both indexed files and orphan files
+        // matching this bot's instance ID, including videos recovered from disk.
+        const projectRoot = path.resolve(__dirname, '..');
+        const recordingsRoot = path.resolve(projectRoot, 'storage', 'recordings');
+        const runtimeRoot = path.resolve(projectRoot, 'storage', 'recording-runtime');
+        const recordings = await TradeRecording.find({ instanceId }).lean();
+        const safeRemove = (target, allowedRoot) => {
+            const resolved = path.resolve(target);
+            if (!resolved.startsWith(allowedRoot + path.sep)) {
+                throw new Error('Refusing to remove a recording path outside its storage directory');
+            }
+            if (fs.existsSync(resolved)) fs.rmSync(resolved, { recursive: true, force: true });
+        };
+
+        // Remove metadata-referenced files only when they resolve inside the
+        // recording storage directory. Never trust a stored filePath blindly.
+        for (const recording of recordings) {
+            if (recording.filePath) {
+                safeRemove(path.resolve(projectRoot, recording.filePath), recordingsRoot);
+            }
+            // Remove per-recording output files and frame directories by ID.
+            if (fs.existsSync(recordingsRoot)) {
+                for (const name of fs.readdirSync(recordingsRoot)) {
+                    if (name === recording.recordingId || name.startsWith(`${recording.recordingId}-`) ||
+                        name.startsWith(`${recording.recordingId}.`)) {
+                        safeRemove(path.join(recordingsRoot, name), recordingsRoot);
+                    }
+                }
+            }
+        }
+
+        // Catch orphaned videos/frames even when Mongo metadata was never saved.
+        const instancePrefix = `${instanceId}-`;
+        if (fs.existsSync(recordingsRoot)) {
+            for (const name of fs.readdirSync(recordingsRoot)) {
+                if (name.startsWith(instancePrefix)) safeRemove(path.join(recordingsRoot, name), recordingsRoot);
+            }
+        }
+        // Runtime files are temporary; remove only this bot's entries, never
+        // another bot's active frames/runtime data.
+        if (fs.existsSync(runtimeRoot)) {
+            for (const name of fs.readdirSync(runtimeRoot)) {
+                if (name === instanceId || name.startsWith(instancePrefix)) {
+                    safeRemove(path.join(runtimeRoot, name), runtimeRoot);
+                }
+            }
+        }
+        await TradeRecording.deleteMany({ instanceId });
+
+        // Clear legacy telemetry and then delete the bot itself.
         try {
-          await botEngineManager.stopInstance(instanceId);
+            await botEngineManager.stopInstance(instanceId);
         } catch (legacyErr) {
-          console.warn('[LEGACY] stopInstance on delete failed (non-fatal):', legacyErr.message);
+            console.warn('[LEGACY] stopInstance on delete failed (non-fatal):', legacyErr.message);
         }
 
         await botManager.deleteInstance(instanceId);
-
-        res.json({
+        console.log(`[BOT DELETE] Deleted bot ${instanceId} and its recordings/files`);
+        return res.json({
             success: true,
-            message: "Bot deleted successfully"
+            message: 'Bot and all associated recordings deleted successfully',
         });
-        console.log("Delete request:", req.params.instanceId);
-
     } catch (err) {
-
-        res.status(400).json({
+        return res.status(400).json({
             success: false,
-            message: err.message
+            message: err.message || 'Unable to delete bot and its recordings',
         });
-
     }
-
 }
 
 module.exports = {

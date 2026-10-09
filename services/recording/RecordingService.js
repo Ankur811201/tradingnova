@@ -17,7 +17,18 @@ const MAX_RECORDING_MS = 24 * 60 * 60 * 1000;
 const MAX_CANDLES = 300;
 const MAX_LEVEL_TOUCH_INDEX = 3; // S1/R1, S2/R2, S3/R3 can start recordings.
 const ENTRY_CANDLE_CLOSE_LIMIT = 3;
-const FFMPEG_TIMEOUT_MS = 90 * 1000;
+// Bound level-touch recordings even when no trade entry ever occurs.
+const NO_ENTRY_CANDLE_CLOSE_LIMIT = 6;
+const CLOSED_TRADE_LOOKUP_ATTEMPTS = 6;
+const CLOSED_TRADE_LOOKUP_DELAY_MS = 250;
+const FFMPEG_TIMEOUT_BASE_MS = 90 * 1000;
+const FFMPEG_TIMEOUT_PER_FRAME_MS = 250;
+
+function validTimestamp(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
 
 function resolveFfmpeg() {
   // Prefer an explicitly configured binary. This is useful on Windows where
@@ -84,6 +95,7 @@ class RecordingService {
     // for the lifetime of this Node process, so a level can have at most two
     // loss-driven recording cycles before it is blocked until another level is touched.
     this.levelStates = new Map();
+    this.processedCloseTradeIds = new Set();
     fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
   }
 
@@ -191,7 +203,9 @@ class RecordingService {
     const bot = suppliedBot || await BotInstance.findOne({ instanceId }).lean();
     if (!bot || bot.modelId !== 'MODEL_002') return null;
 
-    const timeframe = getActiveTimeframe(bot) || bot.parameters?.timeframe;
+    // CandlePersistenceService publishes configured bot.parameters.timeframe;
+    // use the same canonical value so close events are not filtered out.
+    const timeframe = bot.parameters?.timeframe || getActiveTimeframe(bot);
     const id = `${instanceId}-${Date.now()}`;
     const dir = path.join(RECORDINGS_DIR, id);
     fs.mkdirSync(dir, { recursive: true });
@@ -216,10 +230,13 @@ class RecordingService {
         activeLevel: manual ? null : { side, index, price: num(touch.price) },
         triggerTime: Date.now(),
       },
-      startedAt: Number.isFinite(Number(startedAt)) ? Number(startedAt) : (Number.isFinite(Number(touch.at)) ? Number(touch.at) : Date.now()),
+      startedAt: validTimestamp(startedAt) || validTimestamp(touch.at) || Date.now(),
+      // Wall-clock timestamps of the actual first/last frames, separate from the level-touch trigger time.
+      firstFrameAt: null,
+      lastFrameAt: null,
       frameIndex: 0,
       chunkIndex: 1,
-      chunkStartedAt: Number.isFinite(Number(startedAt)) ? Number(startedAt) : (Number.isFinite(Number(touch.at)) ? Number(touch.at) : Date.now()),
+      chunkStartedAt: validTimestamp(startedAt) || validTimestamp(touch.at) || Date.now(),
       videoId: crypto.randomUUID(),
       mode: manual ? 'MANUAL' : (allowRepeat ? 'TRADE_2_LOSS_RETRY' : 'LEVEL_TOUCH'),
       levelKey,
@@ -227,6 +244,7 @@ class RecordingService {
       tradeId: null,
       entryOpenedAt: null,
       entryCandleCloseCount: 0,
+      noEntryCandleCloseCount: 0,
       triggerReason: triggerReason || null,
       framesDir: dir,
       candles: new Map(),
@@ -391,16 +409,25 @@ class RecordingService {
           session.candles.set(String(c.timestamp), c);
           session.currentCandle = c.closed ? null : c;
 
-          // Count completed candles only after a real bot trade has opened.
-          // The candle containing the entry counts when it closes; therefore
-          // compare candle end-time with the authoritative openedAt.
-          if (c.closed && session.entryOpenedAt && !session.stopping) {
-            const candleEnd = Number(c.timestamp) + this._timeframeMs(session.timeframe);
-            if (candleEnd > Number(session.entryOpenedAt)) {
-              session.entryCandleCloseCount = Number(session.entryCandleCloseCount || 0) + 1;
-              if (session.entryCandleCloseCount >= ENTRY_CANDLE_CLOSE_LIMIT) {
-                this.stop(session.instanceId, 'THREE_CANDLES_AFTER_ENTRY')
-                  .catch(err => console.error(`[RECORDING] 3-candle stop failed: ${err.message}`));
+          if (c.closed && !session.stopping) {
+            if (session.entryOpenedAt) {
+              // Count completed candles after a real trade entry. The candle
+              // containing entry counts when its end-time is after openedAt.
+              const candleEnd = Number(c.timestamp) + this._timeframeMs(session.timeframe);
+              if (candleEnd > Number(session.entryOpenedAt)) {
+                session.entryCandleCloseCount = Number(session.entryCandleCloseCount || 0) + 1;
+                if (session.entryCandleCloseCount >= ENTRY_CANDLE_CLOSE_LIMIT) {
+                  this.stop(session.instanceId, 'THREE_CANDLES_AFTER_ENTRY')
+                    .catch(err => console.error(`[RECORDING] 3-candle stop failed: ${err.message}`));
+                }
+              }
+            } else {
+              // A level may be touched without a valid setup/trade. Never leave
+              // that recording running until the 24-hour hard safety timeout.
+              session.noEntryCandleCloseCount = Number(session.noEntryCandleCloseCount || 0) + 1;
+              if (session.noEntryCandleCloseCount >= NO_ENTRY_CANDLE_CLOSE_LIMIT) {
+                this.stop(session.instanceId, 'NO_ENTRY_CANDLE_LIMIT')
+                  .catch(err => console.error(`[RECORDING] no-entry stop failed: ${err.message}`));
               }
             }
           }
@@ -458,6 +485,60 @@ class RecordingService {
       session.executionMarkers.push(marker);
       if (session.executionMarkers.length > 20) session.executionMarkers = session.executionMarkers.slice(-20);
     }
+  }
+
+  /** Notify recording lifecycle about an already-committed position close.
+   * Some live close paths persist Position before Trade. Retry the exact
+   * position-linked Trade lookup briefly instead of silently losing the event.
+   */
+  async handleClosedTrade(instanceId, positionId) {
+    if (!positionId) return false;
+    const Position = require('../../models/Position');
+    const Trade = require('../../models/Trade');
+    let position = null;
+    let effectiveInstanceId = instanceId || null;
+    let trade = null;
+
+    for (let attempt = 0; attempt < CLOSED_TRADE_LOOKUP_ATTEMPTS; attempt += 1) {
+      position = await Position.findById(positionId).lean();
+      if (!position || position.status !== 'CLOSED') {
+        if (attempt < CLOSED_TRADE_LOOKUP_ATTEMPTS - 1) {
+          await new Promise(resolve => setTimeout(resolve, CLOSED_TRADE_LOOKUP_DELAY_MS));
+          continue;
+        }
+        console.warn(`[RECORDING] closed position ${positionId} was not visible as CLOSED after retries`);
+        return false;
+      }
+      effectiveInstanceId = effectiveInstanceId || position.instanceId;
+      if (!effectiveInstanceId) return false;
+      trade = await Trade.findOne({
+        instanceId: effectiveInstanceId,
+        position: position._id,
+        environment: position.environment,
+      }).sort({ closedAt: -1 }).lean();
+      if (trade) break;
+      if (attempt < CLOSED_TRADE_LOOKUP_ATTEMPTS - 1) {
+        await new Promise(resolve => setTimeout(resolve, CLOSED_TRADE_LOOKUP_DELAY_MS));
+      }
+    }
+
+    if (!trade) {
+      console.error(`[RECORDING] closed position ${positionId} has no linked Trade after ${CLOSED_TRADE_LOOKUP_ATTEMPTS} attempts; close lifecycle could not be applied`);
+      return false;
+    }
+    this.updateExecution(effectiveInstanceId, { instanceId: effectiveInstanceId, action: 'CLOSE', position, trade });
+    return true;
+  }
+
+  async stopAll(reason = 'SERVER_SHUTDOWN') {
+    const instanceIds = Array.from(this.active.keys());
+    const results = await Promise.allSettled(instanceIds.map(id => this.stop(id, reason)));
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        console.error(`[RECORDING] shutdown finalize failed for ${instanceIds[index]}: ${result.reason?.message || result.reason}`);
+      }
+    });
+    return results;
   }
 
   updateExecution(instanceId, execution) {
@@ -537,6 +618,14 @@ class RecordingService {
     // level. A profitable/target close blocks the retry path because the bot
     // pauses and the user explicitly does not want Trade 2 recording.
     if (!trade || String(execution.action || '').toUpperCase() !== 'CLOSE') return;
+    const closeTradeId = String(trade._id || trade.id || '');
+    if (closeTradeId && this.processedCloseTradeIds.has(closeTradeId)) return;
+    if (closeTradeId) {
+      this.processedCloseTradeIds.add(closeTradeId);
+      if (this.processedCloseTradeIds.size > 5000) {
+        this.processedCloseTradeIds = new Set(Array.from(this.processedCloseTradeIds).slice(-2500));
+      }
+    }
 
     const levelKey = trade.entryLevelKey || session?.levelKey || null;
     if (!levelKey) {
@@ -633,28 +722,51 @@ class RecordingService {
 
   async stop(instanceId, reason = 'EVENT') {
     const session = this.active.get(instanceId);
-    if (!session || session.stopping) return;
+    if (!session) return;
+    // Concurrent exit/fallback/shutdown triggers must all await the same finalizer.
+    if (session.stopPromise) return session.stopPromise;
     session.stopping = true;
     clearInterval(session.timer);
     clearTimeout(session.stopTimer);
     clearTimeout(session.maxTimer);
 
-    try {
-      await session.capturePromise;
-      await this.captureFrame(session, true);
-      await this._finalizeRecording(session, reason);
-      this._emit(instanceId, 'STOPPED', session, { reason, videoId: session.videoId });
-    } catch (err) {
-      console.error(`[RECORDING] ${session.id} failed: ${err.stack || err.message}`);
-      this._emit(instanceId, 'FAILED', session, { reason, error: err.message, videoId: session.videoId });
-      try { fs.rmSync(session.framesDir, { recursive: true, force: true }); } catch (_) {}
-    } finally {
-      this.active.delete(instanceId);
-      if (session.renderer) {
-        try { await session.renderer.stop(); } catch (_) {}
-        session.renderer = null;
+    session.stopPromise = (async () => {
+      try {
+        await session.capturePromise;
+        await this.captureFrame(session, true);
+        await this._finalizeRecording(session, reason);
+        this._emit(instanceId, 'STOPPED', session, { reason, videoId: session.videoId });
+      } catch (err) {
+        console.error(`[RECORDING] ${session.id} failed: ${err.stack || err.message}`);
+        this._emit(instanceId, 'FAILED', session, { reason, error: err.message, videoId: session.videoId, framesPreserved: true });
+        // Keep source frames on every finalize/encode failure so the video can be
+        // recovered manually or retried. Never silently destroy the only copy.
+        console.error(`[RECORDING] source frames preserved for retry: ${session.framesDir}`);
+        try {
+          const Recording = require('../../models/TradeRecording');
+          await Recording.findOneAndUpdate({ recordingId: session.id }, { $set: {
+            recordingId: session.id, videoId: session.videoId, instanceId: session.instanceId,
+            botName: session.botName, symbol: session.symbol, timeframe: session.timeframe,
+            environment: session.environment, direction: session.direction, level: session.level || null,
+            triggerTime: new Date(session.startedAt), chunkIndex: 1,
+            chunkStartedAt: new Date(session.firstFrameAt || session.startedAt),
+            chunkEndedAt: new Date(session.lastFrameAt || session.firstFrameAt || session.startedAt),
+            durationSeconds: session.frameIndex / FPS, frameRate: FPS, status: 'FAILED',
+            storageType: 'FILESYSTEM', storageStatus: 'FAILED', fileName: null, filePath: null,
+            triggerReason: `${session.triggerReason || reason || 'RECORDING'} | FINALIZE_FAILED: ${err.message} | FRAMES: ${session.framesDir}`,
+          } }, { upsert: true, new: true, setDefaultsOnInsert: true });
+        } catch (dbErr) {
+          console.error(`[RECORDING] failed metadata write: ${dbErr.message}`);
+        }
+      } finally {
+        this.active.delete(instanceId);
+        if (session.renderer) {
+          try { await session.renderer.stop(); } catch (_) {}
+          session.renderer = null;
+        }
       }
-    }
+    })();
+    return session.stopPromise;
   }
 
   async captureFrame(session, finalFrame = false) {
@@ -665,9 +777,12 @@ class RecordingService {
       throw new Error(`[RECORDING] frame generation failed ${session.id}: ${err.message}`);
     }
     const file = path.join(session.framesDir, `frame-${String(session.frameIndex).padStart(6, '0')}.png`);
-    session.frameIndex += 1;
     try {
       await session.renderer.screenshot(file);
+      const capturedAt = Date.now();
+      if (!session.firstFrameAt) session.firstFrameAt = capturedAt;
+      session.lastFrameAt = capturedAt;
+      session.frameIndex += 1;
     } catch (err) {
       throw new Error(`[RECORDING] frame rasterization failed ${session.id}: ${err.message}`);
     }
@@ -698,11 +813,14 @@ class RecordingService {
         '-i', inputPattern,
         '-frames:v', String(frameCount),
         '-c:v', 'libvpx-vp9',
+        '-deadline', 'realtime',
+        '-cpu-used', '8',
+        '-row-mt', '1',
         '-b:v', '0',
         '-crf', '35',
         '-pix_fmt', 'yuv420p',
         webm,
-      ], FFMPEG_TIMEOUT_MS);
+      ], Math.max(FFMPEG_TIMEOUT_BASE_MS, FFMPEG_TIMEOUT_BASE_MS + frameCount * FFMPEG_TIMEOUT_PER_FRAME_MS));
     } catch (err) {
       throw new Error(`[RECORDING] ffmpeg failed: ${err.message}`);
     }
@@ -713,7 +831,16 @@ class RecordingService {
     if (!stat.isFile() || stat.size < 1024) {
       throw new Error(`FFmpeg produced an invalid/empty video file (${stat.size || 0} bytes)`);
     }
-    console.log(`[RECORDING] ffmpeg complete ${session.id} bytes=${stat.size}`);
+    // Validate the produced container by decoding it fully before declaring
+    // READY or removing the source frames.
+    try {
+      await this.run(resolveFfmpeg(), ['-v', 'error', '-i', webm, '-map', '0:v:0', '-f', 'null', '-'],
+        Math.max(FFMPEG_TIMEOUT_BASE_MS, FFMPEG_TIMEOUT_BASE_MS + frameCount * FFMPEG_TIMEOUT_PER_FRAME_MS));
+    } catch (err) {
+      try { fs.rmSync(webm, { force: true }); } catch (_) {}
+      throw new Error(`Recorded WebM failed media validation: ${err.message}`);
+    }
+    console.log(`[RECORDING] ffmpeg complete and validated ${session.id} bytes=${stat.size}`);
 
     // Permanent local storage: MongoDB stores metadata/path only.
     // The completed WebM is never deleted automatically. It is removed only
@@ -734,8 +861,8 @@ class RecordingService {
           level: session.level || null,
           triggerTime: new Date(session.startedAt),
           chunkIndex: 1,
-          chunkStartedAt: new Date(session.startedAt),
-          chunkEndedAt: new Date(session.startedAt + Math.max(frameCount - 1, 0) * FRAME_INTERVAL_MS),
+          chunkStartedAt: new Date(session.firstFrameAt || session.startedAt),
+          chunkEndedAt: new Date(session.lastFrameAt || session.firstFrameAt || session.startedAt),
           durationSeconds: frameCount / FPS,
           frameRate: FPS,
           status: 'READY',
@@ -823,7 +950,44 @@ class RecordingService {
       BotInstance.findOne({ instanceId }).lean(),
     ]);
 
-    const byId = new Map(records.map(r => [String(r.recordingId), r]));
+    // Normalize legacy metadata before returning it to the UI. Older records can
+    // contain Unix epoch timestamps (1970) or null durations from recovery.
+    const normalizedRecords = records.map((record) => {
+      const item = { ...record };
+      let videoPath = item.filePath ? path.resolve(path.join(__dirname, '..', '..'), item.filePath) : null;
+      let stat = null;
+      try {
+        if (videoPath && videoPath.startsWith(RECORDINGS_DIR + path.sep) && fs.existsSync(videoPath)) stat = fs.statSync(videoPath);
+        if (!stat) {
+          const recoveredPath = path.join(RECORDINGS_DIR, `${item.recordingId}.webm`);
+          if (recoveredPath.startsWith(RECORDINGS_DIR + path.sep) && fs.existsSync(recoveredPath)) {
+            videoPath = recoveredPath;
+            stat = fs.statSync(recoveredPath);
+          }
+        }
+      } catch (_) {}
+      const isUsableDate = value => {
+        const ms = value ? new Date(value).getTime() : NaN;
+        return Number.isFinite(ms) && ms >= Date.UTC(2000, 0, 1) ? ms : null;
+      };
+      const fileStart = stat ? (stat.birthtimeMs > Date.UTC(2000, 0, 1) ? stat.birthtimeMs : stat.mtimeMs) : null;
+      const fileEnd = stat ? stat.mtimeMs : null;
+      const startMs = isUsableDate(item.chunkStartedAt) || isUsableDate(item.triggerTime) || (fileStart && fileStart >= Date.UTC(2000, 0, 1) ? fileStart : null);
+      const endMs = isUsableDate(item.chunkEndedAt) || (fileEnd && startMs && fileEnd >= startMs ? fileEnd : null);
+      if (startMs) {
+        item.chunkStartedAt = new Date(startMs);
+        if (!isUsableDate(item.triggerTime)) item.triggerTime = new Date(startMs);
+      } else {
+        item.chunkStartedAt = null;
+      }
+      item.chunkEndedAt = endMs ? new Date(endMs) : null;
+      const duration = Number(item.durationSeconds);
+      if (!Number.isFinite(duration) || duration <= 0) {
+        item.durationSeconds = startMs && endMs && endMs >= startMs ? Math.round((endMs - startMs) / 1000) : 0;
+      }
+      return item;
+    });
+    const byId = new Map(normalizedRecords.map(r => [String(r.recordingId), r]));
     const files = [];
     if (fs.existsSync(RECORDINGS_DIR)) {
       for (const name of fs.readdirSync(RECORDINGS_DIR)) {
@@ -852,7 +1016,7 @@ class RecordingService {
           chunkIndex,
           chunkStartedAt: new Date(startedAt),
           chunkEndedAt: new Date(stat.mtimeMs),
-          durationSeconds: null,
+          durationSeconds: Math.max(0, Math.round((stat.mtimeMs - startedAt) / 1000)),
           frameRate: FPS,
           status: 'READY',
           fileName: name,
@@ -863,7 +1027,7 @@ class RecordingService {
       }
     }
 
-    return [...records, ...files]
+    return [...normalizedRecords, ...files]
       .sort((a, b) => new Date(b.triggerTime || 0).getTime() - new Date(a.triggerTime || 0).getTime())
       .slice(0, safeLimit);
   }
