@@ -89,10 +89,8 @@ async function stopRecording(req, res, next) {
     if (!bot) return res.status(404).json({ ok: false, error: 'Bot instance not found' });
 
     const active = recordingService.getActive(instanceId);
-    if (!active) return res.status(404).json({ ok: false, error: 'No active recording' });
-
-    await recordingService.stop(instanceId, 'MANUAL_STOP');
-    return res.json({ ok: true, recordingId: active.recordingId });
+    await recordingService.stopManual(instanceId);
+    return res.json({ ok: true, recordingId: active?.recordingId || null, active: null });
   } catch (err) {
     return next(err);
   }
@@ -105,7 +103,7 @@ async function listRecordings(req, res, next) {
     if (!bot) return res.status(404).json({ ok: false, error: 'Bot instance not found' });
 
     const recordings = await recordingService.list(instanceId);
-    return res.json({ ok: true, recordings, active: recordingService.getActive(instanceId) });
+    return res.json({ ok: true, recordings, active: recordingService.getActive(instanceId), recordingState: bot.recordingState || {} });
   } catch (err) {
     return next(err);
   }

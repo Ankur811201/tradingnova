@@ -55,6 +55,10 @@ async function main() {
   // below, so hydration is always finished before any live dispatch could
   // possibly reach a recovered instance.
   const recovery = await botManager.recoverRunningInstances();
+  const recordingRecovery = await recordingService.recoverPersistedRecordings();
+  if (recordingRecovery.some((r) => r.resumed)) {
+    await logger.info('RECORDING', `Recovered ${recordingRecovery.filter((r) => r.resumed).length} recording session(s)`);
+  }
   if (recovery.length) {
     await logger.info('BOT', `Startup recovery: ${recovery.filter((r) => r.recovered).length}/${recovery.length} RUNNING bot instance(s) recovered`);
   }

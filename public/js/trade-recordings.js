@@ -182,7 +182,13 @@
       render(Array.isArray(data.recordings) ? data.recordings : []);
       if (window.NovaRecordingTimeline) window.NovaRecordingTimeline.update(data);
       if (data.active) setLive('STARTED', data.active);
-      else {
+      else if (data.recordingState && data.recordingState.desiredOn) {
+        const paused = Boolean(data.recordingState.paused);
+        if (liveEl) { liveEl.textContent = paused ? '⏸ RECORDING PAUSED' : '● RECORDING RECOVERING'; liveEl.classList.remove('hidden'); liveEl.classList.remove('animate-pulse'); }
+        if (chartLiveEl) { chartLiveEl.textContent = paused ? '⏸ RECORDING PAUSED' : '● RECORDING RECOVERING'; chartLiveEl.classList.remove('hidden'); chartLiveEl.classList.remove('animate-pulse'); }
+        if (startBtn) { startBtn.disabled = true; startBtn.textContent = '▶ Start'; }
+        if (stopBtn) { stopBtn.disabled = false; stopBtn.textContent = '■ Stop'; }
+      } else {
         if (liveEl) liveEl.classList.add('hidden');
         if (chartLiveEl) chartLiveEl.classList.add('hidden');
         if (startBtn) { startBtn.disabled = false; startBtn.textContent = '▶ Start'; }
@@ -197,7 +203,7 @@
     socket.on('bot:recording', (data) => {
       if (!data || data.instanceId !== config.instanceId) return;
       setLive(data.status, data);
-      if (data.status === 'STOPPED' || data.status === 'TRADE_OPEN' || data.status === 'LEVEL_RECORDING_BLOCKED') load();
+      if (data.status === 'STOPPED' || data.status === 'CHUNK_STARTED' || data.status === 'DELETED') load();
     });
   }
 

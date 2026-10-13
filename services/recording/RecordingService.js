@@ -13,12 +13,9 @@ const RECORDINGS_DIR = path.join(__dirname, '..', '..', 'storage', 'recordings')
 const FRAME_INTERVAL_MS = 2000;
 const FPS = 1 / (FRAME_INTERVAL_MS / 1000);
 const POST_EVENT_TAIL_MS = 5000;
-const MAX_RECORDING_MS = 24 * 60 * 60 * 1000;
+const CHUNK_DURATION_MS = 30 * 60 * 1000;
 const MAX_CANDLES = 300;
-const MAX_LEVEL_TOUCH_INDEX = 3; // S1/R1, S2/R2, S3/R3 can start recordings.
-const ENTRY_CANDLE_CLOSE_LIMIT = 3;
-// Bound level-touch recordings even when no trade entry ever occurs.
-const NO_ENTRY_CANDLE_CLOSE_LIMIT = 6;
+const MAX_LEVEL_TOUCH_INDEX = 1; // Only S1/R1 may trigger the first automatic recording.
 const CLOSED_TRADE_LOOKUP_ATTEMPTS = 6;
 const CLOSED_TRADE_LOOKUP_DELAY_MS = 250;
 const FFMPEG_TIMEOUT_BASE_MS = 90 * 1000;
@@ -91,14 +88,8 @@ class RecordingService {
     this.active = new Map();
     this.lastPrices = new Map();
     this.io = null;
-    // Per-level recording lifecycle. State survives individual recording sessions
-    // for the lifetime of this Node process, so a level can have at most two
-    // loss-driven recording cycles before it is blocked until another level is touched.
-    this.levelStates = new Map();
-    this.processedCloseTradeIds = new Set();
-    // Stop hunts are strategy simulations rather than Position documents, but
-    // the user wants their recording lifecycle to behave like a normal trade.
-    this.activeStopHunts = new Map();
+    // Recording intent and the one-time S1/R1 trigger are persisted on BotInstance.
+    this.deletedInstances = new Set();
     fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
   }
 
@@ -118,7 +109,8 @@ class RecordingService {
       level: session.level,
       videoId: session.videoId,
       tradeNumber: session.tradeNumber,
-      entryCandleCloseCount: session.entryCandleCloseCount,
+      chunkIndex: session.chunkIndex,
+      desiredOn: true,
     };
   }
 
@@ -126,97 +118,60 @@ class RecordingService {
    * Observe the existing live price stream. Recording only: this never changes
    * MODEL_002 strategy state.
    *
-   * Every configured S/R level can start one recording cycle. A level is not
-   * allowed to start again merely because it is touched again; the only second
-   * recording for that level is created after Trade 1 closes with a loss.
+   * Only the first S1 or R1 touch may trigger automatic recording, once per bot lifetime.
    */
   observePriceForLevelTouch(bot, price, timestamp) {
     if (!bot || bot.modelId !== 'MODEL_002' || bot.status !== 'RUNNING') return;
     const p = num(price);
     if (p == null || this.active.has(bot.instanceId)) return;
+    const state = bot.recordingState || {};
+    if (state.autoTriggered || state.desiredOn === false) return;
 
     const previous = this.lastPrices.get(bot.instanceId);
     this.lastPrices.set(bot.instanceId, p);
     if (previous == null) return;
 
-    const touches = [];
     const support = Array.isArray(bot.parameters?.support) ? bot.parameters.support : [];
     const resistance = Array.isArray(bot.parameters?.resistance) ? bot.parameters.resistance : [];
+    let touch = null;
+    const s1 = num(support[0]);
+    const r1 = num(resistance[0]);
+    if (s1 != null && previous > s1 && p <= s1) touch = { side: 'SUPPORT', index: 1, price: s1, at: timestamp };
+    if (r1 != null && previous < r1 && p >= r1) touch = { side: 'RESISTANCE', index: 1, price: r1, at: timestamp };
+    if (!touch) return;
 
-    support.forEach((raw, i) => {
-      const level = num(raw);
-      if (i < MAX_LEVEL_TOUCH_INDEX && level != null && previous > level && p <= level) {
-        touches.push({ side: 'SUPPORT', index: i + 1, price: level, at: timestamp });
-      }
-    });
-    resistance.forEach((raw, i) => {
-      const level = num(raw);
-      if (i < MAX_LEVEL_TOUCH_INDEX && level != null && previous < level && p >= level) {
-        touches.push({ side: 'RESISTANCE', index: i + 1, price: level, at: timestamp });
-      }
-    });
-
-    if (!touches.length) return;
-
-    // If one tick crosses more than one configured level, use the level that
-    // was crossed last in the supplied configuration order. The trading engine
-    // itself remains untouched; this is only recording metadata.
-    const touch = touches[touches.length - 1];
     this.startFromLevelTouch({ instanceId: bot.instanceId, touch, bot })
-      .catch((err) => console.error(`[RECORDING] live level-touch start failed for ${bot.instanceId}: ${err.message}`));
+      .catch(err => console.error(`[RECORDING] first S1/R1 trigger failed for ${bot.instanceId}: ${err.message}`));
   }
 
-  async startFromLevelTouch({ instanceId, touch, bot: suppliedBot = null, manual = false, allowRepeat = false, triggerReason = null, startedAt = null }) {
-    if (!instanceId || !touch) return null;
+  async startFromLevelTouch({ instanceId, touch, bot: suppliedBot = null, manual = false, triggerReason = null, startedAt = null, resumed = false }) {
+    if (!instanceId || !touch || this.deletedInstances.has(instanceId)) return null;
     const index = Number(touch.index);
     const side = String(touch.side || '').toUpperCase();
-    if (!manual && (index < 1 || index > MAX_LEVEL_TOUCH_INDEX || !['SUPPORT', 'RESISTANCE'].includes(side))) return null;
+    if (!manual && (index !== 1 || !['SUPPORT', 'RESISTANCE'].includes(side))) return null;
     if (manual && side !== 'MANUAL') return null;
+    if (!manual && suppliedBot?.recordingState?.desiredOn === false) return null;
     if (this.active.has(instanceId)) return this.active.get(instanceId).id;
-
-    const levelKey = manual ? null : `${side === 'SUPPORT' ? 'S' : 'R'}${index}`;
-
-    // Never begin a level recording while a real position or stop hunt is live.
-    // This is especially important after the 3-candle recording has stopped but
-    // the underlying trade is still open.
-    if (!manual) {
-      if (this.activeStopHunts.has(instanceId)) return null;
-      const Position = require('../../models/Position');
-      const openPosition = await Position.findOne({ instanceId, status: 'OPEN' }).select('_id').lean();
-      if (openPosition) return null;
-    }
-
-    let levelState = null;
-    if (!manual) {
-      let byLevel = this.levelStates.get(instanceId);
-      if (!byLevel) {
-        byLevel = new Map();
-        this.levelStates.set(instanceId, byLevel);
-      }
-      levelState = byLevel.get(levelKey) || null;
-
-      // A physical touch starts a level only once. The only permitted repeat
-      // is the loss-driven Trade 2 recording for that exact same level.
-      if (!allowRepeat && levelState) return null;
-      if (allowRepeat && (!levelState || levelState.blocked || levelState.losses !== 1 || levelState.tradesStarted !== 1)) {
-        return null;
-      }
-      if (!levelState) {
-        levelState = {
-          levelKey,
-          losses: 0,
-          tradesStarted: 0,
-          blocked: false,
-          profitable: false,
-          lastTradeId: null,
-        };
-        byLevel.set(levelKey, levelState);
-      }
-    }
 
     const bot = suppliedBot || await BotInstance.findOne({ instanceId }).lean();
     if (!bot || bot.modelId !== 'MODEL_002') return null;
+    if (!resumed && String(bot.status || '').toUpperCase() !== 'RUNNING') {
+      throw new Error('Bot must be running to start recording');
+    }
 
+    // Atomic one-time claim: duplicate price/event paths cannot create multiple automatic starts.
+    if (!manual && !resumed) {
+      const claimed = await BotInstance.findOneAndUpdate(
+        { instanceId, $or: [{ 'recordingState.autoTriggered': { $exists: false } }, { 'recordingState.autoTriggered': false }] },
+        { $set: { 'recordingState.autoTriggered': true, 'recordingState.autoTriggeredAt': new Date(), 'recordingState.desiredOn': true, 'recordingState.paused': false } },
+        { new: true }
+      ).lean();
+      if (!claimed) return null;
+    } else if (manual) {
+      await BotInstance.updateOne({ instanceId }, { $set: { 'recordingState.desiredOn': true, 'recordingState.paused': false } });
+    }
+
+    const levelKey = manual || resumed ? null : `${side === 'SUPPORT' ? 'S' : 'R'}1`;
     // CandlePersistenceService publishes configured bot.parameters.timeframe;
     // use the same canonical value so close events are not filtered out.
     const timeframe = bot.parameters?.timeframe || getActiveTimeframe(bot);
@@ -233,15 +188,15 @@ class RecordingService {
       environment: bot.environment,
       createdAtMs: bot.createdAt instanceof Date && !Number.isNaN(bot.createdAt.getTime()) ? bot.createdAt.getTime() : null,
       trend: bot.parameters?.trend || '',
-      direction: manual ? 'MANUAL' : (side === 'SUPPORT' ? 'BUY' : 'SELL'),
+      direction: manual || resumed ? 'MANUAL' : (side === 'SUPPORT' ? 'BUY' : 'SELL'),
       support: bot.parameters?.support || [],
       resistance: bot.parameters?.resistance || [],
       level: manual ? null : { side, index, price: num(touch.price) },
       boundaries: { upper: null, lower: null },
       decision: {
         decision: 'TOUCHED',
-        reason: triggerReason || (manual ? 'Manual recording started' : `${side === 'SUPPORT' ? 'S' : 'R'}${index} touched`),
-        activeLevel: manual ? null : { side, index, price: num(touch.price) },
+        reason: triggerReason || (manual || resumed ? (resumed ? 'Recording resumed' : 'Manual recording started') : `${side === 'SUPPORT' ? 'S' : 'R'}1 touched`),
+        activeLevel: manual || resumed ? null : { side, index, price: num(touch.price) },
         triggerTime: Date.now(),
       },
       startedAt: validTimestamp(startedAt) || validTimestamp(touch.at) || Date.now(),
@@ -249,16 +204,15 @@ class RecordingService {
       firstFrameAt: null,
       lastFrameAt: null,
       frameIndex: 0,
-      chunkIndex: 1,
+      chunkIndex: Number(bot.recordingState?.chunkIndex || 1),
       chunkStartedAt: validTimestamp(startedAt) || validTimestamp(touch.at) || Date.now(),
       videoId: crypto.randomUUID(),
-      mode: manual ? 'MANUAL' : (allowRepeat ? 'TRADE_2_LOSS_RETRY' : 'LEVEL_TOUCH'),
+      mode: resumed ? 'RESUMED' : (manual ? 'MANUAL' : 'LEVEL_TOUCH'),
       levelKey,
-      tradeNumber: manual ? 0 : ((levelState && levelState.losses || 0) + 1),
+      tradeNumber: 0,
       tradeId: null,
       entryOpenedAt: null,
       entryCandleCloseCount: 0,
-      countedEntryCandleBuckets: new Set(),
       noEntryCandleCloseCount: 0,
       triggerReason: triggerReason || null,
       framesDir: dir,
@@ -269,6 +223,8 @@ class RecordingService {
       maxTimer: null,
       timer: null,
       rotating: false,
+      rotationPromise: null,
+      rotationTimer: null,
       stopping: false,
       renderer: null,
       capturePromise: Promise.resolve(),
@@ -347,37 +303,116 @@ class RecordingService {
 
     console.log(`[RECORDING] starting ${id} instance=${instanceId} symbol=${bot.symbol} timeframe=${timeframe}`);
     await this.captureFrame(session);
+    this._startCaptureLoop(session);
+    this._scheduleChunkRotation(session);
+    await BotInstance.updateOne({ instanceId }, { $set: { 'recordingState.desiredOn': true, 'recordingState.paused': false, 'recordingState.chunkIndex': session.chunkIndex } });
+    return id;
+  }
+
+  _startCaptureLoop(session) {
+    clearInterval(session.timer);
     session.timer = setInterval(() => {
       session.capturePromise = session.capturePromise
         .then(() => this.captureFrame(session))
         .catch(err => console.error(`[RECORDING] frame failed for ${session.id}: ${err.stack || err.message}`));
     }, FRAME_INTERVAL_MS);
-    session.maxTimer = setTimeout(() => {
-      this.stop(instanceId, 'MAX_DURATION').catch(err => console.error(`[RECORDING] max-stop failed: ${err.message}`));
-    }, MAX_RECORDING_MS);
-
-    return id;
   }
 
   async startManual(instanceId) {
     if (!instanceId) return null;
     if (this.active.has(instanceId)) return this.active.get(instanceId).id;
-
     const bot = await BotInstance.findOne({ instanceId }).lean();
-    if (!bot || bot.modelId !== 'MODEL_002') {
-      throw new Error('Manual recording is currently supported for MODEL_002 bots only');
-    }
-    if (String(bot.status || '').toUpperCase() !== 'RUNNING') {
-      throw new Error('Start the bot before starting a recording');
-    }
+    if (!bot || bot.modelId !== 'MODEL_002') throw new Error('Manual recording is currently supported for MODEL_002 bots only');
+    if (String(bot.status || '').toUpperCase() !== 'RUNNING') throw new Error('Resume the bot before starting a recording');
+    return this.startFromLevelTouch({ instanceId, bot, manual: true, touch: { side: 'MANUAL', index: 0, price: null, at: Date.now() } });
+  }
 
-    const now = Date.now();
-    return this.startFromLevelTouch({
-      instanceId,
-      bot,
-      manual: true,
-      touch: { side: 'MANUAL', index: 0, price: null, at: now },
-    });
+  async stopManual(instanceId) {
+    await BotInstance.updateOne({ instanceId }, { $set: { 'recordingState.desiredOn': false, 'recordingState.paused': false } });
+    return this.stop(instanceId, 'MANUAL_STOP');
+  }
+
+  async pauseForBot(instanceId) {
+    const wasActive = this.active.has(instanceId);
+    const bot = await BotInstance.findOne({ instanceId }).select('recordingState').lean();
+    const desiredOn = wasActive || Boolean(bot?.recordingState?.desiredOn);
+    await BotInstance.updateOne({ instanceId }, { $set: { 'recordingState.desiredOn': desiredOn, 'recordingState.paused': true } });
+    if (wasActive) await this.stop(instanceId, 'BOT_PAUSE');
+  }
+
+  async resumeForBot(instanceId, bot = null) {
+    const currentBot = bot || await BotInstance.findOne({ instanceId }).lean();
+    if (!currentBot || currentBot.modelId !== 'MODEL_002') return null;
+    const state = currentBot.recordingState || {};
+    await BotInstance.updateOne({ instanceId }, { $set: { 'recordingState.paused': false } });
+    if (!state.desiredOn || this.active.has(instanceId)) return null;
+    return this.startFromLevelTouch({ instanceId, bot: currentBot, resumed: true, manual: true, touch: { side: 'MANUAL', index: 0, price: null, at: Date.now() }, triggerReason: 'Recording resumed after bot/server pause' });
+  }
+
+  async recoverPersistedRecordings() {
+    const bots = await BotInstance.find({ modelId: 'MODEL_002', status: { $in: ['RUNNING', 'STOPPED'] }, 'recordingState.desiredOn': true, 'recordingState.paused': { $ne: true } }).lean();
+    const results = [];
+    for (const bot of bots) {
+      try {
+        const recordingId = await this.resumeForBot(bot.instanceId, bot);
+        results.push({ instanceId: bot.instanceId, resumed: Boolean(recordingId) });
+      } catch (err) {
+        results.push({ instanceId: bot.instanceId, resumed: false, error: err.message });
+        console.error(`[RECORDING] restart recovery failed for ${bot.instanceId}: ${err.message}`);
+      }
+    }
+    return results;
+  }
+
+  _scheduleChunkRotation(session) {
+    if (!session || session.stopping) return;
+    clearTimeout(session.rotationTimer);
+    const elapsed = Math.max(0, Date.now() - Number(session.chunkStartedAt || Date.now()));
+    session.rotationTimer = setTimeout(() => {
+      session.rotationPromise = this._rotateChunk(session).catch(err => {
+        console.error(`[RECORDING] chunk rotation failed for ${session.instanceId}: ${err.message}`);
+      });
+    }, Math.max(1, CHUNK_DURATION_MS - elapsed));
+    if (session.rotationTimer.unref) session.rotationTimer.unref();
+  }
+
+  async _rotateChunk(session) {
+    if (!session || session.stopping || this.active.get(session.instanceId) !== session) return;
+    if (session.rotating) return session.rotationPromise;
+    session.rotating = true;
+    clearInterval(session.timer);
+    try {
+      await session.capturePromise;
+      await this.captureFrame(session, true);
+      const old = { ...session, candles: new Map(session.candles), executionMarkers: [...session.executionMarkers], position: session.position };
+      old.stopTimer = old.maxTimer = old.timer = old.rotationTimer = null;
+      const nextIndex = Number(session.chunkIndex || 1) + 1;
+      const nextId = `${session.instanceId}-${Date.now()}-${nextIndex}`;
+      const nextDir = path.join(RECORDINGS_DIR, nextId);
+      fs.mkdirSync(nextDir, { recursive: true });
+      session.id = nextId;
+      session.videoId = crypto.randomUUID();
+      session.framesDir = nextDir;
+      session.frameIndex = 0;
+      session.firstFrameAt = null;
+      session.lastFrameAt = null;
+      session.chunkIndex = nextIndex;
+      session.chunkStartedAt = Date.now();
+      session.startedAt = session.chunkStartedAt;
+      await BotInstance.updateOne({ instanceId: session.instanceId }, { $set: { 'recordingState.chunkIndex': nextIndex, 'recordingState.desiredOn': true } });
+      session.rotating = false;
+      await this.captureFrame(session);
+      this._startCaptureLoop(session);
+      this._scheduleChunkRotation(session);
+      // Encoding the prior chunk runs independently; the active capture loop continues on the new directory.
+      this._finalizeRecording(old, 'CHUNK_ROTATION').catch(async err => {
+        console.error(`[RECORDING] rotated chunk ${old.id} failed: ${err.message}`);
+        await this._saveFailedChunk(old, 'CHUNK_ROTATION', err);
+      });
+      this._emit(session.instanceId, 'CHUNK_STARTED', session, { chunkIndex: nextIndex });
+    } finally {
+      session.rotating = false;
+    }
   }
 
 
@@ -424,131 +459,19 @@ class RecordingService {
           session.candles.set(String(c.timestamp), c);
           session.currentCandle = c.closed ? null : c;
 
-          if (c.closed && !session.stopping) {
-            if (session.entryOpenedAt) {
-              // Count the entry candle's close as candle 1, then each later
-              // completed candle exactly once. This also works if entry arrived
-              // after the entry candle close was already ingested.
-              const timeframeMs = this._timeframeMs(session.timeframe);
-              const entryBucket = Math.floor(Number(session.entryOpenedAt) / timeframeMs) * timeframeMs;
-              const candleBucket = Number(c.timestamp);
-              const counted = session.countedEntryCandleBuckets || (session.countedEntryCandleBuckets = new Set());
-              if (candleBucket >= entryBucket && !counted.has(candleBucket)) {
-                counted.add(candleBucket);
-                session.entryCandleCloseCount = Number(session.entryCandleCloseCount || 0) + 1;
-                if (session.entryCandleCloseCount >= ENTRY_CANDLE_CLOSE_LIMIT) {
-                  this.stop(session.instanceId, 'THREE_CANDLES_AFTER_ENTRY')
-                    .catch(err => console.error(`[RECORDING] 3-candle stop failed: ${err.message}`));
-                }
-              }
-            } else {
-              // A level may be touched without a valid setup/trade. Never leave
-              // that recording running until the 24-hour hard safety timeout.
-              session.noEntryCandleCloseCount = Number(session.noEntryCandleCloseCount || 0) + 1;
-              if (session.noEntryCandleCloseCount >= NO_ENTRY_CANDLE_CLOSE_LIMIT) {
-                this.stop(session.instanceId, 'NO_ENTRY_CANDLE_LIMIT')
-                  .catch(err => console.error(`[RECORDING] no-entry stop failed: ${err.message}`));
-              }
-            }
-          }
+
         }
       }
     }
   }
 
   updateDecision(instanceId, decision) {
-    if (!decision) return;
     const session = this.active.get(instanceId);
-    if (session) {
-      session.decision = { ...session.decision, ...decision };
-      if (decision.candle3 && validRecordingCandle(decision.candle3)) {
-        session.currentCandle = { ...decision.candle3 };
-      }
+    if (!session || !decision) return;
+    session.decision = { ...session.decision, ...decision };
+    if (decision.candle3 && validRecordingCandle(decision.candle3)) {
+      session.currentCandle = { ...decision.candle3 };
     }
-
-    const decisionType = String(decision.decision || '').toUpperCase();
-    if (decisionType === 'STOP_HUNTING') {
-      const level = decision.activeLevel || {};
-      const side = String(level.side || '').toUpperCase();
-      const index = Number(level.index);
-      if (!['SUPPORT', 'RESISTANCE'].includes(side) || ![1, 2, 3].includes(index)) return;
-      const levelKey = `${side === 'SUPPORT' ? 'S' : 'R'}${index}`;
-      const stopHuntId = String(decision.id || decision.stopHuntId || `${instanceId}:${decision.candle3?.timestamp || Date.now()}`);
-      const entryAt = num(decision.startedAt, num(decision.candle3?.timestamp, Date.now()));
-      this.activeStopHunts.set(instanceId, { levelKey, stopHuntId, entryOpenedAt: entryAt });
-      const state = this._getLevelState(instanceId, levelKey);
-      state.tradesStarted = Math.max(Number(state.tradesStarted || 0), 1);
-      state.lastTradeId = stopHuntId;
-      if (session && session.levelKey === levelKey) {
-        session.entryOpenedAt = entryAt;
-        session.tradeId = stopHuntId;
-        session.entryCandleCloseCount = 0;
-        session.countedEntryCandleBuckets = new Set();
-        const tfMs = this._timeframeMs(session.timeframe);
-        const entryBucket = Math.floor(entryAt / tfMs) * tfMs;
-        // STOP_HUNTING is emitted from a completed pattern candle, so its
-        // entry candle close is already complete and counts immediately.
-        session.entryCandleCloseCount = 1;
-        session.countedEntryCandleBuckets.add(entryBucket);
-      }
-      return;
-    }
-
-    if (decisionType === 'STOP_HUNTING_EXIT') {
-      const hunt = this.activeStopHunts.get(instanceId);
-      if (!hunt) return;
-      this.activeStopHunts.delete(instanceId);
-      const reason = String(decision.reason || '').toUpperCase();
-      if (reason.includes('STOP_LOSS') || reason === 'STOP_LOSS') {
-        this._handleLevelStopLoss(instanceId, hunt.levelKey, hunt.stopHuntId)
-          .catch(err => console.error(`[RECORDING] stop-hunt retry failed for ${instanceId}: ${err.message}`));
-      } else if (session && !session.stopping) {
-        this.stopSoon(instanceId, 'STOP_HUNT_EXIT');
-      }
-    }
-  }
-
-  _getLevelState(instanceId, levelKey) {
-    let byLevel = this.levelStates.get(instanceId);
-    if (!byLevel) {
-      byLevel = new Map();
-      this.levelStates.set(instanceId, byLevel);
-    }
-    let state = byLevel.get(levelKey);
-    if (!state) {
-      state = { levelKey, losses: 0, tradesStarted: 0, blocked: false, profitable: false, lastTradeId: null };
-      byLevel.set(levelKey, state);
-    }
-    return state;
-  }
-
-  async _handleLevelStopLoss(instanceId, levelKey, closeId) {
-    if (!levelKey) return;
-    const state = this._getLevelState(instanceId, levelKey);
-    if (closeId && state.lastTradeId === String(closeId) && state.lastProcessedStopLossId === String(closeId)) return;
-    state.lastProcessedStopLossId = String(closeId || Date.now());
-    state.lastTradeId = String(closeId || state.lastTradeId || '');
-    state.losses = Number(state.losses || 0) + 1;
-
-    if (state.losses >= 2) {
-      state.blocked = true;
-      const session = this.active.get(instanceId);
-      if (session) await this.stop(instanceId, 'SECOND_LOSS_LEVEL');
-      this._emit(instanceId, 'LEVEL_RECORDING_BLOCKED', session || { id: null, instanceId, startedAt: Date.now(), level: null }, { levelKey, losses: state.losses });
-      return;
-    }
-
-    const session = this.active.get(instanceId);
-    if (session) await this.stop(instanceId, 'STOP_LOSS_EXIT');
-    const bot = await BotInstance.findOne({ instanceId }).lean();
-    if (!bot || bot.status !== 'RUNNING') return;
-    const touch = this._levelObjectToTouch(levelKey, bot);
-    if (!touch) return;
-    await this.startFromLevelTouch({
-      instanceId, touch, bot, allowRepeat: true,
-      triggerReason: `STOP_LOSS — ${levelKey} recording for next eligible attempt`,
-      startedAt: Date.now(),
-    });
   }
 
   updateTargetEvent(instanceId, event) {
@@ -653,32 +576,17 @@ class RecordingService {
     const position = execution.position || null;
     const trade = execution.trade || null;
 
-    // OPEN: attach the authoritative trade/position to the active level
-    // recording and start the 3-completed-candle counter.
+    // OPEN: attach authoritative trade/position metadata only; no lifecycle side effects.
     if (position && String(execution.action || '').toUpperCase() !== 'CLOSE') {
       if (session && session.id) {
         session.position = position;
-        const levelKey = position.entryLevelKey || session.levelKey || null;
-        if (!session.tradeId || session.tradeId !== String(position._id || '')) {
+            if (!session.tradeId || session.tradeId !== String(position._id || '')) {
           session.tradeId = String(position._id || `${position.openedAt || Date.now()}`);
           session.entryOpenedAt = position.openedAt instanceof Date
             ? position.openedAt.getTime()
             : new Date(position.openedAt || Date.now()).getTime();
           session.entryCandleCloseCount = 0;
-          session.countedEntryCandleBuckets = session.countedEntryCandleBuckets || new Set();
-          const timeframeMs = this._timeframeMs(session.timeframe);
-          const entryBucket = Math.floor(Number(session.entryOpenedAt) / timeframeMs) * timeframeMs;
-          const alreadyClosedEntryCandle = session.candles && session.candles.get(String(entryBucket));
-          if (alreadyClosedEntryCandle && alreadyClosedEntryCandle.closed) {
-            session.entryCandleCloseCount = 1;
-            session.countedEntryCandleBuckets.add(entryBucket);
-          }
 
-          if (levelKey) {
-            const state = this._getLevelState(instanceId, levelKey);
-            state.tradesStarted = Math.max(Number(state.tradesStarted || 0), 1);
-            state.lastTradeId = session.tradeId;
-          }
           this._emit(instanceId, 'TRADE_OPEN', session, {
             tradeNumber: session.tradeNumber,
             entryOpenedAt: session.entryOpenedAt,
@@ -727,60 +635,7 @@ class RecordingService {
       }
     }
 
-    // CLOSE: only an actual stop-loss can trigger another recording attempt.
-    // Target exits (T1-T4), manual exits, safety closes and other outcomes must
-    // never restart recording. Stop the current clip if it is still running.
-    if (!trade || String(execution.action || '').toUpperCase() !== 'CLOSE') return;
-    const closeTradeId = String(trade._id || trade.id || '');
-    if (closeTradeId && this.processedCloseTradeIds.has(closeTradeId)) return;
-    if (closeTradeId) {
-      this.processedCloseTradeIds.add(closeTradeId);
-      if (this.processedCloseTradeIds.size > 5000) {
-        this.processedCloseTradeIds = new Set(Array.from(this.processedCloseTradeIds).slice(-2500));
-      }
-    }
-
-    const levelKey = trade.entryLevelKey || position?.entryLevelKey || session?.levelKey || null;
-    const closeReason = String(position?.closeReason || trade.reason || '').toUpperCase();
-    const isStopLoss = closeReason.includes('STOP_LOSS') || closeReason === 'STOPLOSS';
-
-    if (isStopLoss && levelKey) {
-      this._handleLevelStopLoss(instanceId, levelKey, closeTradeId || `${instanceId}:${trade.closedAt || Date.now()}`)
-        .catch(err => console.error(`[RECORDING] stop-loss lifecycle failed for ${instanceId}: ${err.message}`));
-      return;
-    }
-
-    // A target exit or any non-stop-loss close ends a still-running clip, but
-    // never starts another one. This keeps T1/T2/T3/T4 from creating retries.
-    if (session && !session.stopping) {
-      this.stopSoon(instanceId, closeReason.includes('TARGET') ? 'TARGET_EXIT_NO_RETRY' : 'NON_STOP_LOSS_EXIT_NO_RETRY');
-    }
-    if (levelKey) {
-      const state = this._getLevelState(instanceId, levelKey);
-      state.blocked = true;
-      state.profitable = !isStopLoss;
-    }
-  }
-
-  _levelObjectToTouch(levelKey, bot) {
-    const m = String(levelKey || '').match(/^([SR])([123])$/);
-    if (!m) return null;
-    const index = Number(m[2]);
-    const side = m[1] === 'S' ? 'SUPPORT' : 'RESISTANCE';
-    const arr = side === 'SUPPORT' ? bot.parameters?.support : bot.parameters?.resistance;
-    const price = Array.isArray(arr) ? num(arr[index - 1]) : null;
-    if (price == null) return null;
-    return { side, index, price, at: Date.now() };
-  }
-
-  stopSoon(instanceId, reason) {
-    const session = this.active.get(instanceId);
-    if (!session || session.stopping) return;
-    if (session.stopTimer) clearTimeout(session.stopTimer);
-    session.stopReason = reason;
-    session.stopTimer = setTimeout(() => {
-      this.stop(instanceId, reason).catch(err => console.error(`[RECORDING] stop failed: ${err.message}`));
-    }, POST_EVENT_TAIL_MS);
+    // Trade opens/closes are visual metadata only. They never control recording lifecycle.
   }
 
   async stop(instanceId, reason = 'EVENT') {
@@ -788,16 +643,21 @@ class RecordingService {
     if (!session) return;
     // Concurrent exit/fallback/shutdown triggers must all await the same finalizer.
     if (session.stopPromise) return session.stopPromise;
+    if (session.rotationPromise) { try { await session.rotationPromise; } catch (_) {} }
     session.stopping = true;
     clearInterval(session.timer);
     clearTimeout(session.stopTimer);
     clearTimeout(session.maxTimer);
+    clearTimeout(session.rotationTimer);
 
     session.stopPromise = (async () => {
       try {
         await session.capturePromise;
         await this.captureFrame(session, true);
         await this._finalizeRecording(session, reason);
+        if (!(reason === 'BOT_PAUSE' || reason === 'PROCESS_RESTART' || String(reason).startsWith('SERVER_SHUTDOWN'))) {
+          await BotInstance.updateOne({ instanceId }, { $set: { 'recordingState.desiredOn': false, 'recordingState.paused': false } });
+        }
         this._emit(instanceId, 'STOPPED', session, { reason, videoId: session.videoId });
       } catch (err) {
         console.error(`[RECORDING] ${session.id} failed: ${err.stack || err.message}`);
@@ -805,22 +665,7 @@ class RecordingService {
         // Keep source frames on every finalize/encode failure so the video can be
         // recovered manually or retried. Never silently destroy the only copy.
         console.error(`[RECORDING] source frames preserved for retry: ${session.framesDir}`);
-        try {
-          const Recording = require('../../models/TradeRecording');
-          await Recording.findOneAndUpdate({ recordingId: session.id }, { $set: {
-            recordingId: session.id, videoId: session.videoId, instanceId: session.instanceId,
-            botName: session.botName, symbol: session.symbol, timeframe: session.timeframe,
-            environment: session.environment, direction: session.direction, level: session.level || null,
-            triggerTime: new Date(session.startedAt), chunkIndex: 1,
-            chunkStartedAt: new Date(session.firstFrameAt || session.startedAt),
-            chunkEndedAt: new Date(session.lastFrameAt || session.firstFrameAt || session.startedAt),
-            durationSeconds: session.frameIndex / FPS, frameRate: FPS, status: 'FAILED',
-            storageType: 'FILESYSTEM', storageStatus: 'FAILED', fileName: null, filePath: null,
-            triggerReason: `${session.triggerReason || reason || 'RECORDING'} | FINALIZE_FAILED: ${err.message} | FRAMES: ${session.framesDir}`,
-          } }, { upsert: true, new: true, setDefaultsOnInsert: true });
-        } catch (dbErr) {
-          console.error(`[RECORDING] failed metadata write: ${dbErr.message}`);
-        }
+        await this._saveFailedChunk(session, reason, err);
       } finally {
         this.active.delete(instanceId);
         if (session.renderer) {
@@ -833,7 +678,7 @@ class RecordingService {
   }
 
   async captureFrame(session, finalFrame = false) {
-    if (!session || (!finalFrame && session.stopping) || !session.renderer) return;
+    if (!session || (!finalFrame && (session.stopping || session.rotating)) || !session.renderer) return;
     try {
       await session.renderer.update(session);
     } catch (err) {
@@ -923,10 +768,10 @@ class RecordingService {
           direction: session.direction,
           level: session.level || null,
           triggerTime: new Date(session.startedAt),
-          chunkIndex: 1,
+          chunkIndex: Number(session.chunkIndex || 1),
           chunkStartedAt: new Date(session.firstFrameAt || session.startedAt),
           chunkEndedAt: new Date(session.lastFrameAt || session.firstFrameAt || session.startedAt),
-          durationSeconds: frameCount / FPS,
+          durationSeconds: Math.max(0, Number(session.lastFrameAt || Date.now()) - Number(session.firstFrameAt || session.startedAt)) / 1000,
           frameRate: FPS,
           status: 'READY',
           storageType: 'FILESYSTEM',
@@ -942,6 +787,44 @@ class RecordingService {
     console.log(`[RECORDING] database record verified ${session.id} videoId=${session.videoId} localFile=${webm}`);
     // Only temporary PNG frames are removed. The final WebM stays permanently.
     try { fs.rmSync(session.framesDir, { recursive: true, force: true }); } catch (_) {}
+  }
+
+  async _saveFailedChunk(session, reason, err) {
+    try {
+      const Recording = require('../../models/TradeRecording');
+      await Recording.findOneAndUpdate({ recordingId: session.id }, { $set: {
+        recordingId: session.id, videoId: session.videoId, instanceId: session.instanceId,
+        botName: session.botName, symbol: session.symbol, timeframe: session.timeframe,
+        environment: session.environment, direction: session.direction, level: session.level || null,
+        triggerTime: new Date(session.startedAt), chunkIndex: Number(session.chunkIndex || 1),
+        chunkStartedAt: new Date(session.firstFrameAt || session.startedAt),
+        chunkEndedAt: new Date(session.lastFrameAt || session.firstFrameAt || session.startedAt),
+        durationSeconds: session.frameIndex / FPS, frameRate: FPS, status: 'FAILED',
+        storageType: 'FILESYSTEM', storageStatus: 'FAILED', fileName: null, filePath: null,
+        triggerReason: `${session.triggerReason || reason || 'RECORDING'} | FINALIZE_FAILED: ${err.message} | FRAMES: ${session.framesDir}`,
+      } }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    } catch (dbErr) {
+      console.error(`[RECORDING] failed metadata write for ${session.id}: ${dbErr.message}`);
+    }
+  }
+
+  async deleteInstanceData(instanceId) {
+    if (!instanceId) return;
+    this.deletedInstances.add(instanceId);
+    if (this.active.has(instanceId)) await this.stop(instanceId, 'BOT_DELETE');
+    const Recording = require('../../models/TradeRecording');
+    await Recording.deleteMany({ instanceId });
+    const prefix = `${instanceId}-`;
+    for (const root of [RECORDINGS_DIR, path.join(__dirname, '..', '..', 'storage', 'recording-runtime')]) {
+      if (!fs.existsSync(root)) continue;
+      for (const name of fs.readdirSync(root)) {
+        if (!name.startsWith(prefix)) continue;
+        try { fs.rmSync(path.join(root, name), { recursive: true, force: true }); }
+        catch (err) { console.error(`[RECORDING] delete artifact failed ${name}: ${err.message}`); throw err; }
+      }
+    }
+    this.lastPrices.delete(instanceId);
+    this._emit(instanceId, 'DELETED', null, { deleted: true });
   }
 
   _emit(instanceId, status, session, extra = {}) {

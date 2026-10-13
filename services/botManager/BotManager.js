@@ -288,6 +288,13 @@ class BotManager {
         throw new Error("Stop the bot before deleting it.");
     }
 
+    const live = this.liveInstances.get(instanceId);
+    if (live) {
+      try { await live.modelInstance.onStop(); } catch (_) {}
+      (live.unsubscribers || []).forEach((unsub) => { try { unsub(); } catch (_) {} });
+      this.liveInstances.delete(instanceId);
+    }
+    await recordingService.deleteInstanceData(instanceId);
     await BotInstance.deleteOne({ instanceId });
 
 }
@@ -389,6 +396,8 @@ class BotManager {
     dbInstance.startedAt = new Date();
     dbInstance.lastError = null;
     await dbInstance.save();
+    try { await recordingService.resumeForBot(instanceId, dbInstance); }
+    catch (err) { console.error(`[RECORDING] resume after bot start failed ${instanceId}: ${err.message}`); }
 
     const readiness = typeof modelInstance.getReadiness === 'function'
       ? modelInstance.getReadiness()
@@ -756,6 +765,7 @@ class BotManager {
     }
     dbInstance.status = 'PAUSED';
     await dbInstance.save();
+    await recordingService.pauseForBot(instanceId);
     await logger.info('BOT', `Bot instance paused: ${instanceId}`);
     this._broadcastStatus(dbInstance);
     return dbInstance;
@@ -1317,8 +1327,8 @@ class BotManager {
 
       await dbInstance.save();
 
-      // MODEL_002 recording: reuse the existing LEVEL_TOUCHED event. Eligible
-      // S1-S3/R1-R3 touches start a server-side 0.5 FPS recording. This is
+      // MODEL_002 recording: reuse the existing LEVEL_TOUCHED event. Only
+      // S1/R1 (index 1) starts a server-side 1 FPS recording. This is
       // monitoring only and never participates in trading/risk/execution.
       if (event.eventType === 'LEVEL_TOUCHED') {
         await whatsappNotifications.notify('LAYER_TOUCH', {
