@@ -213,6 +213,20 @@ test('4. B_bodyHigh <= A_bodyHigh -> A/B NOT accepted, no candidate, no boundari
   assert.equal(ctx.commands.length, 0);
 });
 
+test('Rejected level touch is reused as next candle Candle 1 without another physical touch', async () => {
+  const { ctx, model } = await buyFixture();
+  await model.onHydrate(buyA());
+  const badB = candleAt(20, 60005, 60060, 59995, 60009); // touches S1 but fails body-high validation
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: badB.timestamp, data: badB }, null);
+  assert.equal(model.patternCandidate, null);
+  assert.equal(model.reuseLastTouchedLevel.direction, 'BUY');
+  const next = candleAt(21, 60020, 60035, 60015, 60030); // does not touch support
+  await model.onMarketData({ type: 'candle', symbol: 'BTCUSD', timeframe: '1m', timestamp: next.timestamp, data: next }, null);
+  assert.equal(model.patternCandidate.stage, 'WAITING_FOR_CANDLE2_CARRIED');
+  assert.equal(model.patternCandidate.candle1.timestamp, next.timestamp);
+  assert.equal(model.patternCandidate.carriedForwardLevel, true);
+});
+
 test('5/6. Candle2 boundaries = B.high+5 / B.low-5 (wick, not body)', async () => {
   const { model } = await buyFixture();
   await model.onHydrate(buyA());

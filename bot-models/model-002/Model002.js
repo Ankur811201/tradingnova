@@ -563,6 +563,17 @@ class Model002 extends BotModelBase {
       // validation — per spec §4, do NOT create Candle1/Candle2; stay IDLE
       // and keep searching from the next candle.
       this.patternCandidate = null;
+      // Preserve the rejected touch as context for the NEXT candle only.
+      // That next candle may become a fresh Candle 1 without another physical
+      // level touch; normal Candle 2/Candle 3 validations still apply.
+      const rejectedTouch = attempt.rejected.matchedLevel;
+      if (rejectedTouch && Number.isFinite(rejectedTouch.index) && Number.isFinite(rejectedTouch.price)) {
+        this.reuseLastTouchedLevel = {
+          direction: attempt.rejected.direction,
+          index: rejectedTouch.index,
+          price: rejectedTouch.price,
+        };
+      }
       this._emitDecision('WAIT', attempt.rejected, candle);
       return;
     }
@@ -646,6 +657,7 @@ class Model002 extends BotModelBase {
         return { rejected: {
           reason: 'no_prior_candle_for_ab_validation', direction,
           activeLevel: this._activeLevelFor({ direction, matchedLevel: touch }),
+          matchedLevel: { index: touch.index, price: touch.price },
         } };
       }
 
@@ -655,6 +667,7 @@ class Model002 extends BotModelBase {
           reason: direction === 'BUY' ? 'ab_body_high_not_greater' : 'ab_body_low_not_less',
           direction,
           activeLevel: this._activeLevelFor({ direction, matchedLevel: touch }),
+          matchedLevel: { index: touch.index, price: touch.price },
           candle1: this._summarizeCandle(prevCandle), candle2: this._summarizeCandle(candle),
         } };
       }
@@ -664,6 +677,7 @@ class Model002 extends BotModelBase {
         return { rejected: {
           reason: 'bodyP_not_maximum', direction,
           activeLevel: this._activeLevelFor({ direction, matchedLevel: touch }),
+          matchedLevel: { index: touch.index, price: touch.price },
           candle1: this._summarizeCandle(prevCandle), candle2: this._summarizeCandle(candle), points,
         } };
       }
@@ -671,6 +685,7 @@ class Model002 extends BotModelBase {
         return { rejected: {
           reason: direction === 'BUY' ? 'candle2_not_bullish' : 'candle2_not_bearish', direction,
           activeLevel: this._activeLevelFor({ direction, matchedLevel: touch }),
+          matchedLevel: { index: touch.index, price: touch.price },
           candle1: this._summarizeCandle(prevCandle), candle2: this._summarizeCandle(candle), points,
         } };
       }
