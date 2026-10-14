@@ -10,36 +10,7 @@ const fs = require('fs');
 async function resolveRecording(instanceId, recordingId) {
   const Recording = require('../models/TradeRecording');
   const stored = await Recording.findOne({ recordingId, instanceId }).lean();
-  if (stored) {
-    const result = { ...stored };
-    const recordingsRoot = path.resolve(__dirname, '..', 'storage', 'recordings');
-    let stat = null;
-    try {
-      const candidate = result.filePath ? path.resolve(__dirname, '..', result.filePath) : path.join(recordingsRoot, `${recordingId}.webm`);
-      if (candidate.startsWith(recordingsRoot + path.sep) && fs.existsSync(candidate)) stat = fs.statSync(candidate);
-    } catch (_) {}
-    const usableMs = value => {
-      const ms = value ? new Date(value).getTime() : NaN;
-      return Number.isFinite(ms) && ms >= Date.UTC(2000, 0, 1) ? ms : null;
-    };
-    const fileStartMs = stat ? (stat.birthtimeMs > Date.UTC(2000, 0, 1) ? stat.birthtimeMs : stat.mtimeMs) : null;
-    const fileEndMs = stat && stat.mtimeMs >= (fileStartMs || 0) ? stat.mtimeMs : fileStartMs;
-    const startMs = usableMs(result.chunkStartedAt) || usableMs(result.triggerTime) || fileStartMs;
-    const endMs = usableMs(result.chunkEndedAt) || fileEndMs;
-    if (startMs) {
-      result.chunkStartedAt = new Date(startMs);
-      if (!usableMs(result.triggerTime)) result.triggerTime = new Date(startMs);
-    } else {
-      result.chunkStartedAt = null;
-      if (!usableMs(result.triggerTime)) result.triggerTime = null;
-    }
-    result.chunkEndedAt = endMs ? new Date(endMs) : null;
-    const duration = Number(result.durationSeconds);
-    if (!Number.isFinite(duration) || duration <= 0) {
-      result.durationSeconds = startMs && endMs && endMs >= startMs ? Math.round((endMs - startMs) / 1000) : 0;
-    }
-    return result;
-  }
+  if (stored) return stored;
 
   // Recover orphaned videos directly from the recording storage folder.
   const recordingsRoot = path.resolve(__dirname, '..', 'storage', 'recordings');
@@ -53,14 +24,12 @@ async function resolveRecording(instanceId, recordingId) {
     if (!stat.isFile() || stat.size <= 0) continue;
     const BotInstance = require('../models/BotInstance');
     const bot = await BotInstance.findOne({ instanceId }).lean();
-    const fileStartMs = stat.birthtimeMs > Date.UTC(2000, 0, 1) ? stat.birthtimeMs : stat.mtimeMs;
-    const fileEndMs = stat.mtimeMs >= fileStartMs ? stat.mtimeMs : fileStartMs;
     return {
       recordingId, instanceId, botName: bot?.name || '', symbol: bot?.symbol || 'UNKNOWN',
       timeframe: bot?.parameters?.timeframe || 'UNKNOWN', environment: bot?.environment || 'PAPER',
-      direction: 'UNKNOWN', level: null, triggerTime: new Date(fileStartMs),
-      chunkIndex: 1, chunkStartedAt: new Date(fileStartMs), chunkEndedAt: new Date(fileEndMs),
-      durationSeconds: Math.max(0, Math.round((fileEndMs - fileStartMs) / 1000)), frameRate: 0.5, status: 'READY', fileName: name,
+      direction: 'UNKNOWN', level: null, triggerTime: new Date(stat.birthtimeMs || stat.mtimeMs),
+      chunkIndex: 1, chunkStartedAt: new Date(stat.birthtimeMs || stat.mtimeMs), chunkEndedAt: new Date(stat.mtimeMs),
+      durationSeconds: null, frameRate: 0.5, status: 'READY', fileName: name,
       filePath: path.relative(path.join(__dirname, '..'), filePath).replace(/\\/g, '/'),
       triggerReason: 'Recovered from video storage', recoveredFromStorage: true,
     };
@@ -89,8 +58,10 @@ async function stopRecording(req, res, next) {
     if (!bot) return res.status(404).json({ ok: false, error: 'Bot instance not found' });
 
     const active = recordingService.getActive(instanceId);
-    await recordingService.stopManual(instanceId);
-    return res.json({ ok: true, recordingId: active?.recordingId || null, active: null });
+    if (!active) return res.status(404).json({ ok: false, error: 'No active recording' });
+
+    await recordingService.stop(instanceId, 'MANUAL_STOP');
+    return res.json({ ok: true, recordingId: active.recordingId });
   } catch (err) {
     return next(err);
   }
@@ -103,7 +74,7 @@ async function listRecordings(req, res, next) {
     if (!bot) return res.status(404).json({ ok: false, error: 'Bot instance not found' });
 
     const recordings = await recordingService.list(instanceId);
-    return res.json({ ok: true, recordings, active: recordingService.getActive(instanceId), recordingState: bot.recordingState || {} });
+    return res.json({ ok: true, recordings, active: recordingService.getActive(instanceId) });
   } catch (err) {
     return next(err);
   }

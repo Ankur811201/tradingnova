@@ -34,35 +34,17 @@
     }
   }
 
-  function formatRecordingTime(value, includeDate = false) {
-    if (!value) return '--';
-    const date = new Date(value);
-    // Do not display Unix epoch / placeholder dates as real recording times.
-    if (!Number.isFinite(date.getTime()) || date.getTime() < Date.UTC(2000, 0, 1)) return '--';
-    return date.toLocaleString('en-IN', {
-      timeZone: 'Asia/Kolkata',
-      ...(includeDate ? { day: '2-digit', month: '2-digit', year: 'numeric' } : {}),
-      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-    });
-  }
-
   function render(recordings) {
     if (!recordings.length) {
       listEl.innerHTML = '<div class="text-gray-500 italic text-xs py-4">No level recordings yet.</div>';
       return;
     }
-    if (window.NovaRecordingTimeline) window.NovaRecordingTimeline.update({ recordings: recordings, active: null });
     listEl.innerHTML = recordings.map((r) => {
-      const time = formatRecordingTime(r.triggerTime, true);
+      const time = r.triggerTime ? new Date(r.triggerTime).toLocaleString() : '--';
       const level = r.level && r.level.index ? `${r.level.side === 'SUPPORT' ? 'S' : 'R'}${r.level.index}` : '--';
-      const start = formatRecordingTime(r.chunkStartedAt) || time;
-      const end = formatRecordingTime(r.chunkEndedAt);
-      const explicitDuration = Number(r.durationSeconds);
-      const startDate = r.chunkStartedAt ? new Date(r.chunkStartedAt).getTime() : NaN;
-      const endDate = r.chunkEndedAt ? new Date(r.chunkEndedAt).getTime() : NaN;
-      const inferredDuration = Number.isFinite(startDate) && Number.isFinite(endDate) && endDate >= startDate
-        ? (endDate - startDate) / 1000 : 0;
-      const duration = Math.max(0, Number.isFinite(explicitDuration) && explicitDuration > 0 ? explicitDuration : inferredDuration).toFixed(0);
+      const duration = Number(r.durationSeconds || 0).toFixed(0);
+      const start = r.chunkStartedAt ? new Date(r.chunkStartedAt).toLocaleTimeString() : time;
+      const end = r.chunkEndedAt ? new Date(r.chunkEndedAt).toLocaleTimeString() : '--';
       const directionClass = r.direction === 'SELL' ? 'text-rose-400' : r.direction === 'BUY' ? 'text-emerald-400' : 'text-gray-400';
       const playerUrl = `/bots/${encodeURIComponent(config.instanceId)}/recordings/${encodeURIComponent(r.recordingId)}`;
       return `
@@ -180,15 +162,8 @@
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || 'Unable to load recordings');
       render(Array.isArray(data.recordings) ? data.recordings : []);
-      if (window.NovaRecordingTimeline) window.NovaRecordingTimeline.update(data);
       if (data.active) setLive('STARTED', data.active);
-      else if (data.recordingState && data.recordingState.desiredOn) {
-        const paused = Boolean(data.recordingState.paused);
-        if (liveEl) { liveEl.textContent = paused ? '⏸ RECORDING PAUSED' : '● RECORDING RECOVERING'; liveEl.classList.remove('hidden'); liveEl.classList.remove('animate-pulse'); }
-        if (chartLiveEl) { chartLiveEl.textContent = paused ? '⏸ RECORDING PAUSED' : '● RECORDING RECOVERING'; chartLiveEl.classList.remove('hidden'); chartLiveEl.classList.remove('animate-pulse'); }
-        if (startBtn) { startBtn.disabled = true; startBtn.textContent = '▶ Start'; }
-        if (stopBtn) { stopBtn.disabled = false; stopBtn.textContent = '■ Stop'; }
-      } else {
+      else {
         if (liveEl) liveEl.classList.add('hidden');
         if (chartLiveEl) chartLiveEl.classList.add('hidden');
         if (startBtn) { startBtn.disabled = false; startBtn.textContent = '▶ Start'; }
@@ -203,7 +178,7 @@
     socket.on('bot:recording', (data) => {
       if (!data || data.instanceId !== config.instanceId) return;
       setLive(data.status, data);
-      if (data.status === 'STOPPED' || data.status === 'CHUNK_STARTED' || data.status === 'DELETED') load();
+      if (data.status === 'STOPPED' || data.status === 'TRADE_OPEN' || data.status === 'LEVEL_RECORDING_BLOCKED') load();
     });
   }
 

@@ -78,9 +78,6 @@ const botInstanceSchema = new mongoose.Schema(
     startedAt: { type: Date, default: null },
     stoppedAt: { type: Date, default: null },
     lastSignalAt: { type: Date, default: null },
-
-    // Persistent recording lifecycle: once-per-bot S1/R1 trigger and manual intent survive restarts.
-    recordingState: { type: mongoose.Schema.Types.Mixed, default: {} },
   },
   { timestamps: true }
 );

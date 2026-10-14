@@ -288,13 +288,6 @@ class BotManager {
         throw new Error("Stop the bot before deleting it.");
     }
 
-    const live = this.liveInstances.get(instanceId);
-    if (live) {
-      try { await live.modelInstance.onStop(); } catch (_) {}
-      (live.unsubscribers || []).forEach((unsub) => { try { unsub(); } catch (_) {} });
-      this.liveInstances.delete(instanceId);
-    }
-    await recordingService.deleteInstanceData(instanceId);
     await BotInstance.deleteOne({ instanceId });
 
 }
@@ -396,8 +389,6 @@ class BotManager {
     dbInstance.startedAt = new Date();
     dbInstance.lastError = null;
     await dbInstance.save();
-    try { await recordingService.resumeForBot(instanceId, dbInstance); }
-    catch (err) { console.error(`[RECORDING] resume after bot start failed ${instanceId}: ${err.message}`); }
 
     const readiness = typeof modelInstance.getReadiness === 'function'
       ? modelInstance.getReadiness()
@@ -765,7 +756,6 @@ class BotManager {
     }
     dbInstance.status = 'PAUSED';
     await dbInstance.save();
-    await recordingService.pauseForBot(instanceId);
     await logger.info('BOT', `Bot instance paused: ${instanceId}`);
     this._broadcastStatus(dbInstance);
     return dbInstance;
@@ -1185,13 +1175,6 @@ class BotManager {
 
           if (closedTrade) {
             live.pendingClosedTradeLookup = null;
-            // Mirror every authoritative close into recording lifecycle too.
-            // This covers manual/safety/controller paths that bypass bot-issued CLOSE commands.
-            try {
-              await recordingService.handleClosedTrade(instanceId, pending.positionId);
-            } catch (recordingErr) {
-              await logger.warn('RECORDING', `Closed-trade lifecycle mirror failed for ${pending.positionId}: ${recordingErr.message}`);
-            }
             try {
               const safetyResult = await live.modelInstance.onPositionClosed(closedTrade);
 
