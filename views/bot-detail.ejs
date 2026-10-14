@@ -93,6 +93,28 @@
       transition: opacity .25s ease, transform .25s ease;
     }
   </style>
+
+<style>
+  /* Recording timeline: deliberately outside the candle plotting area, but
+     positioned from the exact same Lightweight Charts time scale. */
+  .recording-timeline { min-width: 0; }
+  .recording-timeline-axis { position:absolute; left:0; right:0; bottom:5px; height:1px; background:rgba(148,163,184,.18); }
+  .recording-timeline-bar {
+    position:absolute; top:15px; height:25px; min-width:8px; border:1px solid rgba(167,139,250,.65);
+    border-radius:7px; background:linear-gradient(90deg,rgba(124,58,237,.38),rgba(139,92,246,.22));
+    box-shadow:0 0 0 1px rgba(139,92,246,.08),0 3px 12px rgba(0,0,0,.18); cursor:pointer;
+    overflow:visible; transition:filter .15s ease, transform .15s ease, background .15s ease;
+  }
+  .recording-timeline-bar:hover { filter:brightness(1.25); transform:translateY(-1px); background:linear-gradient(90deg,rgba(124,58,237,.55),rgba(139,92,246,.32)); }
+  .recording-timeline-bar.active { cursor:default; border-color:rgba(244,63,94,.65); background:rgba(244,63,94,.16); }
+  .recording-timeline-cap { position:absolute; top:-5px; width:2px; height:35px; border-radius:2px; background:rgba(196,181,253,.9); }
+  .recording-timeline-cap.start { left:0; }
+  .recording-timeline-cap.end { right:0; }
+  .recording-timeline-label { position:absolute; left:7px; top:4px; white-space:nowrap; max-width:calc(100% - 14px); overflow:hidden; text-overflow:ellipsis; font:700 9px/17px JetBrains Mono,monospace; color:#ddd6fe; pointer-events:none; }
+  .recording-timeline-time { position:absolute; top:42px; font:500 8px/10px JetBrains Mono,monospace; color:#64748b; white-space:nowrap; pointer-events:none; transform:translateX(-50%); }
+  .recording-timeline-tooltip { position:fixed; z-index:80; pointer-events:none; max-width:300px; padding:8px 10px; border:1px solid rgba(167,139,250,.35); border-radius:8px; background:rgba(7,12,24,.97); box-shadow:0 10px 30px rgba(0,0,0,.35); font:500 10px/1.45 JetBrains Mono,monospace; color:#cbd5e1; }
+  .recording-timeline-tooltip strong { color:#f5f3ff; }
+</style>
 </head>
 <body class="bg-transparent text-gray-100 font-sans antialiased flex flex-col min-h-screen relative">
 
@@ -184,6 +206,17 @@
                         px-2 py-1 text-center leading-tight shadow-lg">
               <div class="text-xs font-bold font-mono text-white" id="chart-current-price">--</div>
               <div class="text-[10px] font-semibold font-mono text-emerald-400" id="chart-next-candle">--:--</div>
+            </div>
+          </div>
+          <div id="recording-timeline-wrap" class="mt-2 rounded-xl border border-violet-400/15 bg-[#080d18]/90 overflow-hidden" aria-label="Recording timeline">
+            <div class="px-3 pt-2 flex items-center justify-between gap-2">
+              <div class="text-[10px] font-bold uppercase tracking-wider text-violet-300 flex items-center gap-1.5">
+                <span aria-hidden="true">🎥</span> Recording Timeline
+              </div>
+              <div id="recording-timeline-hint" class="text-[9px] font-mono text-gray-500">Click a recording to watch</div>
+            </div>
+            <div id="recording-timeline" class="recording-timeline relative h-[64px] mx-2 mb-2" role="list" aria-label="Recorded video sessions">
+              <div id="recording-timeline-empty" class="absolute inset-0 flex items-center justify-center text-[10px] text-gray-600 font-mono">No recordings in the visible chart range</div>
             </div>
           </div>
         </div>
@@ -1437,6 +1470,7 @@
 <script src="/js/renderers/model002-level-state.js"></script>
 <script src="/js/renderers/model-thinking-registry.js"></script>
 <script src="/js/trade-recordings.js"></script>
+<script src="/js/recording-timeline.js"></script>
 <script src="/js/bot-detail-ws.js"></script>
 <script>
 (function(){

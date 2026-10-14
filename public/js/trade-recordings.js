@@ -34,17 +34,35 @@
     }
   }
 
+  function formatRecordingTime(value, includeDate = false) {
+    if (!value) return '--';
+    const date = new Date(value);
+    // Do not display Unix epoch / placeholder dates as real recording times.
+    if (!Number.isFinite(date.getTime()) || date.getTime() < Date.UTC(2000, 0, 1)) return '--';
+    return date.toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      ...(includeDate ? { day: '2-digit', month: '2-digit', year: 'numeric' } : {}),
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    });
+  }
+
   function render(recordings) {
     if (!recordings.length) {
       listEl.innerHTML = '<div class="text-gray-500 italic text-xs py-4">No level recordings yet.</div>';
       return;
     }
+    if (window.NovaRecordingTimeline) window.NovaRecordingTimeline.update({ recordings: recordings, active: null });
     listEl.innerHTML = recordings.map((r) => {
-      const time = r.triggerTime ? new Date(r.triggerTime).toLocaleString() : '--';
+      const time = formatRecordingTime(r.triggerTime, true);
       const level = r.level && r.level.index ? `${r.level.side === 'SUPPORT' ? 'S' : 'R'}${r.level.index}` : '--';
-      const duration = Number(r.durationSeconds || 0).toFixed(0);
-      const start = r.chunkStartedAt ? new Date(r.chunkStartedAt).toLocaleTimeString() : time;
-      const end = r.chunkEndedAt ? new Date(r.chunkEndedAt).toLocaleTimeString() : '--';
+      const start = formatRecordingTime(r.chunkStartedAt) || time;
+      const end = formatRecordingTime(r.chunkEndedAt);
+      const explicitDuration = Number(r.durationSeconds);
+      const startDate = r.chunkStartedAt ? new Date(r.chunkStartedAt).getTime() : NaN;
+      const endDate = r.chunkEndedAt ? new Date(r.chunkEndedAt).getTime() : NaN;
+      const inferredDuration = Number.isFinite(startDate) && Number.isFinite(endDate) && endDate >= startDate
+        ? (endDate - startDate) / 1000 : 0;
+      const duration = Math.max(0, Number.isFinite(explicitDuration) && explicitDuration > 0 ? explicitDuration : inferredDuration).toFixed(0);
       const directionClass = r.direction === 'SELL' ? 'text-rose-400' : r.direction === 'BUY' ? 'text-emerald-400' : 'text-gray-400';
       const playerUrl = `/bots/${encodeURIComponent(config.instanceId)}/recordings/${encodeURIComponent(r.recordingId)}`;
       return `
@@ -162,6 +180,7 @@
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || 'Unable to load recordings');
       render(Array.isArray(data.recordings) ? data.recordings : []);
+      if (window.NovaRecordingTimeline) window.NovaRecordingTimeline.update(data);
       if (data.active) setLive('STARTED', data.active);
       else {
         if (liveEl) liveEl.classList.add('hidden');
