@@ -13,7 +13,7 @@ const loginLimiter = rateLimit({
 
 const dangerousActionLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 20,
+  max: 60,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many requests. Please slow down.', data: null, error: 'RATE_LIMITED' },
@@ -21,7 +21,7 @@ const dangerousActionLimiter = rateLimit({
 
 const generalApiLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 300,
+  max: 900,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many requests.', data: null, error: 'RATE_LIMITED' },
