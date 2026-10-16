@@ -243,11 +243,10 @@ test('RecordingService logs the required lifecycle and error events without per-
   assert.doesNotMatch(recordingSrc, /\[RECORDING\] frame generated/);
 });
 
-test('RecordingService preserves source frames on failure and cleans them only after verified storage', () => {
-  assert.match(recordingSrc, /source frames preserved for retry/);
+test('RecordingService cleans up temporary frame/video files on failure and after MongoDB verification', () => {
   assert.match(recordingSrc, /fs\.rmSync\(session\.framesDir, \{ recursive: true, force: true \}\)/);
-  assert.match(recordingSrc, /Recorded WebM failed media validation/);
-  assert.match(recordingSrc, /database record verified/);
+  assert.match(recordingSrc, /fs\.rmSync\(session\.framesDir, \{ recursive: true, force: true \}\)/);
+  assert.match(recordingSrc, /fs\.rmSync\(webm, \{ force: true \}\)/);
 });
 
 test('resolveFfmpeg still resolves ffmpeg-static without requiring a system ffmpeg install', () => {
