@@ -1175,6 +1175,13 @@ class BotManager {
 
           if (closedTrade) {
             live.pendingClosedTradeLookup = null;
+            // Mirror every authoritative close into recording lifecycle too.
+            // This covers manual/safety/controller paths that bypass bot-issued CLOSE commands.
+            try {
+              await recordingService.handleClosedTrade(instanceId, pending.positionId);
+            } catch (recordingErr) {
+              await logger.warn('RECORDING', `Closed-trade lifecycle mirror failed for ${pending.positionId}: ${recordingErr.message}`);
+            }
             try {
               const safetyResult = await live.modelInstance.onPositionClosed(closedTrade);
 
@@ -1310,8 +1317,8 @@ class BotManager {
 
       await dbInstance.save();
 
-      // MODEL_002 recording: reuse the existing LEVEL_TOUCHED event. Only
-      // S1/R1 (index 1) starts a server-side 1 FPS recording. This is
+      // MODEL_002 recording: reuse the existing LEVEL_TOUCHED event. Eligible
+      // S1-S3/R1-R3 touches start a server-side 0.5 FPS recording. This is
       // monitoring only and never participates in trading/risk/execution.
       if (event.eventType === 'LEVEL_TOUCHED') {
         await whatsappNotifications.notify('LAYER_TOUCH', {

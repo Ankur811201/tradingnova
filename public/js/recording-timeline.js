@@ -12,10 +12,34 @@
   let tooltip = null;
 
   function validMs(value) {
-    if (value instanceof Date) value = value.getTime();
-    if (typeof value === 'string' && /^\d+$/.test(value.trim())) value = Number(value);
-    const n = Number(value);
-    return Number.isFinite(n) && n > 0 ? (n < 1e12 ? n * 1000 : n) : null;
+    if (value == null || value === '') return null;
+
+    let n;
+    if (value instanceof Date) {
+      n = value.getTime();
+    } else if (typeof value === 'number') {
+      n = value;
+    } else if (typeof value === 'string') {
+      const text = value.trim();
+      if (!text) return null;
+
+      // Numeric timestamps may be in seconds or milliseconds. ISO/date strings
+      // must be parsed as dates, not passed to Number() (which yields NaN).
+      if (/^\d+(?:\.\d+)?$/.test(text)) {
+        n = Number(text);
+      } else {
+        n = Date.parse(text);
+      }
+    } else {
+      return null;
+    }
+
+    if (!Number.isFinite(n) || n <= 0) return null;
+    if (n < 1e12) n *= 1000;
+
+    // Do not plot Unix-epoch/default timestamps as real recording times.
+    if (n < Date.UTC(2000, 0, 1)) return null;
+    return n;
   }
 
   function startMs(r) { return validMs(r && (r.chunkStartedAt || r.triggerTime)); }
@@ -74,11 +98,70 @@
     return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
   }
 
-  function chartTimeToX(timeSec) {
-    const cm = window.NovaBotChartManager;
+  function toEpochSeconds(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (value && typeof value === 'object' && Number.isFinite(value.year) && Number.isFinite(value.month) && Number.isFinite(value.day)) {
+      return Math.floor(Date.UTC(value.year, value.month - 1, value.day) / 1000);
+    }
+    return null;
+  }
+
+  // Lightweight Charts only returns a coordinate for times represented by a
+  // chart point. Recording timestamps are arbitrary milliseconds, so map them
+  // between adjacent candle points instead of requiring an exact candle match.
+  function chartTimeToX(timeSec, cm, timelineWidth) {
     if (!cm || !cm.chart || !cm.chart.timeScale) return null;
-    const x = cm.chart.timeScale().timeToCoordinate(timeSec);
-    return Number.isFinite(x) ? x : null;
+    const scale = cm.chart.timeScale();
+    const direct = scale.timeToCoordinate(timeSec);
+    if (Number.isFinite(direct)) return direct;
+
+    const series = cm.candleSeries && cm.candleSeries.candlestickSeries;
+    if (!series || typeof series.data !== 'function') return null;
+    let data;
+    try { data = series.data(); } catch (_) { return null; }
+    if (!Array.isArray(data) || data.length < 2) return null;
+
+    const points = data.map(c => ({ time: toEpochSeconds(c.time), x: null }))
+      .filter(p => Number.isFinite(p.time));
+    if (points.length < 2) return null;
+    for (const point of points) {
+      const x = scale.timeToCoordinate(point.time);
+      point.x = Number.isFinite(x) ? x : null;
+    }
+
+    // Find the closest pair of candles surrounding the requested timestamp.
+    let before = null, after = null;
+    for (const point of points) {
+      if (point.time <= timeSec && (!before || point.time > before.time)) before = point;
+      if (point.time >= timeSec && (!after || point.time < after.time)) after = point;
+    }
+    if (before && after && before.time !== after.time && Number.isFinite(before.x) && Number.isFinite(after.x)) {
+      const ratio = (timeSec - before.time) / (after.time - before.time);
+      return before.x + (after.x - before.x) * ratio;
+    }
+
+    // For endpoints outside the visible plot, use the visible range boundary
+    // so the renderer can clip the recording bar correctly.
+    let visible;
+    try { visible = scale.getVisibleRange(); } catch (_) { visible = null; }
+    if (!visible) return null;
+    const from = toEpochSeconds(visible.from), to = toEpochSeconds(visible.to);
+    if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
+    const xFrom = scale.timeToCoordinate(visible.from);
+    const xTo = scale.timeToCoordinate(visible.to);
+    if (!Number.isFinite(xFrom) || !Number.isFinite(xTo) || to <= from) return null;
+    if (timeSec < from) return 0;
+    if (timeSec > to) return timelineWidth;
+    return xFrom + ((timeSec - from) / (to - from)) * (xTo - xFrom);
+  }
+
+  function visibleTimeRange(cm) {
+    try {
+      const range = cm.chart.timeScale().getVisibleRange();
+      if (!range) return null;
+      const from = toEpochSeconds(range.from), to = toEpochSeconds(range.to);
+      return Number.isFinite(from) && Number.isFinite(to) ? { from, to } : null;
+    } catch (_) { return null; }
   }
 
   function render() {
@@ -92,13 +175,21 @@
     const axis = document.createElement('div'); axis.className = 'recording-timeline-axis'; timeline.appendChild(axis);
 
     let visibleCount = 0;
+    const range = visibleTimeRange(cm);
     const all = recordings.slice().sort((a,b) => (startMs(a)||0) - (startMs(b)||0));
     all.forEach((r, idx) => {
       const s = startMs(r), e = endMs(r);
       if (!s || !e || e < s) return;
-      const x1 = chartTimeToX(s / 1000), x2 = chartTimeToX(e / 1000);
+      const startSec = s / 1000, endSec = e / 1000;
+      // Do not show recordings that truly do not overlap the chart's visible
+      // time window. For overlaps, clip off-screen endpoints to the plot edge.
+      if (range && (endSec < range.from || startSec > range.to)) return;
+      let x1 = chartTimeToX(startSec, cm, width);
+      let x2 = chartTimeToX(endSec, cm, width);
+      if (x1 == null && range && startSec < range.from) x1 = 0;
+      if (x2 == null && range && endSec > range.to) x2 = width;
       if (x1 == null && x2 == null) return;
-      const leftRaw = x1 == null ? (e < s ? width : 0) : x1;
+      const leftRaw = x1 == null ? 0 : x1;
       const rightRaw = x2 == null ? width : x2;
       const left = Math.max(0, Math.min(width, Math.min(leftRaw, rightRaw)));
       const right = Math.max(0, Math.min(width, Math.max(leftRaw, rightRaw)));

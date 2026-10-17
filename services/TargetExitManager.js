@@ -442,6 +442,14 @@ class TargetExitManager {
         closedDoc.targetExit.events.push(t4Event);
         await closedDoc.save();
         this._emitTargetEvent(closedDoc, t4Event);
+        // T4 closes the position outside BotManager's CLOSE command path.
+        // Mirror the committed close immediately; BotManager's later detection
+        // is safe because RecordingService deduplicates by Trade ID.
+        try {
+          await recordingService.handleClosedTrade(String(closedDoc.instanceId), closedDoc._id);
+        } catch (recordingErr) {
+          console.error(`[RECORDING] Target T4 close mirror failed for ${closedDoc._id}: ${recordingErr.message}`);
+        }
       }
       return;
     }
