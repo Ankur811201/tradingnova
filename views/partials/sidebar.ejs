@@ -52,6 +52,69 @@
     </ul>
   </nav>
 
+  <section class="delta-connect" id="deltaConnect" aria-live="polite">
+    <div class="delta-connect-heading"><span class="delta-connect-dot" id="deltaConnectDot"></span><strong>Delta Connect</strong></div>
+    <div class="delta-connect-status" id="deltaConnectStatus">Checking connection…</div>
+    <div class="delta-connect-ip" id="deltaConnectIp" hidden></div>
+    <button class="delta-connect-retry" id="deltaConnectRetry" type="button">Retry login</button>
+  </section>
+
+  <script>
+  (function () {
+    const statusEl = document.getElementById('deltaConnectStatus');
+    const ipEl = document.getElementById('deltaConnectIp');
+    const dotEl = document.getElementById('deltaConnectDot');
+    const retryBtn = document.getElementById('deltaConnectRetry');
+    if (!statusEl || !retryBtn) return;
+
+    function render(data) {
+      const connected = Boolean(data && data.connected);
+      dotEl.classList.toggle('is-connected', connected);
+      dotEl.classList.toggle('is-error', !connected);
+      ipEl.hidden = true;
+      ipEl.textContent = '';
+      if (connected) {
+        statusEl.textContent = 'Connected';
+        retryBtn.textContent = 'Reconnect';
+      } else if (data && data.configured === false) {
+        statusEl.textContent = 'API credentials not configured';
+        retryBtn.textContent = 'Retry login';
+      } else {
+        statusEl.textContent = 'Not connected';
+        if (data && data.clientIp) {
+          ipEl.textContent = data.clientIp;
+          ipEl.hidden = false;
+        }
+        retryBtn.textContent = 'Retry login';
+      }
+    }
+
+    async function check(retry) {
+      retryBtn.disabled = true;
+      if (retry) statusEl.textContent = 'Checking Delta connection…';
+      try {
+        const response = await fetch(retry ? '/api/live/connect-status/retry' : '/api/live/connect-status', {
+          method: retry ? 'POST' : 'GET',
+          credentials: 'same-origin',
+          headers: { 'Accept': 'application/json' }
+        });
+        const payload = await response.json();
+        render(payload && payload.data ? payload.data : null);
+        if (!response.ok) statusEl.textContent = 'Connection check failed';
+      } catch (_err) {
+        statusEl.textContent = 'Connection check failed';
+        dotEl.classList.remove('is-connected');
+        dotEl.classList.add('is-error');
+      } finally {
+        retryBtn.disabled = false;
+      }
+    }
+
+    retryBtn.addEventListener('click', function () { check(true); });
+    check(false);
+  })();
+  </script>
+
   <div class="sidebar-footer">
     <div class="sidebar-user">
       <div class="avatar"><%= currentUser && currentUser.username ? currentUser.username.charAt(0).toUpperCase() : '?' %></div>

@@ -31,12 +31,22 @@ const orderSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIALLY_FILLED', 'REJECTED', 'CANCELLED', 'ERROR'],
+      enum: ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIALLY_FILLED', 'REJECTED', 'CANCELLED', 'ERROR', 'UNKNOWN'],
       required: true,
       default: 'PENDING',
       index: true,
     },
     rejectionReason: { type: String, default: null },
+
+    // LIVE-only lifecycle fields (all optional/defaulted; PAPER never sets them).
+    clientOrderId: { type: String, default: null, index: true }, // sent to Delta as client_order_id
+    reduceOnly: { type: Boolean, default: false },
+    purpose: { type: String, default: null }, // ENTRY | CLOSE | TARGET | STOP | EMERGENCY
+    deltaState: { type: String, default: null }, // last exchange-reported state: open|pending|closed|cancelled
+    requestedContracts: { type: Number, default: null },
+    filledContracts: { type: Number, default: 0 },
+    filledQuantity: { type: Number, default: 0 }, // base-asset units actually filled on the exchange
+    fillVerified: { type: Boolean, default: false }, // true only when fill data came from the exchange order object
 
     relatedPosition: { type: mongoose.Schema.Types.ObjectId, ref: 'Position', default: null },
 

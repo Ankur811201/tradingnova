@@ -37,6 +37,18 @@ const positionSchema = new mongoose.Schema(
     realizedPnl: { type: Number, default: 0 }, // accumulates partial-fill PnL as targets hit; the final close adds the last slice on top
     feesPaid: { type: Number, default: 0 },
 
+    // LIVE-only protection / exchange-sync fields (optional; PAPER leaves defaults).
+    protectionStatus: { type: String, enum: ['NONE', 'PROTECTED', 'UNPROTECTED', 'EMERGENCY'], default: 'NONE' },
+    protectionOrderId: { type: String, default: null }, // Delta id of the active stop_loss_order leg
+    protectionVerifiedAt: { type: Date, default: null },
+    exchangeContracts: { type: Number, default: null }, // remaining contracts per local books
+    contractValue: { type: Number, default: null },
+    entryOrderId: { type: String, default: null },
+    entryFee: { type: Number, default: 0 }, // exchange-reported entry commission, deducted once at final close
+    closeInFlight: { type: Boolean, default: false }, // idempotency guard for close orders
+    needsReconciliation: { type: Boolean, default: false },
+    reconciliationNote: { type: String, default: null },
+
     status: { type: String, enum: ['OPEN', 'CLOSED', 'LIQUIDATED'], required: true, default: 'OPEN', index: true },
 
     openedAt: { type: Date, default: Date.now },

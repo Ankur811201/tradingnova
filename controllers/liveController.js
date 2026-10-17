@@ -107,4 +107,34 @@ async function cancelOrder(req, res, next) {
   }
 }
 
-module.exports = { getStatus, getBalance, openPosition, closePosition, syncPositions, getOpenOrders, cancelOrder };
+
+async function getDeltaConnectStatus(req, res) {
+  return checkDeltaConnection(res);
+}
+
+async function retryDeltaConnection(req, res) {
+  return checkDeltaConnection(res);
+}
+
+async function checkDeltaConnection(res) {
+  if (!deltaAdapter.isConfigured()) {
+    return res.json({ success: true, data: { connected: false, configured: false, clientIp: null } });
+  }
+
+  try {
+    // Call GET /profile directly so the Retry button performs a fresh authentication check.
+    await deltaAdapter.getUser();
+    deltaAdapter._authCache = { authenticated: true, checkedAt: Date.now(), error: null };
+    return res.json({ success: true, data: { connected: true, configured: true, clientIp: null } });
+  } catch (err) {
+    const context = err && err.deltaError && err.deltaError.context;
+    const clientIp = context && typeof context.client_ip === 'string' ? context.client_ip : null;
+    deltaAdapter._authCache = { authenticated: false, checkedAt: Date.now(), error: err.message };
+    return res.json({
+      success: true,
+      data: { connected: false, configured: true, clientIp },
+    });
+  }
+}
+
+module.exports = { getStatus, getBalance, openPosition, closePosition, syncPositions, getOpenOrders, cancelOrder, getDeltaConnectStatus, retryDeltaConnection };

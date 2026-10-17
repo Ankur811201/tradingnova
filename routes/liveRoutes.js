@@ -9,6 +9,8 @@ const router = express.Router();
 
 router.use(requireAuth);
 router.get('/status', liveController.getStatus);
+router.get('/connect-status', liveController.getDeltaConnectStatus);
+router.post('/connect-status/retry', dangerousActionLimiter, liveController.retryDeltaConnection);
 router.get('/balance', liveController.getBalance);
 router.get('/orders', liveController.getOpenOrders);
 router.post('/orders/cancel', dangerousActionLimiter, liveController.cancelOrder);

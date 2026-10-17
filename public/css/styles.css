@@ -658,3 +658,16 @@ body.modal-open { overflow: hidden; }
   .info-grid { grid-template-columns: 1fr 1fr; }
   .bot-card-controls .btn { flex: 1 1 calc(50% - 8px); }
 }
+
+/* Delta account connection status in the sidebar */
+.delta-connect { margin: 0 12px 12px; padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.delta-connect-heading { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-primary); }
+.delta-connect-dot { width: 8px; height: 8px; border-radius: 50%; background: #d99a26; flex: 0 0 auto; }
+.delta-connect-dot.is-connected { background: #22a06b; }
+.delta-connect-dot.is-error { background: #dc5252; }
+.delta-connect-status { margin-top: 7px; color: var(--text-secondary); font-size: 11.5px; overflow-wrap: anywhere; }
+.delta-connect-ip { margin-top: 5px; color: var(--text-primary); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; user-select: text; }
+.delta-connect-ip[hidden] { display: none; }
+.delta-connect-retry { margin-top: 9px; width: 100%; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); font-size: 11.5px; cursor: pointer; }
+.delta-connect-retry:hover { background: var(--surface-hover); color: var(--text-primary); }
+.delta-connect-retry:disabled { opacity: .6; cursor: wait; }

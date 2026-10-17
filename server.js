@@ -59,6 +59,19 @@ async function main() {
     await logger.info('BOT', `Startup recovery: ${recovery.filter((r) => r.recovered).length}/${recovery.length} RUNNING bot instance(s) recovered`);
   }
 
+  // LIVE startup reconciliation: compare exchange positions/orders with local
+  // records BEFORE any market tick can drive new decisions. Restores a missing
+  // protective stop, adopts a late-discovered fill, and flags (never silently
+  // overwrites) any mismatch. Safe when Delta is not configured (no-op).
+  const liveReconciler = require('./services/liveEngine/LiveReconciler');
+  try {
+    const rec = await liveReconciler.reconcile({ reason: 'STARTUP' });
+    if (!rec.skipped) await logger.info('SAFETY', `Startup LIVE reconciliation done: ${rec.reconciled} position(s), ${rec.discrepancies.length} discrepancy(ies)`, { actions: rec.actions });
+  } catch (err) {
+    await logger.error('SAFETY', `Startup LIVE reconciliation failed: ${err.message}`);
+  }
+  liveReconciler.start();
+
   // Wire market-data price updates -> paper P&L refresh + bot dispatch + socket broadcast.
   // Only subscribes to symbols that are actually referenced by an existing bot
   // instance or that the allowed-symbols list declares, to avoid unbounded
@@ -285,6 +298,7 @@ for (const symbol of env.RISK_ALLOWED_SYMBOLS) {
   const shutdown = async (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    liveReconciler.stop();
     await logger.info('SYSTEM', `Received ${signal}, finalizing active recordings before shutdown`);
     const hardExit = setTimeout(() => process.exit(1), 10 * 60 * 1000);
     hardExit.unref();

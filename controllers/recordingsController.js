@@ -70,6 +70,9 @@ async function resolveRecording(instanceId, recordingId) {
 
 
 async function startRecording(req, res, next) {
+  if (String(process.env.BOT_RECORDINGS_ENABLED || '').toLowerCase() !== 'true') {
+    return res.status(503).json({ ok: false, error: 'Video recording is temporarily disabled' });
+  }
   try {
     const { instanceId } = req.params;
     const bot = await BotInstance.findOne({ instanceId, user: req.session.userId }).lean();

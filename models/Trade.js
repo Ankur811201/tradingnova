@@ -30,6 +30,9 @@ const tradeSchema = new mongoose.Schema(
     fees: { type: Number, required: true },
 
     reason: { type: String, default: null },
+    // false when the exit price could not be confirmed from exchange fill data
+    // (e.g. position found flat during reconciliation). Never silently true.
+    priceVerified: { type: Boolean, default: true },
     openedAt: { type: Date, required: true },
     closedAt: { type: Date, required: true },
   },

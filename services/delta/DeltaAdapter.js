@@ -86,6 +86,13 @@ const { timestamp, signature, payload } =
       );
       normalized.status = status || 502;
       normalized.deltaError = errBody?.error || null;
+      // A timeout / network drop / 5xx on a state-changing call means the
+      // exchange MAY have processed it. Callers must check order state
+      // (by client_order_id) before ever resubmitting. 4xx = definitive reject.
+      normalized.ambiguous = !err.response || status >= 500;
+      const errCode = String(errBody?.error?.code || errBody?.error || '').toLowerCase();
+      normalized.isAuthError = status === 401 || status === 403
+        || ['invalid_api_key', 'signature mismatch', 'signatureexpired', 'unauthorizedapiaccess', 'ip_not_whitelisted_for_api_key'].includes(errCode);
       throw normalized;
     }
   }
@@ -155,6 +162,36 @@ const { timestamp, signature, payload } =
     }
     const data = await this._request('POST', '/orders', { body });
     return data.result;
+  }
+
+  /**
+   * Position-level bracket (stop-loss / take-profit) via the documented
+   * POST /v2/orders/bracket. Per Delta docs it needs no size: it closes the
+   * entire position (and follows size changes), and only ONE bracket may
+   * exist per open position. The documented success body is just
+   * { success: true } — no order id — so callers must verify via
+   * getActiveOrders() before treating a position as protected.
+   *
+   * stopLoss: { stopPrice, orderType = 'market_order', limitPrice? }
+   * NOTE: the accepted values of stop_loss_order.order_type for this endpoint
+   * are not enumerated in the docs section reviewed; the default is
+   * configurable (DELTA_BRACKET_SL_ORDER_TYPE) and MUST be confirmed on
+   * Delta testnet before live use.
+   */
+  async placeBracketOrder({ productId, productSymbol = null, stopLoss = null, takeProfit = null, triggerMethod = null }) {
+    if (!stopLoss && !takeProfit) throw new Error('placeBracketOrder requires stopLoss and/or takeProfit');
+    const body = { product_id: productId };
+    if (productSymbol) body.product_symbol = productSymbol;
+    if (stopLoss) {
+      body.stop_loss_order = { order_type: stopLoss.orderType || 'market_order', stop_price: String(stopLoss.stopPrice) };
+      if (stopLoss.limitPrice != null) body.stop_loss_order.limit_price = String(stopLoss.limitPrice);
+    }
+    if (takeProfit) {
+      body.take_profit_order = { order_type: takeProfit.orderType || 'market_order', stop_price: String(takeProfit.stopPrice) };
+      if (takeProfit.limitPrice != null) body.take_profit_order.limit_price = String(takeProfit.limitPrice);
+    }
+    if (triggerMethod) body.bracket_stop_trigger_method = triggerMethod; // mark_price | last_traded_price | spot_price
+    return this._request('POST', '/orders/bracket', { body });
   }
 
   async cancelOrder({ id, productId, clientOrderId = null }) {

@@ -476,8 +476,21 @@ class TargetExitManager {
         if (!target) continue;
 
         const originalQuantity = Number(claimed.originalQuantity) || Number(claimed.quantity);
-        const qty = originalQuantity * (Number(target.exitPercent) / 100);
-        if (!(qty > 0)) throw new Error(`Invalid target quantity for T${targetIndex}`);
+        // A previous LIVE attempt may have partially filled this target; only the
+        // shortfall is sold on retry (always 0 for PAPER, so unchanged there).
+        const alreadyFilled = Number(target.filledQuantity || 0);
+        const qty = originalQuantity * (Number(target.exitPercent) / 100) - alreadyFilled;
+        if (!(qty > 1e-12)) {
+          if (alreadyFilled > 0) { // slice already completed by earlier partial fills
+            await Position.updateOne(
+              { _id: claimed._id, 'targetExit.targets': { $elemMatch: { index: targetIndex, status: 'EXECUTING' } } },
+              { $set: { 'targetExit.targets.$[t].status': 'EXECUTED', 'targetExit.targets.$[t].executedAt': new Date() } },
+              { arrayFilters: [{ 't.index': targetIndex }] }
+            );
+            continue;
+          }
+          throw new Error(`Invalid target quantity for T${targetIndex}`);
+        }
 
         const actualQty = Math.min(qty, Number(claimed.quantity));
         if (!(actualQty > 0)) throw new Error(`No remaining quantity for T${targetIndex}`);
@@ -518,9 +531,13 @@ class TargetExitManager {
         // exit was silently invisible on the chart and lost on refresh).
         executedTargets.push({ targetIndex, exitPercent: Number(target.exitPercent), quantity: actualQty, lots: quantityToLots(actualQty), realizedPnl });
       } catch (err) {
+        const update = { $set: { 'targetExit.targets.$[t].status': 'ARMED' } };
+        if (err && err.code === 'LIVE_CLOSE_PARTIAL' && Number(err.filledQuantity) > 0) {
+          update.$inc = { 'targetExit.targets.$[t].filledQuantity': Number(err.filledQuantity) }; // remember what already sold
+        }
         await Position.updateOne(
           { _id: claimed._id, status: 'OPEN', 'targetExit.targets': { $elemMatch: { index: targetIndex, status: 'EXECUTING' } } },
-          { $set: { 'targetExit.targets.$[t].status': 'ARMED' } },
+          update,
           { arrayFilters: [{ 't.index': targetIndex }] }
         );
         throw err;

@@ -82,6 +82,7 @@ class ExecutionRouter {
         userId: instance.user,
         symbol: command.symbol,
         productId: product.id,
+        contractValue: Number(product.contract_value) || null, // Delta size is in whole contracts
         side: command.action,
         quantity: command.quantity,
         leverage: instance.leverage,
@@ -102,9 +103,9 @@ class ExecutionRouter {
       return liveEngine.closePosition({ positionId: position._id, productId: product.id, reason: 'BOT_SIGNAL' });
     }
     if (command.action === 'MODIFY_STOP') {
-      // Deliberately NOT implemented: LIVE stop-loss is placed as an
-      // exchange-side conditional order at entry (see LiveEngine.openPosition
-      // -> DeltaAdapter.placeOrder's stopLossOrder). Trailing it live means
+      // Deliberately NOT implemented: the LIVE stop-loss is an exchange-side
+      // bracket order placed and verified after the entry fills (see
+      // LiveEngine.ensureProtection). Trailing it live means
       // calling a real Delta order-amend/replace endpoint, which has not
       // been verified against official Delta documentation in this build
       // (same "never invent external message formats" rule the Part 4

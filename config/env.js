@@ -84,6 +84,16 @@ const env = {
   // in production, e.g. CORS_ALLOWED_ORIGIN=https://app.example.com
   CORS_ALLOWED_ORIGIN: process.env.CORS_ALLOWED_ORIGIN || '',
 
+  // LIVE execution safety (see services/liveEngine). All have safe defaults.
+  LIVE_FILL_POLL_INTERVAL_MS: toInt(process.env.LIVE_FILL_POLL_INTERVAL_MS, 400),
+  LIVE_FILL_TIMEOUT_MS: toInt(process.env.LIVE_FILL_TIMEOUT_MS, 8000),
+  LIVE_CLOSE_MAX_ATTEMPTS: toInt(process.env.LIVE_CLOSE_MAX_ATTEMPTS, 3),
+  LIVE_RECONCILE_INTERVAL_MS: toInt(process.env.LIVE_RECONCILE_INTERVAL_MS, 60000),
+  // Bracket stop-loss leg order type for POST /v2/orders/bracket. Confirm on testnet.
+  DELTA_BRACKET_SL_ORDER_TYPE: process.env.DELTA_BRACKET_SL_ORDER_TYPE || 'market_order',
+  // mark_price | last_traded_price | spot_price (documented bracket_stop_trigger_method values)
+  DELTA_BRACKET_TRIGGER_METHOD: process.env.DELTA_BRACKET_TRIGGER_METHOD || 'last_traded_price',
+
   ENABLE_LIVE_INTEGRATION_TESTS: toBool(process.env.ENABLE_LIVE_INTEGRATION_TESTS, false),
 };
 

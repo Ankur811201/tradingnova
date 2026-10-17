@@ -97,6 +97,10 @@
 <style>
   /* Recording timeline: deliberately outside the candle plotting area, but
      positioned from the exact same Lightweight Charts time scale. */
+  html.recordings-temporarily-disabled #recording-timeline-wrap,
+  html.recordings-temporarily-disabled [data-tab="recordings"],
+  html.recordings-temporarily-disabled .tab-panel[data-tab="recordings"],
+  html.recordings-temporarily-disabled #chart-recording-status { display: none !important; }
   .recording-timeline { min-width: 0; }
   .recording-timeline-axis { position:absolute; left:0; right:0; bottom:5px; height:1px; background:rgba(148,163,184,.18); }
   .recording-timeline-bar {
@@ -923,7 +927,9 @@
   <!-- INLINE DATA BOOTSTRAP -->
  <!-- Place this script in views/bot-detail.ejs BEFORE loading bot-detail-ws.js -->
 <script>
-  window.BOT_RECORDINGS_ENABLED = true;
+  window.BOT_RECORDINGS_ENABLED = false;
+  // Temporary UI removal: recording code and existing saved videos are preserved.
+  document.documentElement.classList.add('recordings-temporarily-disabled');
   window.BOT_CONFIG = {
   instanceId: "<%= bot.instanceId || bot._id %>",
   modelId: "<%= bot.modelId || 'MODEL_UNKNOWN' %>",
@@ -1565,10 +1571,9 @@
       if(!data || data.instanceId!==instanceId) return;
       liveEvents.push(data);
       renderTargetLiveStatus(currentPlan || {targets:[],events:[]});
-      setTimeout(refresh, 50);
     });
   }
-  refresh(); setInterval(refresh,2000);
+  refresh(); setInterval(refresh,5000);
 })();
 </script>
 </body>

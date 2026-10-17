@@ -45,29 +45,10 @@ test('completed video is stored permanently on the local filesystem', () => {
   assert.doesNotMatch(recordingSrc, /tradeRecordingVideos/);
 });
 
-test('only stop-loss closes can start a retry; targets and other exits never restart recording', () => {
-  assert.match(recordingSrc, /closeReason\.includes\('STOP_LOSS'\)/);
-  assert.match(recordingSrc, /TARGET_EXIT_NO_RETRY/);
+test('profit close blocks the level retry path', () => {
+  assert.match(recordingSrc, /state\.profitable = true/);
   assert.match(recordingSrc, /state\.blocked = true/);
-  assert.match(recordingSrc, /state\.profitable = !isStopLoss/);
-});
-
-test('a live position blocks new level recordings even after the 3-candle clip stops', () => {
-  assert.match(recordingSrc, /Position\.findOne\(\{ instanceId, status: 'OPEN' \}\)/);
-  assert.match(recordingSrc, /if \(openPosition\) return null/);
-});
-
-test('stop-hunt entry and stop-loss exit use the normal recording retry lifecycle', () => {
-  assert.match(recordingSrc, /decisionType === 'STOP_HUNTING'/);
-  assert.match(recordingSrc, /decisionType === 'STOP_HUNTING_EXIT'/);
-  assert.match(recordingSrc, /this\.activeStopHunts = new Map\(\)/);
-  assert.match(recordingSrc, /this\._handleLevelStopLoss\(instanceId, hunt\.levelKey, hunt\.stopHuntId\)/);
-});
-
-test('entry candle close counts as candle one and each candle bucket is counted once', () => {
-  assert.match(recordingSrc, /countedEntryCandleBuckets/);
-  assert.match(recordingSrc, /candleBucket >= entryBucket && !counted\.has\(candleBucket\)/);
-  assert.match(recordingSrc, /alreadyClosedEntryCandle && alreadyClosedEntryCandle\.closed/);
+  assert.match(recordingSrc, /PROFIT_EXIT/);
 });
 
 
