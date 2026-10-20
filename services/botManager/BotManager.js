@@ -1241,6 +1241,16 @@ class BotManager {
       // event. This closes the restart window where a crash could otherwise
       // occur after the model started its one-time stop hunt but before the
       // normal BotInstance save completed.
+      if (dbInstance.modelId === 'MODEL_002' && event.eventType === 'MODEL002_TRADE_OCCURRED') {
+        dbInstance.parameters = Object.assign({}, dbInstance.parameters || {}, {
+          tradeOccurredBeforeStopHunt: true,
+        });
+        dbInstance.markModified('parameters');
+        await BotInstance.updateOne({ _id: dbInstance._id }, { $set: {
+          'parameters.tradeOccurredBeforeStopHunt': true,
+        } });
+      }
+
       if (dbInstance.modelId === 'MODEL_002' && event.eventType === 'OPPOSITE_STOP_HUNT_STARTED') {
         const state = Object.assign({}, event.payload || {});
         dbInstance.parameters = Object.assign({}, dbInstance.parameters || {}, {

@@ -495,8 +495,9 @@ class TargetExitManager {
         const actualQty = Math.min(qty, Number(claimed.quantity));
         if (!(actualQty > 0)) throw new Error(`No remaining quantity for T${targetIndex}`);
 
+        let execution;
         if (claimed.environment === 'PAPER') {
-          await paperEngine.partialClosePosition({
+          execution = await paperEngine.partialClosePosition({
             positionId: claimed._id,
             quantity: actualQty,
             exitPrice,
@@ -504,12 +505,24 @@ class TargetExitManager {
           });
         } else {
           const product = await require('./delta/DeltaAdapter').getProductBySymbol(claimed.symbol);
-          await liveEngine.partialClosePosition({
+          execution = await liveEngine.partialClosePosition({
             positionId: claimed._id,
             productId: product.id,
             quantity: actualQty,
             reason: `TARGET_${targetIndex}`,
           });
+        }
+
+        // Chart markers must represent confirmed executed quantity, not the
+        // requested target slice. A null/zero execution must never create an
+        // EXIT marker.
+        const confirmedQty = Number(execution && execution.quantity);
+        if (!Number.isFinite(confirmedQty) || confirmedQty <= 0) {
+          throw new Error(`T${targetIndex} exit was not confirmed; no chart marker recorded`);
+        }
+        const confirmedExitPrice = Number(execution.exitPrice);
+        if (!Number.isFinite(confirmedExitPrice) || confirmedExitPrice <= 0) {
+          throw new Error(`T${targetIndex} exit has no confirmed execution price`);
         }
 
         await Position.updateOne(
@@ -529,7 +542,7 @@ class TargetExitManager {
         // Record the exit so the live graph gets a TARGET_EXIT marker for
         // T1/T2/T3 too (previously only T4 emitted this — the window
         // exit was silently invisible on the chart and lost on refresh).
-        executedTargets.push({ targetIndex, exitPercent: Number(target.exitPercent), quantity: actualQty, lots: quantityToLots(actualQty), realizedPnl });
+        executedTargets.push({ targetIndex, exitPercent: Number(target.exitPercent), quantity: confirmedQty, lots: quantityToLots(confirmedQty), exitPrice: confirmedExitPrice, realizedPnl });
       } catch (err) {
         const update = { $set: { 'targetExit.targets.$[t].status': 'ARMED' } };
         if (err && err.code === 'LIVE_CLOSE_PARTIAL' && Number(err.filledQuantity) > 0) {
@@ -557,7 +570,7 @@ class TargetExitManager {
             stage: null,
             targetIndex: et.targetIndex,
             candleStart: meta && Number.isFinite(Number(meta.candleStart)) ? Number(meta.candleStart) : Date.now(),
-            price: Number(exitPrice),
+            price: et.exitPrice,
             exitPercent: et.exitPercent,
             quantity: et.quantity,
             lots: et.lots,
@@ -573,14 +586,14 @@ class TargetExitManager {
         for (const et of executedTargets) {
           whatsappNotifications.notify(`TARGET_${et.targetIndex}_EXIT`, {
             instanceId: String(after.instanceId), symbol: after.symbol, side: after.side,
-            quantity: et.quantity, price: Number(exitPrice), realizedPnl: et.realizedPnl,
+            quantity: et.quantity, price: et.exitPrice, realizedPnl: et.realizedPnl,
           });
           this._emitTargetEvent(after, {
             type: 'TARGET_EXIT',
             stage: null,
             targetIndex: et.targetIndex,
             candleStart: meta && Number.isFinite(Number(meta.candleStart)) ? Number(meta.candleStart) : Date.now(),
-            price: Number(exitPrice),
+            price: et.exitPrice,
             exitPercent: et.exitPercent,
             quantity: et.quantity,
             lots: et.lots,

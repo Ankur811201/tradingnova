@@ -70,6 +70,7 @@ const DEFAULT_PARAMETERS = {
   // Opposite-market stop-hunt lifetime state. Only the first eligible R1/S1
   // opposite pattern consumes this flag; R2/R3/S2/S3 never use it.
   oppositeStopHuntUsed: false,
+  tradeOccurredBeforeStopHunt: false,
   oppositeStopHuntActive: null,
 
 };

@@ -160,6 +160,9 @@ class Model002 extends BotModelBase {
     // opposite-market pattern in the bot's lifetime is a simulated
     // stop-hunt. R2/R3/S2/S3 are always direct real trades.
     this.oppositeStopHuntUsed = Boolean(this.params.oppositeStopHuntUsed);
+    // A real/accepted normal trade takes precedence over the first-opposite-level
+    // STOP HUNT. Persisted by BotManager so restarts cannot re-enable it.
+    this.tradeOccurredBeforeStopHunt = Boolean(this.params.tradeOccurredBeforeStopHunt);
     this.oppositeStopHuntActive = this.params.oppositeStopHuntActive && typeof this.params.oppositeStopHuntActive === 'object'
       ? Object.assign({}, this.params.oppositeStopHuntActive)
       : null;
@@ -169,6 +172,7 @@ class Model002 extends BotModelBase {
     // remains independent of this lifecycle.
     // A genuinely new configured level touch replaces this carry-forward.
     this.reuseLastTouchedLevel = null;
+    this.retryTouchedLevelAsCandle2 = null;
 
     // MODEL_002 safety is level-based: each S1/S2/S3/R1/R2/R3 has its own
     // two-loss allowance. One successful completed trade stops the bot.
@@ -563,6 +567,18 @@ class Model002 extends BotModelBase {
       // validation — per spec §4, do NOT create Candle1/Candle2; stay IDLE
       // and keep searching from the next candle.
       this.patternCandidate = null;
+      // Preserve the eligible level touch after a failed B-candle validation.
+      // On the next candle, retry B validation against that candle's immediate
+      // predecessor (the rejected touch candle), without requiring another
+      // physical level touch. All normal A/B, BodyP and candle-nature checks
+      // still run before a setup can be accepted.
+      if (attempt.rejected.matchedLevel && attempt.rejected.direction) {
+        this.retryTouchedLevelAsCandle2 = {
+          direction: attempt.rejected.direction,
+          index: attempt.rejected.matchedLevel.index,
+          price: attempt.rejected.matchedLevel.price,
+        };
+      }
       this._emitDecision('WAIT', attempt.rejected, candle);
       return;
     }
@@ -619,12 +635,16 @@ class Model002 extends BotModelBase {
     // here so mirrored BUY and SELL routes cannot drift apart.
     const buildNewAttempt = (levels, direction, touchOverride = null) => {
       const freshTouch = reversalEngine.findTouchedLevel(levels, candle, direction);
-      const isCarriedForward = !freshTouch && Boolean(touchOverride) && touchOverride.direction === direction;
-      const touch = freshTouch || (isCarriedForward
-        ? { index: touchOverride.index, price: touchOverride.price }
+      const retry = !freshTouch && this.retryTouchedLevelAsCandle2
+        && this.retryTouchedLevelAsCandle2.direction === direction;
+      const override = retry ? this.retryTouchedLevelAsCandle2 : touchOverride;
+      const isCarriedForward = !freshTouch && !retry && Boolean(override) && override.direction === direction;
+      const touch = freshTouch || (override && override.direction === direction
+        ? { index: override.index, price: override.price }
         : null);
       if (!touch) return null;
 
+      if (retry) this.retryTouchedLevelAsCandle2 = null;
       if (freshTouch) this._recordLevelTouch(direction, touch, candle);
 
       // After stop-hunt/first-trade-left carry-forward, the next candle is
@@ -644,7 +664,7 @@ class Model002 extends BotModelBase {
 
       if (!prevCandle) {
         return { rejected: {
-          reason: 'no_prior_candle_for_ab_validation', direction,
+          reason: 'no_prior_candle_for_ab_validation', direction, matchedLevel: touch,
           activeLevel: this._activeLevelFor({ direction, matchedLevel: touch }),
         } };
       }
@@ -653,7 +673,7 @@ class Model002 extends BotModelBase {
       if (!ab.valid) {
         return { rejected: {
           reason: direction === 'BUY' ? 'ab_body_high_not_greater' : 'ab_body_low_not_less',
-          direction,
+          direction, matchedLevel: touch,
           activeLevel: this._activeLevelFor({ direction, matchedLevel: touch }),
           candle1: this._summarizeCandle(prevCandle), candle2: this._summarizeCandle(candle),
         } };
@@ -662,14 +682,14 @@ class Model002 extends BotModelBase {
       const points = computeCandle2Points(candle, direction);
       if (!isBodyPMaximum(points, direction)) {
         return { rejected: {
-          reason: 'bodyP_not_maximum', direction,
+          reason: 'bodyP_not_maximum', direction, matchedLevel: touch,
           activeLevel: this._activeLevelFor({ direction, matchedLevel: touch }),
           candle1: this._summarizeCandle(prevCandle), candle2: this._summarizeCandle(candle), points,
         } };
       }
       if (!isCorrectCandleNature(candle, direction)) {
         return { rejected: {
-          reason: direction === 'BUY' ? 'candle2_not_bullish' : 'candle2_not_bearish', direction,
+          reason: direction === 'BUY' ? 'candle2_not_bullish' : 'candle2_not_bearish', direction, matchedLevel: touch,
           activeLevel: this._activeLevelFor({ direction, matchedLevel: touch }),
           candle1: this._summarizeCandle(prevCandle), candle2: this._summarizeCandle(candle), points,
         } };
@@ -695,6 +715,7 @@ class Model002 extends BotModelBase {
     const primaryLevels = this.params.support;
     const primaryDirection = 'BUY';
     const buyTouch = reversalEngine.findTouchedLevel(primaryLevels, candle, primaryDirection);
+    if (buyTouch && this.retryTouchedLevelAsCandle2) this.retryTouchedLevelAsCandle2 = null;
     const buyCarry = !buyTouch && this.reuseLastTouchedLevel && this.reuseLastTouchedLevel.direction === primaryDirection
       ? this.reuseLastTouchedLevel : null;
     const buyAttempt = buildNewAttempt(primaryLevels, primaryDirection, buyCarry);
@@ -712,7 +733,7 @@ class Model002 extends BotModelBase {
 
   /** Constructs the Candle 1 candidate object — the single source of truth for Candle 1 state, reused by both the live touch path and hydration recovery. Never emits anything; callers decide what (if anything) to emit. */
   _computeIsOppositeStopHuntPattern(direction, matchedLevel) {
-    if (this.oppositeStopHuntUsed || this.oppositeStopHuntActive) return false;
+    if (this.oppositeStopHuntUsed || this.oppositeStopHuntActive || this.tradeOccurredBeforeStopHunt) return false;
     if (!matchedLevel || matchedLevel.index !== 1) return false;
     return (direction === 'SELL' && this.params.trend === 'BULLISH')
       || (direction === 'BUY' && this.params.trend === 'BEARISH');
@@ -1166,6 +1187,18 @@ class Model002 extends BotModelBase {
     }
 
     if (approval && approval.approved) {
+      // Once a trade command is accepted, a later opposite S1/R1 setup must
+      // follow normal trade logic instead of starting a simulated STOP HUNT.
+      // The manager persists this latch in BotInstance.parameters.
+      if (!this.tradeOccurredBeforeStopHunt) {
+        this.tradeOccurredBeforeStopHunt = true;
+        this.emitStrategyEvent('MODEL002_TRADE_OCCURRED', {
+          commandId: command.commandId,
+          executed: Boolean(approval.execution),
+          activeLevel: result.activeLevel,
+          entryLevelKey: result.entryLevelKey || null,
+        });
+      }
       this.emitStrategyEvent('SIGNAL_GENERATED', { commandId: command.commandId, action: command.action, executed: Boolean(approval.execution) });
     } else {
       this.emitStrategyEvent('SIGNAL_REJECTED', { commandId: command.commandId, reason: (approval && approval.reason) || 'rejected' });
@@ -1515,6 +1548,18 @@ class Model002 extends BotModelBase {
     }
 
     if (approval && approval.approved) {
+      // Once a trade command is accepted, a later opposite S1/R1 setup must
+      // follow normal trade logic instead of starting a simulated STOP HUNT.
+      // The manager persists this latch in BotInstance.parameters.
+      if (!this.tradeOccurredBeforeStopHunt) {
+        this.tradeOccurredBeforeStopHunt = true;
+        this.emitStrategyEvent('MODEL002_TRADE_OCCURRED', {
+          commandId: command.commandId,
+          executed: Boolean(approval.execution),
+          activeLevel: result.activeLevel,
+          entryLevelKey: result.entryLevelKey || null,
+        });
+      }
       this.emitStrategyEvent('SIGNAL_GENERATED', { commandId: command.commandId, action: command.action, executed: Boolean(approval.execution) });
     } else {
       this.emitStrategyEvent('SIGNAL_REJECTED', { commandId: command.commandId, reason: (approval && approval.reason) || 'rejected' });
