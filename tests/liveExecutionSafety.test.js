@@ -87,6 +87,8 @@ test('4. fill at a different price than expected: entryPrice is the exchange ave
   const sent = engine.d.adapter.calls.placeOrder[0];
   assert.equal(sent.size, 10, 'Delta size must be whole contracts (qty / contract_value)');
   assert.equal(sent.reduceOnly, false);
+  assert.equal(typeof sent.clientOrderId, 'string');
+  assert.ok(sent.clientOrderId.length <= 32, 'Delta client_order_id must not exceed 32 characters');
   assert.equal(r.position.protectionStatus, 'PROTECTED');
 });
 

@@ -79,13 +79,14 @@ const { timestamp, signature, payload } =
       const status = err.response?.status;
       const errBody = err.response?.data;
       await logger.error('DELTA', `Delta API ${method} ${path} failed`, {
-        status, error: errBody?.error || err.message,
+        status, error: errBody?.error || err.message, deltaContext: errBody?.error?.context || null,
       });
       const normalized = new Error(
         `Delta API error (${method} ${path}): ${errBody?.error?.code || err.message}`
       );
       normalized.status = status || 502;
       normalized.deltaError = errBody?.error || null;
+      normalized.deltaContext = errBody?.error?.context || null;
       // A timeout / network drop / 5xx on a state-changing call means the
       // exchange MAY have processed it. Callers must check order state
       // (by client_order_id) before ever resubmitting. 4xx = definitive reject.

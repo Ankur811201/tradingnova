@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const Order = require('../../models/Order');
 const Position = require('../../models/Position');
 const Trade = require('../../models/Trade');
@@ -15,6 +16,14 @@ const {
 } = require('../delta/deltaOrderState');
 
 const sleepReal = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Delta Exchange restricts client_order_id to 32 characters. Keep a stable,
+// deterministic exchange ID for command retries while retaining the full
+// commandId in MongoDB for application-level idempotency.
+function deltaClientOrderId(value) {
+  const digest = crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 29);
+  return `nt_${digest}`; // exactly 32 ASCII characters
+}
 
 /**
  * LiveEngine — coordinates real-money execution. Talks to Delta ONLY through
@@ -240,7 +249,7 @@ class LiveEngine {
       throw new AppError(`An earlier live order on ${symbol} has unknown exchange state; reconcile before trading it again`, 409, 'LIVE_UNRESOLVED_ORDER');
     }
 
-    const clientOrderId = commandId || this.d.newId();
+    const clientOrderId = deltaClientOrderId(commandId || this.d.newId());
     const deltaSide = side === 'LONG' ? 'buy' : 'sell';
     const orderRecord = await this.d.Order.create({
       internalOrderId: this.d.newId(), environment: 'LIVE', source, user: userId, modelId, instanceId, commandId,
@@ -461,7 +470,7 @@ class LiveEngine {
         if (exch.contracts === 0) { flat = true; break; }
         remaining = Math.min(remaining, exch.contracts);
       }
-      const clientOrderId = this.d.newId();
+      const clientOrderId = deltaClientOrderId(this.d.newId());
       const rec = await this.d.Order.create({
         internalOrderId: this.d.newId(), environment: 'LIVE', source: position.source, user: position.user,
         modelId: position.modelId, instanceId: position.instanceId, clientOrderId, purpose, reduceOnly: true,
