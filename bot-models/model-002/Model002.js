@@ -510,9 +510,12 @@ class Model002 extends BotModelBase {
     // equivalent to (and strictly earlier than) gating right before
     // TradeCommand submission — no TradeCommand is ever constructed once
     // stopped.
-    if (this.layerSafety.safetyStatus !== 'NORMAL') {
+    const globalEntryGate = this.layerSafety.evaluateEntry(null);
+    if (!globalEntryGate.allowed && globalEntryGate.scope === 'GLOBAL') {
       this._emitDecision('WAIT', {
-        reason: this.layerSafety.safetyStatus === 'SUCCESS_STOPPED' ? 'bot_success_stopped' : 'level_loss_limit_reached',
+        reason: globalEntryGate.reason,
+        gateScope: globalEntryGate.scope,
+        safetyStatus: this.layerSafety.safetyStatus,
         layerSafety: this.layerSafety.getState(),
       }, candle);
       return;
@@ -631,20 +634,25 @@ class Model002 extends BotModelBase {
     const trend = this.params.trend;
     if (trend !== 'BULLISH' && trend !== 'BEARISH') return null;
 
+    // A rejected touch is eligible for exactly the next candle only. Consume
+    // the retry before evaluation so opposite-side touches or a candle with no
+    // usable level cannot leave a stale retry alive indefinitely.
+    const pendingRetry = this.retryTouchedLevelAsCandle2;
+    this.retryTouchedLevelAsCandle2 = null;
+
     // NEW A/B/C engine is used by all four combinations. Keep one implementation
     // here so mirrored BUY and SELL routes cannot drift apart.
     const buildNewAttempt = (levels, direction, touchOverride = null) => {
       const freshTouch = reversalEngine.findTouchedLevel(levels, candle, direction);
-      const retry = !freshTouch && this.retryTouchedLevelAsCandle2
-        && this.retryTouchedLevelAsCandle2.direction === direction;
-      const override = retry ? this.retryTouchedLevelAsCandle2 : touchOverride;
+      const retry = !freshTouch && pendingRetry
+        && pendingRetry.direction === direction;
+      const override = retry ? pendingRetry : touchOverride;
       const isCarriedForward = !freshTouch && !retry && Boolean(override) && override.direction === direction;
       const touch = freshTouch || (override && override.direction === direction
         ? { index: override.index, price: override.price }
         : null);
       if (!touch) return null;
 
-      if (retry) this.retryTouchedLevelAsCandle2 = null;
       if (freshTouch) this._recordLevelTouch(direction, touch, candle);
 
       // After stop-hunt/first-trade-left carry-forward, the next candle is
@@ -1098,15 +1106,25 @@ class Model002 extends BotModelBase {
 
   _activeLevelFor(candidate) {
     const side = candidate.direction === 'BUY' ? 'SUPPORT' : 'RESISTANCE';
-    if (candidate.carriedForwardLevel && candidate.matchedLevel) {
+
+    // The candidate's matchedLevel is the level that actually created this
+    // pattern attempt. Do not replace it with the globally most-recent touch:
+    // a later wick can touch R2 while an older R1 touch remains in levelTouch,
+    // and using that stale state incorrectly applies R1's safety limit to R2.
+    // Carried-forward candidates intentionally keep their original level too.
+    if (candidate && candidate.matchedLevel && Number.isInteger(candidate.matchedLevel.index)
+        && Number.isFinite(candidate.matchedLevel.price)) {
       return { side, index: candidate.matchedLevel.index, price: candidate.matchedLevel.price };
     }
+
+    // Defensive fallback only for legacy/incomplete candidates that lack a
+    // matched level; normal fresh and carried-forward candidates never use it.
     const key = side === 'SUPPORT' ? 'support' : 'resistance';
     const latest = this.levelTouch && this.levelTouch[key];
     if (latest && latest.touched && Number.isInteger(latest.index) && Number.isFinite(latest.level)) {
       return { side, index: latest.index, price: latest.level };
     }
-    return { side, index: candidate.matchedLevel.index, price: candidate.matchedLevel.price };
+    return null;
   }
 
   _summarizeCandle(candle) {
@@ -1118,8 +1136,9 @@ class Model002 extends BotModelBase {
   async _confirmAndSubmit(candidate, boundaryResult, entryCandle) {
     const direction = candidate.direction;
     const entryLevel = this._activeLevelFor(candidate);
-    if (!this.layerSafety.canOpenLevel(entryLevel)) {
-      this._emitDecision('WAIT', { reason: 'entry_level_loss_limit_reached', direction, activeLevel: entryLevel, layerSafety: this.layerSafety.getState() }, entryCandle);
+    const entryGate = this.layerSafety.evaluateEntry(entryLevel);
+    if (!entryGate.allowed) {
+      this._emitDecision('WAIT', { reason: entryGate.reason, gateScope: entryGate.scope, selectedLevel: entryGate.levelKey, direction, activeLevel: entryLevel, layerSafety: this.layerSafety.getState() }, entryCandle);
       this.patternCandidate = null;
       return;
     }
@@ -1457,8 +1476,9 @@ class Model002 extends BotModelBase {
   async _confirmAndSubmitNew(candidate, candleC) {
     const direction = candidate.direction;
     const entryLevel = this._activeLevelFor(candidate);
-    if (!this.layerSafety.canOpenLevel(entryLevel)) {
-      this._emitDecision('WAIT', { reason: 'entry_level_loss_limit_reached', direction, activeLevel: entryLevel, layerSafety: this.layerSafety.getState() }, candleC);
+    const entryGate = this.layerSafety.evaluateEntry(entryLevel);
+    if (!entryGate.allowed) {
+      this._emitDecision('WAIT', { reason: entryGate.reason, gateScope: entryGate.scope, selectedLevel: entryGate.levelKey, direction, activeLevel: entryLevel, layerSafety: this.layerSafety.getState() }, candleC);
       this.patternCandidate = null;
       return;
     }

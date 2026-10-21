@@ -423,13 +423,15 @@ class TargetExitManager {
       }
 
       const closedDoc = await Position.findById(fresh._id);
+      const t4TimeframeMs = this._tfMs(await this._timeframe(closedDoc && closedDoc.instanceId || fresh.instanceId));
       const t4Event = {
         type: 'TARGET_EXIT',
         stage: null,
         targetIndex: 4,
+        positionId: String(fresh._id),
         candleStart: meta && Number.isFinite(Number(meta.candleStart))
           ? Number(meta.candleStart)
-          : Date.now(),
+          : Math.floor(Date.now() / t4TimeframeMs) * t4TimeframeMs,
         price: Number(exitPrice),
         exitPercent: 100,
         quantity: t4Quantity,
@@ -438,10 +440,16 @@ class TargetExitManager {
         recordedAt: new Date(),
       };
       if (closedDoc && closedDoc.targetExit) {
-        closedDoc.targetExit.events = Array.isArray(closedDoc.targetExit.events) ? closedDoc.targetExit.events : [];
-        closedDoc.targetExit.events.push(t4Event);
-        await closedDoc.save();
-        this._emitTargetEvent(closedDoc, t4Event);
+        // targetExit is Mixed: mutating its nested events array and calling
+        // save() is not reliably tracked by Mongoose. Persist the confirmed
+        // exit atomically, then emit only after the database acknowledges it.
+        const persisted = await Position.updateOne(
+          { _id: closedDoc._id },
+          { $push: { 'targetExit.events': t4Event }, $set: { 'targetExit.runtime': null } }
+        );
+        if (persisted && (persisted.modifiedCount > 0 || persisted.matchedCount > 0)) {
+          this._emitTargetEvent(closedDoc, t4Event);
+        }
         // T4 closes the position outside BotManager's CLOSE command path.
         // Mirror the committed close immediately; BotManager's later detection
         // is safe because RecordingService deduplicates by Trade ID.
@@ -456,6 +464,7 @@ class TargetExitManager {
 
     const { paperEngine, liveEngine } = this._engines();
     const executedTargets = [];
+    let executionError = null;
 
     for (const i of unique) {
       const targetIndex = i + 1;
@@ -553,60 +562,56 @@ class TargetExitManager {
           update,
           { arrayFilters: [{ 't.index': targetIndex }] }
         );
-        throw err;
+        // Do not lose already-confirmed earlier exits if a later target in
+        // this same candle fails. Persist/emit successful exits below, then
+        // surface the error so the caller still logs the failed execution.
+        executionError = executionError || err;
       }
     }
 
     const after = await Position.findById(fresh._id);
-    if (after && after.status === 'OPEN') {
-      const allDone = after.targetExit.targets.slice(0, 3).every(t => t.status === 'EXECUTED');
-      after.targetExit.runtime = null;
+    if (after) {
+      const tfMs = this._tfMs(await this._timeframe(after.instanceId));
+      const eventCandleStart = meta && Number.isFinite(Number(meta.candleStart))
+        ? Number(meta.candleStart)
+        : Math.floor(Date.now() / tfMs) * tfMs;
+      const exitEvents = executedTargets.map(et => ({
+        type: 'TARGET_EXIT',
+        stage: null,
+        targetIndex: et.targetIndex,
+        positionId: String(after._id),
+        candleStart: eventCandleStart,
+        price: et.exitPrice,
+        exitPercent: et.exitPercent,
+        quantity: et.quantity,
+        lots: et.lots,
+        realizedPnl: et.realizedPnl,
+        recordedAt: new Date(),
+      }));
 
-      if (executedTargets.length) {
-        after.targetExit.events = Array.isArray(after.targetExit.events) ? after.targetExit.events : [];
-        for (const et of executedTargets) {
-          after.targetExit.events.push({
-            type: 'TARGET_EXIT',
-            stage: null,
-            targetIndex: et.targetIndex,
-            candleStart: meta && Number.isFinite(Number(meta.candleStart)) ? Number(meta.candleStart) : Date.now(),
-            price: et.exitPrice,
-            exitPercent: et.exitPercent,
-            quantity: et.quantity,
-            lots: et.lots,
-            realizedPnl: et.realizedPnl,
-            recordedAt: new Date(),
-          });
-        }
-      }
+      // Persist each confirmed partial exit before notifying the UI. Do not
+      // mutate targetExit.events in-place because targetExit is Mixed.
+      const update = { $set: { 'targetExit.runtime': null } };
+      if (exitEvents.length) update.$push = { 'targetExit.events': { $each: exitEvents } };
+      // A concurrent final close must not erase history for a partial exit
+      // that the exchange/paper engine already confirmed. Append to the same
+      // position even if its status changed to CLOSED after the fill.
+      const persisted = await Position.updateOne({ _id: after._id }, update);
 
-      await after.save();
-
-      if (executedTargets.length) {
-        for (const et of executedTargets) {
+      if (exitEvents.length && persisted && (persisted.modifiedCount > 0 || persisted.matchedCount > 0)) {
+        for (let idx = 0; idx < executedTargets.length; idx += 1) {
+          const et = executedTargets[idx];
+          const savedEvent = exitEvents[idx];
           whatsappNotifications.notify(`TARGET_${et.targetIndex}_EXIT`, {
             instanceId: String(after.instanceId), symbol: after.symbol, side: after.side,
             quantity: et.quantity, price: et.exitPrice, realizedPnl: et.realizedPnl,
           });
-          this._emitTargetEvent(after, {
-            type: 'TARGET_EXIT',
-            stage: null,
-            targetIndex: et.targetIndex,
-            candleStart: meta && Number.isFinite(Number(meta.candleStart)) ? Number(meta.candleStart) : Date.now(),
-            price: et.exitPrice,
-            exitPercent: et.exitPercent,
-            quantity: et.quantity,
-            lots: et.lots,
-            realizedPnl: et.realizedPnl,
-            recordedAt: new Date(),
-          });
+          this._emitTargetEvent(after, savedEvent);
         }
       }
 
-      if (allDone && Number(after.quantity) > 0) {
-        // T4 remains the independent final remaining-percentage target.
-      }
     }
+    if (executionError) throw executionError;
   }
 
   _engines() {

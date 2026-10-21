@@ -116,3 +116,17 @@ test('constants remain 2 losses per level and 1 success per bot', () => {
   assert.equal(MAX_LOSSES_PER_LEVEL, 2);
   assert.equal(MAX_SUCCESSFUL_TRADES_PER_BOT, 1);
 });
+
+
+test('entry gate distinguishes global stop, unresolved level, and per-level loss cap', () => {
+  const s = new LayerSafety();
+  assert.deepEqual(s.evaluateEntry('S1'), { allowed: true, reason: null, scope: 'LEVEL', levelKey: 'S1' });
+  assert.deepEqual(s.evaluateEntry(null), { allowed: false, reason: 'entry_level_unresolved', scope: 'LEVEL', levelKey: null });
+  s.recordTradeOutcome('loss1', -1, 'S2', 'STOP_LOSS');
+  s.recordTradeOutcome('loss2', -1, 'S2', 'STOP_LOSS');
+  assert.deepEqual(s.evaluateEntry('S2'), { allowed: false, reason: 'entry_level_loss_limit_reached', scope: 'LEVEL', levelKey: 'S2' });
+  s.safetyStatus = 'SUCCESS_STOPPED';
+  assert.deepEqual(s.evaluateEntry('S1'), { allowed: false, reason: 'bot_success_stopped', scope: 'GLOBAL', levelKey: null });
+  s.safetyStatus = 'RESTORED_UNKNOWN';
+  assert.deepEqual(s.evaluateEntry('S1'), { allowed: false, reason: 'bot_safety_stopped', scope: 'GLOBAL', levelKey: null });
+});

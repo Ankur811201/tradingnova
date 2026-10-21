@@ -14,3 +14,9 @@ test('target graph lot label uses max 2 decimals and rounds up', () => {
   const m = markers.makeTargetMarker({ type: 'TARGET_EXIT', targetIndex: 2, candleStart: Date.now(), price: 100, quantity: 0.001234 }, 'SHORT');
   assert.equal(m.text, 'T2 EXIT · 1.24 LOT');
 });
+
+
+test('target graph rejects invalid execution prices instead of creating NaN markers', () => {
+  assert.equal(markers.makeTargetMarker({ type: 'TARGET_EXIT', targetIndex: 1, candleStart: Date.now(), price: NaN, quantity: 0.001 }, 'LONG'), null);
+  assert.equal(markers.makeTargetMarker({ type: 'TARGET_EXIT', targetIndex: 1, candleStart: Date.now(), price: 0, quantity: 0.001 }, 'LONG'), null);
+});
