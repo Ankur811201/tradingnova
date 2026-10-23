@@ -166,8 +166,8 @@ function computeBuyStopLoss(candleB, candleC) {
 }
 
 /** SELL: highest wick HIGH across the evaluation window (B up to and including the triggering candle), plus 10 points. Caller passes the running window high as `candleB`. */
-function computeSellStopLoss(candleB, candleC) {
-  return Math.max(candleB.high, candleC.high) + SL_BUFFER;
+function computeSellStopLoss(candleB, candleC, buffer = SL_BUFFER) {
+  return Math.max(candleB.high, candleC.high) + buffer ;
 }
 
 module.exports = {
