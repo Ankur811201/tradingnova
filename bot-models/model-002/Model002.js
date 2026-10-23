@@ -1503,8 +1503,8 @@ class Model002 extends BotModelBase {
     const windowLow = Number.isFinite(candidate.lowestLowSinceCandle2) ? candidate.lowestLowSinceCandle2 : candidate.candle2.low;
     const windowHigh = Number.isFinite(candidate.highestHighSinceCandle2) ? candidate.highestHighSinceCandle2 : candidate.candle2.high;
     const stopLoss = direction === 'BUY'
-      ? reversalEngine.computeBuyStopLoss({ low: windowLow }, candleC)
-      : reversalEngine.computeSellStopLoss({ high: windowHigh }, candleC);
+      ? reversalEngine.computeBuyStopLoss({ low: windowLow }, candleC,20)
+      : reversalEngine.computeSellStopLoss({ high: windowHigh }, candleC,20);
     const riskLength = direction === 'BUY' ? computeBuyRiskLength(entryPrice, stopLoss) : computeSellRiskLength(entryPrice, stopLoss);
 
     if (!Number.isFinite(riskLength) || riskLength > 360 || riskLength < 0) {
