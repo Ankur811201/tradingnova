@@ -16,7 +16,7 @@
  * Candle close is not required for the entry trigger.
  */
 
-const SL_BUFFER = 20; // MODEL_002 stop-loss buffer: 10 points from evaluation-window wick
+const SL_BUFFER = 25; // MODEL_002 stop-loss buffer: 10 points from evaluation-window wick
 const POINT_BUFFER = 5; // MODEL_002 Candle-2 boundary buffer
 
 // --- Step 1: Support/Resistance touch (Candle 1) ------------------------
