@@ -161,13 +161,13 @@ function evaluateCandle3(candleC, boundaries, direction, tieBreakSide) {
 // --- Stop loss — running extreme across B .. trigger candle --------------
 
 /** BUY: lowest wick LOW across the evaluation window (B up to and including the triggering candle), minus 10 points. Caller passes the running window low as `candleB`. */
-function computeBuyStopLoss(candleB, candleC, buffer = SL_BUFFER) {
-  return Math.min(candleB.low, candleC.low) - buffer;
+function computeBuyStopLoss(candleB, candleC) {
+  return Math.min(candleB.low, candleC.low) - SL_BUFFER;
 }
 
 /** SELL: highest wick HIGH across the evaluation window (B up to and including the triggering candle), plus 10 points. Caller passes the running window high as `candleB`. */
-function computeSellStopLoss(candleB, candleC, buffer = SL_BUFFER) {
-  return Math.max(candleB.high, candleC.high) + buffer ;
+function computeSellStopLoss(candleB, candleC) {
+  return Math.max(candleB.high, candleC.high) + SL_BUFFER;
 }
 
 module.exports = {
