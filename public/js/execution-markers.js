@@ -235,8 +235,6 @@ function makeTargetMarker(event, side) {
   // TARGET_TOUCHED and TARGET_CONFIRMATION (CT1/CT2/CT3) remain available
   // to backend/status/history but are intentionally hidden here.
   if (!event || event.type !== 'TARGET_EXIT' || !Number.isFinite(Number(event.candleStart))) return null;
-  var price = Number(event.price);
-  if (!Number.isFinite(price) || price <= 0) return null;
   var time = Number(event.candleStart);
   if (time > 100000000000) time = Math.floor(time / 1000);
   var targetIndex = Number(event.targetIndex);
@@ -249,7 +247,7 @@ function makeTargetMarker(event, side) {
     targetIndex: targetIndex,
     stage: null,
     time: time,
-    price: price,
+    price: Number(event.price),
     // A target exit is a real CLOSE execution. Render it like the existing
     // red close/exit marker, not like an entry or target-touch marker.
     position: isLong ? 'aboveBar' : 'belowBar',

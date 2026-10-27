@@ -612,14 +612,8 @@
       var targetMarkers = [];
       targetPositions.forEach(function (pos) {
         if (!pos || !pos.targetExit) return;
-        // Older stored events may predate positionId. Attach the owning
-        // position id while reconstructing history so marker ids remain
-        // unique and match the live event identity contract.
-        var targetEvents = (pos.targetExit.events || []).map(function (event) {
-          return Object.assign({ positionId: String(pos._id || pos.id || '') }, event);
-        });
         targetMarkers = targetMarkers.concat(
-          window.NovaExecutionMarkers.buildTargetMarkers(targetEvents, pos.side)
+          window.NovaExecutionMarkers.buildTargetMarkers(pos.targetExit.events || [], pos.side)
         );
       });
       if (typeof chartManager.loadTargetMarkers === 'function') chartManager.loadTargetMarkers(targetMarkers);

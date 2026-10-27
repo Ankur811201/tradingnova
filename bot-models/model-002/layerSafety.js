@@ -52,29 +52,11 @@ class LayerSafety {
     return `${side === 'SUPPORT' ? 'S' : 'R'}${index}`;
   }
 
-  evaluateEntry(entryLevel) {
-    // Global safety state takes precedence over level-specific checks. Keep
-    // the reason explicit so the UI never describes a stopped bot as a level
-    // loss-limit failure.
-    if (this.safetyStatus === 'SUCCESS_STOPPED') {
-      return { allowed: false, reason: 'bot_success_stopped', scope: 'GLOBAL', levelKey: null };
-    }
-    if (this.safetyStatus !== 'NORMAL') {
-      return { allowed: false, reason: 'bot_safety_stopped', scope: 'GLOBAL', levelKey: null };
-    }
-
-    const key = LayerSafety.normalizeLevelKey(entryLevel);
-    if (!key) {
-      return { allowed: false, reason: 'entry_level_unresolved', scope: 'LEVEL', levelKey: null };
-    }
-    if (this.levelLosses[key] >= MAX_LOSSES_PER_LEVEL) {
-      return { allowed: false, reason: 'entry_level_loss_limit_reached', scope: 'LEVEL', levelKey: key };
-    }
-    return { allowed: true, reason: null, scope: 'LEVEL', levelKey: key };
-  }
-
   canOpenLevel(entryLevel) {
-    return this.evaluateEntry(entryLevel).allowed;
+    if (this.safetyStatus !== 'NORMAL') return false;
+    const key = LayerSafety.normalizeLevelKey(entryLevel);
+    if (!key) return false;
+    return this.levelLosses[key] < MAX_LOSSES_PER_LEVEL;
   }
 
   recordTradeOutcome(tradeId, realizedPnl, entryLevel, closeReason = null) {
