@@ -58,7 +58,7 @@
  */
 
 const POINT_BUFFER = 5; // Candle 2 (B) boundary buffer, wick-based
-const SL_BUFFER = 25;   // stop-loss buffer, wick-based
+const SL_BUFFER = 10;   // stop-loss buffer, wick-based
 
 // --- Support/Resistance touch (per-candle wick test, single-sided) -----
 
