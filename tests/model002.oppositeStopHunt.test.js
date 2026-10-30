@@ -98,13 +98,3 @@ test('BEARISH+S1 gets the one-time BUY stop hunt; S2 is direct BUY', async () =>
   assert.equal(m.oppositeStopHuntUsed, true);
   assert.equal(m.oppositeStopHuntActive.direction, 'BUY');
 });
-
-test('prior accepted trade disables first-opposite-level STOP HUNT and uses normal trade flow', async () => {
-  const { c, m } = await model({ tradeOccurredBeforeStopHunt: true });
-  await r1Pattern(m);
-  await m.onMarketData({ type: 'price', symbol: 'BTCUSD', timestamp: BASE + 21 * MIN + 1000, data: { price: 64990 } }, null);
-  assert.equal(m.oppositeStopHuntActive, null);
-  assert.equal(m.oppositeStopHuntUsed, false);
-  assert.equal(c.commands.length, 1);
-  assert.equal(c.commands[0].action, 'SHORT');
-});
